@@ -190,10 +190,10 @@ NAV: total=999628.43, pnl=-371.57 (-0.04%)
 
 ## 技术栈
 
-- Python 3.10+
-- akshare（数据采集）
-- pandas / numpy（数据处理）
-- SQLite（本地持久化）
+- Python 3.13.5
+- akshare >= 1.12.0（数据采集）
+- pandas >= 2.0.0 / numpy >= 1.24.0（数据处理）
+- SQLite 3（本地持久化）
 
 ## License
 
