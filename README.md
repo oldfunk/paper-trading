@@ -226,6 +226,11 @@ hermes cron add \
 
 Hermes agent 可以通过 `terminal` 工具执行上述 CLI 命令，解析 JSON 输出进行分析和决策。
 
+### 项目规则
+
+- 详见 `AGENTS.md` — 定义 agent 交互规则、硬约束、验证清单
+- 详见 `skills/paper-trading/SKILL.md` — Hermes skill 定义，包含完整 CLI 参考和数据库 Schema
+
 ## 技术栈
 
 - Python 3.13.5
