@@ -1,6 +1,7 @@
 """风控模块。"""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Dict, Optional
 
 from paper_trading.models import Order, Position, Signal, TradingConfig
@@ -40,12 +41,14 @@ class RiskManager:
         cash: float,
         positions: Dict[str, Position],
         total_value: float,
+        prices: Optional[Dict[str, float]] = None,
     ) -> tuple[bool, str]:
         """
         检查信号是否通过风控。
 
-        Returns:
-            (是否通过, 拒绝原因)
+        Args:
+            prices: 可选的全市场价格表 {symbol: price}，用于多标的总仓位计算；
+                缺省时回退到 current_price（兼容单标的老调用）。
         """
         order_value = signal.volume * current_price
 
@@ -65,21 +68,25 @@ class RiskManager:
 
         # 4. 单只股票仓位上限
         if signal.direction.value == 1 and total_value > 0:
-            current_pos_value = positions.get(signal.symbol, Position(
-                signal.symbol, 0, 0, 0.0, __import__("datetime").datetime.now()
-            )).total_volume * current_price
+            pos = positions.get(signal.symbol)
+            current_pos_value = (pos.total_volume if pos else 0) * current_price
             new_pos_value = current_pos_value + order_value
             if new_pos_value / total_value > self.max_position_pct:
                 return False, f"Position limit exceeded for {signal.symbol}"
 
-        # 5. 总仓位上限
+        # 5. 总仓位上限（多标的按各自价格计算，参考 rqalpha 持仓市值口径）
         if signal.direction.value == 1 and total_value > 0:
-            total_pos_value = sum(
-                p.total_volume * current_price for p in positions.values()
-            )
+            def _px(sym: str) -> float:
+                if prices and sym in prices:
+                    return prices[sym]
+                if sym == signal.symbol:
+                    return current_price
+                return 0.0
+
+            total_pos_value = sum(p.total_volume * _px(sym) for sym, p in positions.items())
             new_total = total_pos_value + order_value
             if new_total / total_value > self.max_total_position_pct:
-                return False, f"Total position limit exceeded"
+                return False, "Total position limit exceeded"
 
         return True, ""
 

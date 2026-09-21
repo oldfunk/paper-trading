@@ -8,13 +8,18 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from paper_trading.broker.paper_broker import PaperBroker
-from paper_trading.data.akshare_fetcher import AkshareFetcher
 from paper_trading.data.db_manager import DataDBManager
 from paper_trading.models import Order, OrderType, Signal, TradingConfig
 from paper_trading.portfolio.portfolio import Portfolio
 from paper_trading.risk.risk_manager import RiskManager
 from paper_trading.strategy.ma_cross_strategy import MACrossStrategy
 from paper_trading.utils import get_logger
+
+
+def _get_fetcher():
+    from paper_trading.data.akshare_fetcher import AkshareFetcher
+
+    return AkshareFetcher
 
 logger = get_logger(__name__)
 
@@ -47,10 +52,11 @@ class PaperTradingEngine:
 
     def update_data(self, symbols: list[str], full: bool = False) -> None:
         """更新行情数据。"""
+        Fetcher = _get_fetcher()
         for sym in symbols:
             latest = None if full else self.data_db.get_latest_timestamp(sym)
             start = latest[:10].replace("-", "") if latest else None
-            bars = AkshareFetcher.fetch_daily(sym, start_date=start)
+            bars = Fetcher.fetch_daily(sym, start_date=start)
             if bars:
                 self.data_db.upsert_bars(bars)
                 self.data_db.add_stock_to_pool(sym)
@@ -76,20 +82,27 @@ class PaperTradingEngine:
                 all_bars[sym] = bars
                 latest_prices[sym] = bars[-1].close
 
-        # 3. 策略信号
+        # 3. T+1 结算（先解冻昨日买入，再交易，避免 T+2）
+        self.broker.unfreeze_t1()
+
+        # 4. 策略信号
         signals = self.strategy.generate_signals(all_bars)
         logger.info(f"Generated {len(signals)} signals")
 
-        # 4. 风控 + 撮合
+        # 5. 风控 + 撮合
         cash = self.broker.get_cash()
         positions = {p.symbol: p for p in self.broker.get_all_positions()}
         nav = self.broker.get_nav(latest_prices)
         self.risk.update_peak(nav.total_value)
+        halted, dd = self.risk.check_drawdown(nav.total_value)
+        if halted:
+            logger.error(f"Drawdown halt: {dd:.2%} >= {self.risk.max_drawdown_pct:.2%}, skip trading")
+            signals = {}
 
         for symbol, signal in signals.items():
             ok, reason = self.risk.check_signal(
                 signal, latest_prices.get(symbol, 0.0),
-                cash, positions, nav.total_value,
+                cash, positions, nav.total_value, prices=latest_prices,
             )
             if not ok:
                 logger.warning(f"Signal rejected by risk: {symbol} - {reason}")
@@ -103,9 +116,6 @@ class PaperTradingEngine:
                 limit_price=signal.price,
             )
             self.broker.submit_order(order)
-
-        # 5. T+1 结算
-        self.broker.unfreeze_t1()
 
         # 6. 记录 NAV
         self.portfolio.record_nav(latest_prices)

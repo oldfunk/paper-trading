@@ -56,6 +56,10 @@ class Order:
     created_at: datetime = field(default_factory=datetime.now)
     filled_at: Optional[datetime] = None
     order_id: Optional[int] = None
+    # A股撮合参考价（可选，有则做涨跌停/high-low检查）
+    prev_close: Optional[float] = None
+    ref_high: Optional[float] = None
+    ref_low: Optional[float] = None
 
 
 @dataclass
@@ -116,3 +120,4 @@ class TradingConfig:
     slippage_pct: float = 0.001       # 百分比滑点（0.1%）
     use_slippage_pct: bool = False    # 是否使用百分比滑点
     initial_cash: float = 1_000_000.0  # 初始资金 100万
+    holidays: tuple = ()              # 额外节假日 YYYY-MM-DD 列表（交易日历用）

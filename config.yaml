@@ -1,0 +1,29 @@
+stock_pool:
+  - 600519
+  - 000858
+  - 601318
+
+account:
+  initial_cash: 1000000.0
+
+trading:
+  commission_rate: 0.00025
+  commission_min: 5.0
+  stamp_duty_rate: 0.0005
+  transfer_fee_rate: 0.00001
+  slippage_fixed: 0.01
+  slippage_pct: 0.001
+  use_slippage_pct: false
+  holidays: []
+
+strategy:
+  short_window: 5
+  long_window: 20
+  buy_volume: 100
+  sell_volume: 100
+
+risk:
+  max_single_order_value: 200000.0
+  max_position_pct: 0.3
+  max_total_position_pct: 0.95
+  max_drawdown_pct: 0.20

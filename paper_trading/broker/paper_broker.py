@@ -17,6 +17,7 @@ from paper_trading.models import (
     TradingConfig,
 )
 from paper_trading.utils import get_logger
+from paper_trading.utils.trading_calendar import is_trading_day, load_holidays, next_trading_day
 
 logger = get_logger(__name__)
 
@@ -196,19 +197,59 @@ class PaperBroker:
             slippage = self.config.slippage_fixed
         return price + direction * slippage
 
+    def _holidays(self) -> set[str]:
+        try:
+            return load_holidays(getattr(self.config, "holidays", ()))
+        except Exception:
+            return set()
+
+    @staticmethod
+    def limit_pct_for(symbol: str) -> float:
+        """涨跌停幅度：科创688/创业300为20%，北交所8/4开头为30%，其余10%（含ST简化为10%）。"""
+        if symbol.startswith("688") or symbol.startswith("300"):
+            return 0.20
+        if symbol.startswith("8") or symbol.startswith("4"):
+            return 0.30
+        return 0.10
+
+    def _reject(self, order: Order, reason: str) -> Order:
+        order.status = OrderStatus.REJECTED
+        logger.warning(f"Order rejected: {reason}")
+        self._persist_order(order)
+        return order
+
     def submit_order(self, order: Order) -> Order:
         """
         提交订单并撮合。
 
         Returns:
-            更新后的 Order 对象
+            更新后的 Order 对象（拒绝单也会落库，status=REJECTED）
         """
+        # A股基础校验：100股整数倍
+        if order.volume <= 0 or order.volume % 100 != 0:
+            return self._reject(order, f"volume must be positive multiple of 100, got {order.volume}")
+        # 涨跌停检查（有 prev_close 才做）
+        if order.prev_close and order.limit_price:
+            pct = self.limit_pct_for(order.symbol)
+            up = order.prev_close * (1 + pct)
+            dn = order.prev_close * (1 - pct)
+            if order.direction == 1 and order.limit_price > up + 1e-9:
+                return self._reject(order, f"buy price {order.limit_price:.2f} over limit-up {up:.2f}")
+            if order.direction == -1 and order.limit_price < dn - 1e-9:
+                return self._reject(order, f"sell price {order.limit_price:.2f} below limit-down {dn:.2f}")
+        # high/low 穿价检查（有参考bar才做，避免盘外幻影成交）
+        if order.limit_price and order.ref_high and order.ref_low:
+            if order.direction == 1 and order.limit_price < order.ref_low - 1e-9:
+                return self._reject(order, f"buy limit {order.limit_price:.2f} below bar low {order.ref_low:.2f}")
+            if order.direction == -1 and order.limit_price > order.ref_high + 1e-9:
+                return self._reject(order, f"sell limit {order.limit_price:.2f} above bar high {order.ref_high:.2f}")
         # 买入: 检查资金
         if order.direction == 1:
             est_price = order.limit_price or 0.0
             if est_price <= 0:
                 order.status = OrderStatus.REJECTED
                 logger.warning(f"Order rejected: no limit price for market buy {order.symbol}")
+                self._persist_order(order)
                 return order
             exec_price = self._apply_slippage(est_price, 1)
             amount = exec_price * order.volume
@@ -219,6 +260,7 @@ class PaperBroker:
                 logger.warning(
                     f"Order rejected: insufficient cash. Need {total_cost:.2f}, have {self.get_cash():.2f}"
                 )
+                self._persist_order(order)
                 return order
 
         # 卖出: 检查可用持仓
@@ -230,6 +272,7 @@ class PaperBroker:
                     f"Order rejected: insufficient available volume for {order.symbol}. "
                     f"Need {order.volume}, have {pos.available_volume if pos else 0}"
                 )
+                self._persist_order(order)
                 return order
 
         # 撮合
@@ -275,11 +318,12 @@ class PaperBroker:
                 "UPDATE account SET cash = cash - ? WHERE id = 1",
                 (total_cost,),
             )
-            # 更新持仓
+            # 更新持仓（avg_cost 含买入费用，与券商交割单口径一致）
             pos = self.get_position(order.symbol)
+            full_cost = amount + commission + transfer_fee
             if pos:
                 new_total = pos.total_volume + order.volume
-                new_avg = (pos.avg_cost * pos.total_volume + amount) / new_total
+                new_avg = (pos.avg_cost * pos.total_volume + full_cost) / new_total
                 conn.execute(
                     """UPDATE positions SET total_volume=?, available_volume=?,
                        avg_cost=?, last_update=? WHERE symbol=?""",
@@ -290,11 +334,11 @@ class PaperBroker:
                 conn.execute(
                     """INSERT INTO positions (symbol, total_volume, available_volume, avg_cost, last_update)
                        VALUES (?, ?, 0, ?, ?)""",
-                    (order.symbol, order.volume, price, datetime.now().isoformat()),
+                    (order.symbol, order.volume, full_cost / order.volume, datetime.now().isoformat()),
                 )
-            # T+1 冻结
+            # T+1 冻结：解冻日为下一交易日（跳周末/节假日）
             today = datetime.now().date()
-            unfreeze = today + timedelta(days=1)
+            unfreeze = next_trading_day(today, self._holidays(), steps=1)
             conn.execute(
                 """INSERT INTO t1_freeze (symbol, volume, freeze_date, unfreeze_date, is_unfrozen)
                    VALUES (?, ?, ?, ?, 0)""",

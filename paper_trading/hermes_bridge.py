@@ -27,17 +27,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# 确保项目根目录在 sys.path 中
-sys.path.insert(0, str(Path(__file__).parent))
+# 确保项目根目录（paper_trading 包的上级）在 sys.path 中，兼容直接脚本运行
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from paper_trading.broker.paper_broker import PaperBroker
-from paper_trading.data.akshare_fetcher import AkshareFetcher
 from paper_trading.data.db_manager import DataDBManager
 from paper_trading.models import Order, OrderType, TradingConfig
 from paper_trading.portfolio.portfolio import Portfolio
 from paper_trading.risk.risk_manager import RiskManager
 from paper_trading.strategy.ma_cross_strategy import MACrossStrategy
 from paper_trading.utils import get_logger
+
+
+def _get_fetcher():
+    from paper_trading.data.akshare_fetcher import AkshareFetcher
+
+    return AkshareFetcher
 
 logger = get_logger(__name__)
 
@@ -57,12 +62,32 @@ class HermesBridge:
         data_db: str = "data.db",
         account_db: str = "paper_account.db",
         config: Optional[TradingConfig] = None,
+        config_path: Optional[str] = None,
     ) -> None:
+        # config.yaml 单一真相源（显式 TradingConfig 优先，其次 config_path，其次默认 config.yaml）
+        risk_kwargs: dict = {}
+        strat_kwargs: dict = {"short_window": 5, "long_window": 20}
+        if config is None:
+            try:
+                from paper_trading.utils.config import load_config
+
+                cfg = load_config(config_path or "config.yaml")
+                if cfg.get("raw"):
+                    config = cfg["trading_config"]
+                    risk_kwargs = cfg.get("risk", {})
+                    strat_kwargs = cfg.get("strategy", {})
+            except Exception:
+                config = TradingConfig()
         self.data_db = DataDBManager(data_db)
         self.broker = PaperBroker(account_db, config)
         self.portfolio = Portfolio(self.broker)
-        self.risk = RiskManager()
-        self.strategy = MACrossStrategy(short_window=5, long_window=20)
+        self.risk = RiskManager(**risk_kwargs) if risk_kwargs else RiskManager()
+        self.strategy = MACrossStrategy(
+            short_window=int(strat_kwargs.get("short_window", 5)),
+            long_window=int(strat_kwargs.get("long_window", 20)),
+            buy_volume=int(strat_kwargs.get("buy_volume", 100)),
+            sell_volume=int(strat_kwargs.get("sell_volume", 100)),
+        )
         self.config = config or TradingConfig()
 
     def run_daily(self, symbols: list[str]) -> dict:
@@ -78,11 +103,18 @@ class HermesBridge:
         logger.info(f"=== HermesBridge Run-Daily started at {datetime.now().isoformat()} ===")
 
         # 1. 更新行情
+        try:
+            Fetcher = _get_fetcher()
+        except Exception as e:
+            logger.error(f"Fetcher unavailable (offline mode): {e}")
+            Fetcher = None
         for sym in symbols:
             try:
+                if Fetcher is None:
+                    continue
                 latest = self.data_db.get_latest_timestamp(sym)
                 start = latest[:10].replace("-", "") if latest else None
-                bars = AkshareFetcher.fetch_daily(sym, start_date=start)
+                bars = Fetcher.fetch_daily(sym, start_date=start)
                 if bars:
                     self.data_db.upsert_bars(bars)
                     self.data_db.add_stock_to_pool(sym)
@@ -98,21 +130,28 @@ class HermesBridge:
                 all_bars[sym] = bars
                 latest_prices[sym] = bars[-1].close
 
-        # 3. 策略信号
+        # 3. T+1 结算（先解冻再交易）
+        self.broker.unfreeze_t1()
+
+        # 4. 策略信号
         signals = self.strategy.generate_signals(all_bars)
         logger.info(f"Generated {len(signals)} signals")
 
-        # 4. 风控 + 撮合
+        # 5. 风控 + 撮合
         cash = self.broker.get_cash()
         positions = {p.symbol: p for p in self.broker.get_all_positions()}
         nav = self.broker.get_nav(latest_prices)
         self.risk.update_peak(nav.total_value)
+        halted, dd = self.risk.check_drawdown(nav.total_value)
+        if halted:
+            logger.error(f"Drawdown halt: {dd:.2%}, skip trading")
+            signals = {}
 
         executed_orders = []
         for symbol, signal in signals.items():
             ok, reason = self.risk.check_signal(
                 signal, latest_prices.get(symbol, 0.0),
-                cash, positions, nav.total_value,
+                cash, positions, nav.total_value, prices=latest_prices,
             )
             if not ok:
                 logger.warning(f"Signal rejected by risk: {symbol} - {reason}")
@@ -133,9 +172,6 @@ class HermesBridge:
                 "price": result.filled_price,
                 "status": result.status.value,
             })
-
-        # 5. T+1 结算
-        self.broker.unfreeze_t1()
 
         # 6. 记录 NAV
         self.portfolio.record_nav(latest_prices)
@@ -204,24 +240,44 @@ class HermesBridge:
         price: Optional[float] = None,
     ) -> dict:
         """
-        手动下单。
-
-        Args:
-            symbol: 股票代码
-            direction: 'buy' 或 'sell'
-            volume: 数量
-            price: 限价（None 则用最新收盘价）
-
-        Returns:
-            订单结果
+        手动下单（强制走 RiskManager，与策略信号同等风控）。
         """
+        if direction not in ("buy", "sell"):
+            return {"ok": False, "error": f"Invalid direction {direction}, expect buy/sell"}
+        if volume <= 0 or volume % 100 != 0:
+            return {"ok": False, "error": f"Volume must be positive multiple of 100, got {volume}"}
         if price is None:
             bars = self.data_db.get_bars(symbol, limit=1)
             if not bars:
-                return {"error": f"No data for {symbol}"}
+                return {"ok": False, "error": f"No data for {symbol}"}
             price = bars[-1].close
 
+        from paper_trading.models import Signal, SignalType
         dir_value = 1 if direction == "buy" else -1
+        signal = Signal(
+            symbol=symbol,
+            direction=SignalType.BUY if dir_value == 1 else SignalType.SELL,
+            volume=volume,
+            price=price,
+            reason="manual",
+        )
+        # 风控前置
+        positions = {p.symbol: p for p in self.broker.get_all_positions()}
+        cash = self.broker.get_cash()
+        latest = {symbol: price}
+        for p in positions:
+            b = self.data_db.get_bars(p, limit=1)
+            if b:
+                latest[p] = b[-1].close
+        nav = self.broker.get_nav(latest)
+        self.risk.update_peak(nav.total_value)
+        halted, dd = self.risk.check_drawdown(nav.total_value)
+        if halted:
+            return {"ok": False, "error": f"Drawdown halt {dd:.2%}, order blocked"}
+        ok, reason = self.risk.check_signal(signal, price, cash, positions, nav.total_value)
+        if not ok:
+            return {"ok": False, "error": f"Risk rejected: {reason}"}
+
         order = Order(
             symbol=symbol,
             direction=dir_value,
@@ -232,6 +288,7 @@ class HermesBridge:
         result = self.broker.submit_order(order)
 
         return {
+            "ok": result.status.value == "filled",
             "order_id": result.order_id,
             "symbol": symbol,
             "direction": direction,
@@ -242,6 +299,47 @@ class HermesBridge:
             "stamp_duty": result.stamp_duty,
             "transfer_fee": result.transfer_fee,
         }
+
+    def preview_order(
+        self, symbol: str, direction: str, volume: int, price: Optional[float] = None
+    ) -> dict:
+        """Dry-run：只做风控+费用试算，不落库（供 agent 下单前调用）。"""
+        if direction not in ("buy", "sell"):
+            return {"ok": False, "error": "direction must be buy/sell"}
+        if price is None:
+            bars = self.data_db.get_bars(symbol, limit=1)
+            if not bars:
+                return {"ok": False, "error": f"No data for {symbol}"}
+            price = bars[-1].close
+        from paper_trading.models import Signal, SignalType
+
+        signal = Signal(
+            symbol=symbol,
+            direction=SignalType.BUY if direction == "buy" else SignalType.SELL,
+            volume=volume,
+            price=price,
+            reason="preview",
+        )
+        positions = {p.symbol: p for p in self.broker.get_all_positions()}
+        cash = self.broker.get_cash()
+        latest = {symbol: price}
+        for p in positions:
+            b = self.data_db.get_bars(p, limit=1)
+            if b:
+                latest[p] = b[-1].close
+        nav = self.broker.get_nav(latest)
+        ok, reason = self.risk.check_signal(signal, price, cash, positions, nav.total_value, prices=latest)
+        amount = price * volume
+        if direction == "buy":
+            commission, transfer = self.broker._calc_buy_cost(amount)
+            return {"ok": ok, "error": None if ok else f"Risk rejected: {reason}",
+                    "estimate": {"amount": amount, "commission": commission,
+                                 "transfer_fee": transfer, "total_cost": amount + commission + transfer}}
+        commission, stamp, transfer = self.broker._calc_sell_cost(amount)
+        return {"ok": ok, "error": None if ok else f"Risk rejected: {reason}",
+                "estimate": {"amount": amount, "commission": commission,
+                             "stamp_duty": stamp, "transfer_fee": transfer,
+                             "net_proceeds": amount - commission - stamp - transfer}}
 
     def get_nav_history(self, limit: int = 30) -> list[dict]:
         """获取 NAV 历史。"""
@@ -264,12 +362,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Paper Trading Framework - Hermes Agent Bridge"
     )
-    parser.add_argument(
-        "--data-db", default="data.db", help="行情数据库路径"
-    )
-    parser.add_argument(
-        "--account-db", default="paper_account.db", help="账户数据库路径"
-    )
+    parser.add_argument("--data-db", default="data.db", help="行情数据库路径")
+    parser.add_argument("--account-db", default="paper_account.db", help="账户数据库路径")
+    parser.add_argument("--config", default="config.yaml", help="配置文件路径")
+    parser.add_argument("--lock-file", default="paper_trading.lock", help="运行锁文件")
 
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
 
@@ -281,6 +377,7 @@ def main() -> None:
     run_parser = subparsers.add_parser("run", help="执行每日结算流程")
     run_parser.add_argument("--symbols", nargs="+", default=["600519"], help="股票代码")
     run_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
+    run_parser.add_argument("--dry-run", action="store_true", help="只生成信号与风控预览，不下单")
 
     # buy
     buy_parser = subparsers.add_parser("buy", help="买入")
@@ -295,6 +392,14 @@ def main() -> None:
     sell_parser.add_argument("--volume", type=int, required=True, help="数量")
     sell_parser.add_argument("--price", type=float, default=None, help="限价")
     sell_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
+
+    # preview
+    preview_parser = subparsers.add_parser("preview", help="下单前风控+费用试算（不落库）")
+    preview_parser.add_argument("--symbol", required=True)
+    preview_parser.add_argument("--direction", choices=["buy", "sell"], required=True)
+    preview_parser.add_argument("--volume", type=int, required=True)
+    preview_parser.add_argument("--price", type=float, default=None)
+    preview_parser.add_argument("--json", action="store_true")
 
     # nav
     nav_parser = subparsers.add_parser("nav", help="查看 NAV 历史")
@@ -313,46 +418,84 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    def emit(data, ok: bool = True, error: str | None = None):
+        print(json.dumps({"ok": ok, "data": data, "error": error},
+                         indent=2, ensure_ascii=False, default=str))
+
     if not args.command:
         parser.print_help()
+        sys.exit(2)
+
+    from paper_trading.utils.run_lock import run_lock
+
+    try:
+        bridge = HermesBridge(data_db=args.data_db, account_db=args.account_db,
+                              config_path=args.config)
+    except Exception as e:
+        emit(None, ok=False, error=f"Init failed: {e}")
         sys.exit(1)
 
-    bridge = HermesBridge(
-        data_db=args.data_db,
-        account_db=args.account_db,
-    )
+    try:
+        if args.command == "status":
+            emit(bridge.get_status())
 
-    result = None
+        elif args.command in ("run", "cron-run"):
+            if getattr(args, "dry_run", False):
+                # dry-run：信号+风控预览，不下单不记NAV
+                all_bars = {}
+                latest = {}
+                for sym in args.symbols:
+                    bars = bridge.data_db.get_bars(sym, limit=30)
+                    if bars:
+                        all_bars[sym] = bars
+                        latest[sym] = bars[-1].close
+                signals = bridge.strategy.generate_signals(all_bars)
+                positions = {p.symbol: p for p in bridge.broker.get_all_positions()}
+                nav = bridge.broker.get_nav(latest)
+                preview = []
+                for sym, sig in signals.items():
+                    ok, reason = bridge.risk.check_signal(
+                        sig, latest.get(sym, 0.0), bridge.broker.get_cash(),
+                        positions, nav.total_value, prices=latest)
+                    preview.append({"symbol": sym, "direction": sig.direction.name,
+                                    "volume": sig.volume, "price": sig.price,
+                                    "pass": ok, "reason": reason})
+                emit({"signals": preview, "nav": nav.__dict__})
+            else:
+                with run_lock(args.lock_file):
+                    emit(bridge.run_daily(args.symbols))
 
-    if args.command == "status":
-        result = bridge.get_status()
+        elif args.command == "buy":
+            with run_lock(args.lock_file):
+                r = bridge.place_order(args.symbol, "buy", args.volume, args.price)
+                emit(r, ok=r.get("ok", False), error=r.get("error"))
+                if not r.get("ok"):
+                    sys.exit(3)
 
-    elif args.command == "run":
-        result = bridge.run_daily(args.symbols)
+        elif args.command == "sell":
+            with run_lock(args.lock_file):
+                r = bridge.place_order(args.symbol, "sell", args.volume, args.price)
+                emit(r, ok=r.get("ok", False), error=r.get("error"))
+                if not r.get("ok"):
+                    sys.exit(3)
 
-    elif args.command == "buy":
-        result = bridge.place_order(args.symbol, "buy", args.volume, args.price)
+        elif args.command == "preview":
+            emit(bridge.preview_order(args.symbol, args.direction, args.volume, args.price))
 
-    elif args.command == "sell":
-        result = bridge.place_order(args.symbol, "sell", args.volume, args.price)
+        elif args.command == "nav":
+            emit(bridge.get_nav_history())
 
-    elif args.command == "nav":
-        result = bridge.get_nav_history()
-
-    elif args.command == "history":
-        if args.type == "orders":
-            result = bridge.get_order_history(args.limit)
-        else:
-            result = bridge.get_fill_history(args.limit)
-
-    elif args.command == "cron-run":
-        result = bridge.run_daily(args.symbols)
-
-    if result is not None:
-        if args.json:
-            print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
-        else:
-            print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        elif args.command == "history":
+            if args.type == "orders":
+                emit(bridge.get_order_history(args.limit))
+            else:
+                emit(bridge.get_fill_history(args.limit))
+    except RuntimeError as e:
+        emit(None, ok=False, error=str(e))
+        sys.exit(4)
+    except Exception as e:
+        emit(None, ok=False, error=f"{type(e).__name__}: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

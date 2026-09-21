@@ -17,34 +17,23 @@
 ## 目录结构
 
 ```
-paper_trading/
-├── __init__.py
-├── main.py                    # 入口：自动化调度与结算
-├── config.yaml                # 配置文件
-├── requirements.txt           # 依赖
-├── models/
-│   ├── __init__.py
-│   └── types.py               # 核心数据类型（Bar, Order, Fill, Position, Signal...）
-├── data/
-│   ├── __init__.py
-│   ├── akshare_fetcher.py     # akshare 数据采集（新浪/东方财富双源 + 重试）
-│   └── db_manager.py          # SQLite 行情数据库管理
-├── strategy/
-│   ├── __init__.py
-│   ├── base_strategy.py       # BaseStrategy 抽象基类
-│   └── ma_cross_strategy.py   # 双均线交叉策略（MA5/MA20）
-├── broker/
-│   ├── __init__.py
-│   └── paper_broker.py        # 本地模拟撮合引擎（T+1/成本/滑点/风控）
-├── portfolio/
-│   ├── __init__.py
-│   └── portfolio.py           # 投资组合管理（NAV 计算与历史）
-├── risk/
-│   ├── __init__.py
-│   └── risk_manager.py        # 风控管理（仓位/回撤/单笔限额）
-└── utils/
+paper-trading/
+├── config.yaml                # 单一真相源（账户/交易/策略/风控/节假日）
+├── requirements.txt
+├── tests/test_core.py         # 离线回归单测
+└── paper_trading/
     ├── __init__.py
-    └── logger.py              # 日志工具
+    ├── main.py                    # 入口：自动化调度与结算
+    ├── hermes_bridge.py           # Agent 适配层（JSON信封+锁+preview）
+    ├── models/types.py            # Bar/Order/Fill/Position/Signal...
+    ├── data/
+    │   ├── akshare_fetcher.py     # 新浪优先+东财fallback+北交所映射
+    │   └── db_manager.py          # SQLite 行情库（limit取最近N根）
+    ├── strategy/ma_cross_strategy.py  # 仅最后一根交叉才发信号（防重复）
+    ├── broker/paper_broker.py     # T+1交易日历/100股/涨跌停/拒单落库/含费成本
+    ├── portfolio/portfolio.py
+    ├── risk/risk_manager.py       # 多标的价格表+回撤熔断
+    └── utils/                     # logger/trading_calendar/config/run_lock
 ```
 
 ## 安装
@@ -195,13 +184,16 @@ NAV: total=999628.43, pnl=-371.57 (-0.04%)
 ### CLI 命令
 
 ```bash
-# 查看账户状态
+# 查看账户状态（统一信封 {"ok","data","error"}，失败非0退出码）
 python -m paper_trading.hermes_bridge status --json
 
-# 执行每日结算
+# 执行每日结算（带文件锁防并发；--dry-run 只预览不下单）
 python -m paper_trading.hermes_bridge run --symbols 600519 000858 --json
 
-# 买入/卖出
+# 下单前试算（不落库）
+python -m paper_trading.hermes_bridge preview --symbol 600519 --direction buy --volume 100 --json
+
+# 买入/卖出（强制走风控，100股整数倍；拒单落库）
 python -m paper_trading.hermes_bridge buy --symbol 600519 --volume 100 --json
 python -m paper_trading.hermes_bridge sell --symbol 600519 --volume 100 --price 1500.00 --json
 
@@ -209,6 +201,9 @@ python -m paper_trading.hermes_bridge sell --symbol 600519 --volume 100 --price 
 python -m paper_trading.hermes_bridge nav --json
 python -m paper_trading.hermes_bridge history --type orders --json
 python -m paper_trading.hermes_bridge history --type fills --json
+
+# 回归测试
+python -m pytest tests/test_core.py -q
 ```
 
 ### Cron 定时任务

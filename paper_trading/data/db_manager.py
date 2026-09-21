@@ -85,7 +85,7 @@ class DataDBManager:
         end: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Bar]:
-        """查询指定股票的K线数据。"""
+        """查询指定股票的K线数据（limit 取最近 N 根，按时间升序返回）。"""
         sql = "SELECT * FROM daily_bars WHERE symbol = ?"
         params: list = [symbol]
         if start:
@@ -94,13 +94,15 @@ class DataDBManager:
         if end:
             sql += " AND timestamp <= ?"
             params.append(end)
-        sql += " ORDER BY timestamp ASC"
         if limit:
-            sql += " LIMIT ?"
+            # 先取最近 N 根（DESC），再按时间升序返回，避免 ASC+LIMIT 取到最老数据
+            sql += " ORDER BY timestamp DESC LIMIT ?"
             params.append(limit)
+        else:
+            sql += " ORDER BY timestamp ASC"
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [
+        bars = [
             Bar(
                 symbol=r["symbol"],
                 timestamp=datetime.fromisoformat(r["timestamp"]),
@@ -113,6 +115,9 @@ class DataDBManager:
             )
             for r in rows
         ]
+        if limit:
+            bars.reverse()
+        return bars
 
     def get_latest_timestamp(self, symbol: str) -> Optional[str]:
         """获取某股票最新的数据时间戳。"""
