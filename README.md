@@ -1,0 +1,200 @@
+# Paper Trading Framework
+
+本地事件驱动型模拟交易框架（Paper Trading Framework），针对 A 股市场，纯本地运行，不依赖任何第三方券商在线 API。
+
+## 特性
+
+- **策略与撮合解耦**：`BaseStrategy` 抽象基类返回标准交易信号，`PaperBroker` 独立处理订单撮合
+- **T+1 持仓冻结**：显式区分 `total_volume`（总持仓）与 `available_volume`（可用持仓），当天买入当天不可卖出
+- **真实成本扣除**：
+  - 买入：佣金 0.025%（最低 5 元）+ 过户费 0.001%
+  - 卖出：佣金 0.025%（最低 5 元）+ 印花税 0.05%（卖出单边）+ 过户费 0.001%
+- **可配置滑点**：支持固定滑点（0.01 元）或百分比滑点（0.1%）
+- **本地 SQLite 持久化**：行情数据（`data.db`）与账户账本（`paper_account.db`）分离
+- **双数据源**：优先新浪财经（稳定），自动重试机制
+- **风控管理**：单笔限额、仓位上限、最大回撤止损
+
+## 目录结构
+
+```
+paper_trading/
+├── __init__.py
+├── main.py                    # 入口：自动化调度与结算
+├── config.yaml                # 配置文件
+├── requirements.txt           # 依赖
+├── models/
+│   ├── __init__.py
+│   └── types.py               # 核心数据类型（Bar, Order, Fill, Position, Signal...）
+├── data/
+│   ├── __init__.py
+│   ├── akshare_fetcher.py     # akshare 数据采集（新浪/东方财富双源 + 重试）
+│   └── db_manager.py          # SQLite 行情数据库管理
+├── strategy/
+│   ├── __init__.py
+│   ├── base_strategy.py       # BaseStrategy 抽象基类
+│   └── ma_cross_strategy.py   # 双均线交叉策略（MA5/MA20）
+├── broker/
+│   ├── __init__.py
+│   └── paper_broker.py        # 本地模拟撮合引擎（T+1/成本/滑点/风控）
+├── portfolio/
+│   ├── __init__.py
+│   └── portfolio.py           # 投资组合管理（NAV 计算与历史）
+├── risk/
+│   ├── __init__.py
+│   └── risk_manager.py        # 风控管理（仓位/回撤/单笔限额）
+└── utils/
+    ├── __init__.py
+    └── logger.py              # 日志工具
+```
+
+## 安装
+
+```bash
+git clone https://github.com/oldfunk/paper-trading.git
+cd paper-trading
+pip install -r requirements.txt
+```
+
+## 使用
+
+### 快速开始
+
+```bash
+# 全量更新行情 + 运行
+python -m paper_trading.main --symbols 600519 000858 601318 --full
+
+# 增量更新 + 运行
+python -m paper_trading.main --symbols 600519 000858 601318
+```
+
+### 配置
+
+编辑 `config.yaml`：
+
+```yaml
+stock_pool:
+  - 600519   # 贵州茅台
+  - 000858   # 五粮液
+  - 601318   # 中国平安
+
+account:
+  initial_cash: 1000000.0
+
+trading:
+  commission_rate: 0.00025    # 佣金率 0.025%
+  commission_min: 5.0         # 单笔最低佣金
+  stamp_duty_rate: 0.0005     # 印花税 0.05%
+  transfer_fee_rate: 0.00001  # 过户费 0.001%
+  slippage_fixed: 0.01        # 固定滑点（元）
+  slippage_pct: 0.001         # 百分比滑点
+
+strategy:
+  short_window: 5
+  long_window: 20
+  buy_volume: 100
+  sell_volume: 100
+
+risk:
+  max_single_order_value: 200000.0
+  max_position_pct: 0.3
+  max_total_position_pct: 0.95
+  max_drawdown_pct: 0.20
+```
+
+## 核心模块
+
+### 数据采集（Data Module）
+
+```python
+from paper_trading.data.akshare_fetcher import AkshareFetcher
+from paper_trading.data.db_manager import DataDBManager
+
+# 获取数据
+bars = AkshareFetcher.fetch_daily('600519', start_date='20240101', end_date='20241231')
+
+# 持久化
+db = DataDBManager('data.db')
+db.upsert_bars(bars)
+```
+
+### 策略（Strategy）
+
+```python
+from paper_trading.strategy.ma_cross_strategy import MACrossStrategy
+
+strategy = MACrossStrategy(short_window=5, long_window=20)
+signals = strategy.generate_signals({'600519': bars})
+# 返回: {symbol: Signal(direction=SignalType.BUY, volume=100, price=1391.08, ...)}
+```
+
+### 撮合（Broker）
+
+```python
+from paper_trading.broker.paper_broker import PaperBroker
+from paper_trading.models import Order, OrderType
+
+broker = PaperBroker('paper_account.db')
+order = Order(symbol='600519', direction=1, volume=100, 
+              order_type=OrderType.LIMIT, limit_price=1391.08)
+result = broker.submit_order(order)
+```
+
+### 风控（Risk）
+
+```python
+from paper_trading.risk.risk_manager import RiskManager
+
+risk = RiskManager(max_position_pct=0.3, max_drawdown_pct=0.20)
+ok, reason = risk.check_signal(signal, price, cash, positions, total_value)
+```
+
+## 数据库 Schema
+
+### data.db（行情数据）
+
+- `daily_bars(symbol, timestamp, open, high, low, close, volume, turn)`
+- `stock_pool(symbol, name, added_at)`
+
+### paper_account.db（账户账本）
+
+- `account(id, cash, initial_cash, created_at)`
+- `positions(symbol, total_volume, available_volume, avg_cost, last_update)`
+- `orders(order_id, symbol, direction, volume, order_type, limit_price, status, ...)`
+- `fills(fill_id, order_id, symbol, direction, volume, price, commission, stamp_duty, transfer_fee, timestamp)`
+- `nav_history(id, timestamp, cash, market_value, total_value, pnl, pnl_pct)`
+- `t1_freeze(id, symbol, volume, freeze_date, unfreeze_date, is_unfrozen)`
+
+## 运行示例
+
+```
+=== Run-Daily started at 2026-09-21T14:45:44 ===
+Fetching 600519 from 20230922 to 20260921 (adjust=qfq)
+Fetched 724 bars for 600519
+Signal: BUY 600519 @ 1598.65 (Golden cross: MA5 crossed above MA20)
+Order filled: BUY 100 600519 @ 1598.660
+NAV: total=999628.43, pnl=-371.57 (-0.04%)
+
+============================================================
+  账户摘要 (2026-09-21 14:45:44)
+============================================================
+  可用资金:      840,092.43
+  持仓市值:      159,536.00
+  总资产:        999,628.43
+  浮动盈亏:         -371.57 (-0.04%)
+------------------------------------------------------------
+  持仓明细:
+    600519: 100股 (可用0) @ 成本1598.66 / 现价1595.36 / 市值159,536
+============================================================
+=== Run-Daily completed ===
+```
+
+## 技术栈
+
+- Python 3.10+
+- akshare（数据采集）
+- pandas / numpy（数据处理）
+- SQLite（本地持久化）
+
+## License
+
+MIT
