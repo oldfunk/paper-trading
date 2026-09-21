@@ -188,6 +188,44 @@ NAV: total=999628.43, pnl=-371.57 (-0.04%)
 === Run-Daily completed ===
 ```
 
+## Hermes Agent 集成
+
+本项目提供 `hermes_bridge.py` 适配层，让 Hermes Agent 可以通过 CLI、cron 或 agent 调用交易框架。
+
+### CLI 命令
+
+```bash
+# 查看账户状态
+python -m paper_trading.hermes_bridge status --json
+
+# 执行每日结算
+python -m paper_trading.hermes_bridge run --symbols 600519 000858 --json
+
+# 买入/卖出
+python -m paper_trading.hermes_bridge buy --symbol 600519 --volume 100 --json
+python -m paper_trading.hermes_bridge sell --symbol 600519 --volume 100 --price 1500.00 --json
+
+# 查看历史
+python -m paper_trading.hermes_bridge nav --json
+python -m paper_trading.hermes_bridge history --type orders --json
+python -m paper_trading.hermes_bridge history --type fills --json
+```
+
+### Cron 定时任务
+
+```bash
+# 工作日每天 16:00 执行结算
+hermes cron add \
+  --name "paper-trading-daily" \
+  --schedule "0 16 * * 1-5" \
+  --command "cd /path/to/paper-trading && python -m paper_trading.hermes_bridge cron-run --symbols 600519 000858 --json" \
+  --no-agent
+```
+
+### Agent 调用
+
+Hermes agent 可以通过 `terminal` 工具执行上述 CLI 命令，解析 JSON 输出进行分析和决策。
+
 ## 技术栈
 
 - Python 3.13.5
