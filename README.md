@@ -204,7 +204,21 @@ python -m paper_trading.hermes_bridge history --type fills --json
 
 # 回归测试
 python -m pytest tests/test_core.py -q
+
+# 打开仪表盘（只读网页，浏览器访问 http://<ip>:8080）
+python -m paper_trading.dashboard --port 8080
 ```
+
+### 仪表盘
+
+非技术用户直观查看入口 —— 浏览器/手机打开 `http://<pi-ip>:8080`：
+
+- **账户卡片**：总资产 / 浮动盈亏（红涨绿跌）/ 可用资金 / 持仓市值
+- **净值走势**：NAV 历史表
+- **AI 操作流水**：每次 `run/buy/sell` 的时间、动作、参数、结果（成交价/拒单原因）、操作后资产
+- **持仓与订单**：现价盈亏、成交/拒绝状态徽章
+
+流水写入 `paper_account.db` 的 `op_log` 表（`broker.log_operation`），仪表盘纯只读，可与交易进程并存。
 
 ### Cron 定时任务
 

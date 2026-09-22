@@ -130,6 +130,18 @@ class PaperBroker:
                     is_unfrozen INTEGER DEFAULT 0
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS op_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    params TEXT,
+                    ok INTEGER NOT NULL,
+                    result TEXT,
+                    cash_after REAL,
+                    total_value_after REAL
+                )
+            """)
 
     def _ensure_account(self) -> None:
         with self._connect() as conn:
@@ -458,6 +470,38 @@ class PaperBroker:
                 (snapshot.timestamp.isoformat(), snapshot.cash, snapshot.market_value,
                  snapshot.total_value, snapshot.available_cash, snapshot.pnl, snapshot.pnl_pct),
             )
+
+    def log_operation(
+        self,
+        action: str,
+        params: Optional[dict] = None,
+        ok: bool = True,
+        result: Optional[dict] = None,
+        cash_after: Optional[float] = None,
+        total_value_after: Optional[float] = None,
+    ) -> None:
+        """记录一次 AI/CLI 操作流水（供仪表盘展示）。"""
+        import json as _json
+
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO op_log (timestamp, action, params, ok, result,
+                                       cash_after, total_value_after)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (datetime.now().isoformat(), action,
+                 _json.dumps(params, ensure_ascii=False, default=str) if params else None,
+                 1 if ok else 0,
+                 _json.dumps(result, ensure_ascii=False, default=str) if result else None,
+                 cash_after, total_value_after),
+            )
+
+    def get_op_log(self, limit: int = 50) -> list[dict]:
+        """读取操作流水（倒序）。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM op_log ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_order_history(self, limit: int = 100) -> list[dict]:
         with self._connect() as conn:

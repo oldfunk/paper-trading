@@ -460,14 +460,32 @@ def main() -> None:
                     preview.append({"symbol": sym, "direction": sig.direction.name,
                                     "volume": sig.volume, "price": sig.price,
                                     "pass": ok, "reason": reason})
+                bridge.broker.log_operation(
+                    "run:dry-run", {"symbols": args.symbols}, True,
+                    {"signals": len(preview)}, nav.cash, nav.total_value)
                 emit({"signals": preview, "nav": nav.__dict__})
             else:
                 with run_lock(args.lock_file):
-                    emit(bridge.run_daily(args.symbols))
+                    res = bridge.run_daily(args.symbols)
+                nav = res.get("nav") or {}
+                bridge.broker.log_operation(
+                    "run", {"symbols": args.symbols}, True,
+                    {"signals": res.get("signals_generated"),
+                     "orders": res.get("orders_executed")},
+                    nav.get("cash"), nav.get("total_value"))
+                emit(res)
 
         elif args.command == "buy":
             with run_lock(args.lock_file):
                 r = bridge.place_order(args.symbol, "buy", args.volume, args.price)
+                st = bridge.get_status()
+                bridge.broker.log_operation(
+                    "buy", {"symbol": args.symbol, "volume": args.volume,
+                            "price": args.price},
+                    r.get("ok", False),
+                    {"status": r.get("status"), "error": r.get("error"),
+                     "filled_price": r.get("price"), "commission": r.get("commission")},
+                    st["cash"], st["total_value"])
                 emit(r, ok=r.get("ok", False), error=r.get("error"))
                 if not r.get("ok"):
                     sys.exit(3)
@@ -475,6 +493,14 @@ def main() -> None:
         elif args.command == "sell":
             with run_lock(args.lock_file):
                 r = bridge.place_order(args.symbol, "sell", args.volume, args.price)
+                st = bridge.get_status()
+                bridge.broker.log_operation(
+                    "sell", {"symbol": args.symbol, "volume": args.volume,
+                             "price": args.price},
+                    r.get("ok", False),
+                    {"status": r.get("status"), "error": r.get("error"),
+                     "filled_price": r.get("price"), "commission": r.get("commission")},
+                    st["cash"], st["total_value"])
                 emit(r, ok=r.get("ok", False), error=r.get("error"))
                 if not r.get("ok"):
                     sys.exit(3)
