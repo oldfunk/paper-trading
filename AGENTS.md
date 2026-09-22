@@ -87,3 +87,9 @@ After any trading operation, verify:
 - [ ] Stamp duty is only on sells
 - [ ] NAV history is recorded
 - [ ] All state changes are persisted to SQLite
+
+## Pi Deployment Sync
+
+`~/paper-trading` on Pi is a git clone tracking `origin/main` (read-only deploy key).
+Update ONLY via `git pull` — never scp/rsync files (that breaks LF endings and bypasses history).
+`data.db` / `paper_account.db` / `venv/` are gitignored and survive pulls untouched.
