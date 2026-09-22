@@ -44,14 +44,16 @@ def test_signal_only_on_last_cross():
 
 
 def test_t1_calendar():
-    assert not is_trading_day(datetime(2026, 9, 19))  # 周六
+    assert not is_trading_day(datetime(2026, 9, 19))  # 周六（固定日期断言，与今天无关）
     assert next_trading_day(datetime(2026, 9, 18)).isoformat() == "2026-09-21"  # 周五→周一
     f = tempfile.mktemp(suffix=".db")
     b = PaperBroker(f, TradingConfig(initial_cash=100000))
     b.submit_order(Order(symbol="600519", direction=1, volume=100,
                          order_type=OrderType.LIMIT, limit_price=10.0))
     assert b.get_position("600519").available_volume == 0
-    n = b.unfreeze_t1(date=datetime(2026, 9, 22))
+    # 日期无关：解冻日 = 下单日的下一交易日（ broker 内部用 datetime.now() 落 freeze_date）
+    expect = next_trading_day(datetime.now())
+    n = b.unfreeze_t1(date=expect)
     assert n == 1 and b.get_position("600519").available_volume == 100
     Path(f).unlink(missing_ok=True)
 
