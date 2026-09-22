@@ -5,12 +5,16 @@ from datetime import date, datetime, timedelta
 from typing import Iterable, Optional, Set
 
 
-def _as_date(d: date | datetime | str) -> date:
+def as_date(d: date | datetime | str) -> date:
+    """归一化为 date（接受 date/datetime/ISO 字符串）。"""
     if isinstance(d, datetime):
         return d.date()
     if isinstance(d, str):
         return datetime.fromisoformat(d[:10]).date()
     return d
+
+
+_as_date = as_date  # 内部别名，保持兼容
 
 
 def is_trading_day(d: date | datetime | str, holidays: Optional[Set[str]] = None) -> bool:

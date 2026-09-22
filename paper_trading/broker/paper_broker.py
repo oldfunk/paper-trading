@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -17,7 +17,7 @@ from paper_trading.models import (
     TradingConfig,
 )
 from paper_trading.utils import get_logger
-from paper_trading.utils.trading_calendar import is_trading_day, load_holidays, next_trading_day
+from paper_trading.utils.trading_calendar import as_date, is_trading_day, load_holidays, next_trading_day
 
 logger = get_logger(__name__)
 
@@ -396,14 +396,17 @@ class PaperBroker:
                  order.transfer_fee, order.filled_at.isoformat() if order.filled_at else None),
             )
 
-    def unfreeze_t1(self, date: Optional[datetime] = None) -> int:
+    def unfreeze_t1(self, date: Optional[datetime | date] | str = None) -> int:
         """
         解冻 T+1 持仓。将指定日期之前冻结的持仓标记为可用。
+
+        Args:
+            date: 结算日期，接受 datetime/date/ISO 字符串，缺省为今天。
 
         Returns:
             解冻的笔数
         """
-        target_date = (date or datetime.now()).date().isoformat()
+        target_date = as_date(date or datetime.now()).isoformat()
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT * FROM t1_freeze WHERE unfreeze_date <= ? AND is_unfrozen = 0""",
