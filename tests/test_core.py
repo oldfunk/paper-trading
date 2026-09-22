@@ -94,3 +94,17 @@ def test_risk_multi_price_and_drawdown():
     rm.update_peak(100.0)
     halted, dd = rm.check_drawdown(79.0)
     assert halted and dd > 0.2
+
+
+def test_stock_name_cache_roundtrip():
+    f = tempfile.mktemp(suffix=".db")
+    db = DataDBManager(f)
+    db.add_stock_to_pool("600519")
+    db.upsert_stock_names({"600519": "贵州茅台", "000858": "五粮液"})
+    names = db.get_stock_names()
+    assert names == {"600519": "贵州茅台", "000858": "五粮液"}
+    # 空名称的 upsert 不应清掉已有名称
+    db.upsert_stock_names({"600519": ""})
+    assert db.get_stock_names()["600519"] == "贵州茅台"
+    assert db.get_pool_symbols() == sorted(db.get_pool_symbols())
+    Path(f).unlink(missing_ok=True)

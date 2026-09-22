@@ -121,6 +121,17 @@ class HermesBridge:
             except Exception as e:
                 logger.error(f"Failed to update data for {sym}: {e}")
 
+        # 1.5 刷新真实股票名称（全池 + 持仓，一次批量调用，失败保缓存）
+        if Fetcher is not None:
+            try:
+                names_sym = set(symbols) | set(self.data_db.get_pool_symbols()) | \
+                    {p.symbol for p in self.broker.get_all_positions()}
+                fresh = Fetcher.fetch_stock_names(sorted(names_sym))
+                if fresh:
+                    self.data_db.upsert_stock_names(fresh)
+            except Exception as e:
+                logger.warning(f"Stock name refresh skipped: {e}")
+
         # 2. 获取最新K线并生成信号
         all_bars: dict[str, list] = {}
         latest_prices: dict[str, float] = {}
@@ -251,6 +262,15 @@ class HermesBridge:
             if not bars:
                 return {"ok": False, "error": f"No data for {symbol}"}
             price = bars[-1].close
+
+        # 名称缓存缺失时尝试补齐（真实名称，失败不阻断下单）
+        if symbol not in self.data_db.get_stock_names():
+            try:
+                fresh = _get_fetcher().fetch_stock_names([symbol])
+                if fresh:
+                    self.data_db.upsert_stock_names(fresh)
+            except Exception:
+                pass
 
         from paper_trading.models import Signal, SignalType
         dir_value = 1 if direction == "buy" else -1
@@ -393,6 +413,12 @@ def main() -> None:
     sell_parser.add_argument("--price", type=float, default=None, help="限价")
     sell_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
 
+    # names
+    names_parser = subparsers.add_parser("names", help="刷新并显示真实股票名称")
+    names_parser.add_argument("--symbols", nargs="*", default=None,
+                              help="缺省=股票池+持仓")
+    names_parser.add_argument("--json", action="store_true")
+
     # preview
     preview_parser = subparsers.add_parser("preview", help="下单前风控+费用试算（不落库）")
     preview_parser.add_argument("--symbol", required=True)
@@ -504,6 +530,23 @@ def main() -> None:
                 emit(r, ok=r.get("ok", False), error=r.get("error"))
                 if not r.get("ok"):
                     sys.exit(3)
+
+        elif args.command == "names":
+            targets = set(args.symbols or []) or (
+                set(bridge.data_db.get_pool_symbols())
+                | {p.symbol for p in bridge.broker.get_all_positions()}
+            )
+            fresh = {}
+            if targets:
+                try:
+                    fresh = _get_fetcher().fetch_stock_names(sorted(targets))
+                except Exception as e:
+                    logger.warning(f"Name fetch failed (offline?): {e}")
+                if fresh:
+                    bridge.data_db.upsert_stock_names(fresh)
+            cached = bridge.data_db.get_stock_names()
+            merged = {s: cached.get(s) or fresh.get(s) or "" for s in sorted(targets)}
+            emit({"names": merged, "source": "live" if fresh else "cache"})
 
         elif args.command == "preview":
             emit(bridge.preview_order(args.symbol, args.direction, args.volume, args.price))

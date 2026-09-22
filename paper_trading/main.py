@@ -51,7 +51,7 @@ class PaperTradingEngine:
         self.config = config or TradingConfig()
 
     def update_data(self, symbols: list[str], full: bool = False) -> None:
-        """更新行情数据。"""
+        """更新行情数据 + 刷新真实股票名称。"""
         Fetcher = _get_fetcher()
         for sym in symbols:
             latest = None if full else self.data_db.get_latest_timestamp(sym)
@@ -60,6 +60,14 @@ class PaperTradingEngine:
             if bars:
                 self.data_db.upsert_bars(bars)
                 self.data_db.add_stock_to_pool(sym)
+        try:
+            targets = sorted(set(symbols) | set(self.data_db.get_pool_symbols())
+                             | {p.symbol for p in self.broker.get_all_positions()})
+            fresh = Fetcher.fetch_stock_names(targets)
+            if fresh:
+                self.data_db.upsert_stock_names(fresh)
+        except Exception as e:
+            logger.warning(f"Stock name refresh skipped: {e}")
 
     def run_daily(self, symbols: list[str]) -> None:
         """

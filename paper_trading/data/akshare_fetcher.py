@@ -111,6 +111,37 @@ class AkshareFetcher:
                     raise
 
     @staticmethod
+    def fetch_stock_names(symbols: list[str]) -> dict[str, str]:
+        """
+        获取真实股票名称 {symbol: 名称}。
+        先走全市场代码-名称表（一次调用），失败再逐只兑底。
+        """
+        out: dict[str, str] = {}
+        want = set(symbols)
+        try:
+            df = ak.stock_info_a_code_name()
+            code_col = "code" if "code" in df.columns else df.columns[0]
+            name_col = "name" if "name" in df.columns else df.columns[1]
+            for _, row in df.iterrows():
+                code = str(row[code_col]).strip()
+                if code in want:
+                    out[code] = str(row[name_col]).strip()
+        except Exception as e:
+            logger.warning(f"stock_info_a_code_name failed: {e}")
+        for sym in symbols:
+            if sym in out:
+                continue
+            try:
+                info = ak.stock_individual_info_em(symbol=sym)
+                d = dict(zip(info["item"], info["value"]))
+                nm = d.get("股票简称")
+                if nm:
+                    out[sym] = str(nm).strip()
+            except Exception as e:
+                logger.warning(f"Name lookup failed for {sym}: {e}")
+        return out
+
+    @staticmethod
     def fetch_stock_pool(
         symbols: list[str],
         start_date: Optional[str] = None,

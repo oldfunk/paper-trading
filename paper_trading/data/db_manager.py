@@ -131,11 +131,38 @@ class DataDBManager:
     def add_stock_to_pool(self, symbol: str, name: str = "") -> None:
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO stock_pool (symbol, name) VALUES (?, ?)",
+                """INSERT INTO stock_pool (symbol, name) VALUES (?, ?)
+                   ON CONFLICT(symbol) DO UPDATE SET
+                     name = CASE WHEN excluded.name != '' THEN excluded.name
+                                 ELSE stock_pool.name END""",
                 (symbol, name),
             )
+
+    def upsert_stock_names(self, names: dict[str, str]) -> int:
+        """批量写入/刷新股票名称（真实名称，来自行情源）。"""
+        n = 0
+        for sym, nm in names.items():
+            if nm:
+                self.add_stock_to_pool(sym, nm)
+                n += 1
+        if n:
+            logger.info(f"Updated {n} stock names")
+        return n
+
+    def get_stock_names(self) -> dict[str, str]:
+        """读取已缓存的 {symbol: 名称}。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT symbol, name FROM stock_pool WHERE name IS NOT NULL AND name != ''"
+            ).fetchall()
+        return {r["symbol"]: r["name"] for r in rows}
 
     def get_stock_pool(self) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM stock_pool").fetchall()
         return [dict(r) for r in rows]
+
+    def get_pool_symbols(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT symbol FROM stock_pool").fetchall()
+        return [r["symbol"] for r in rows]
