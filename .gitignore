@@ -54,3 +54,6 @@ htmlcov/
 
 # Config overrides
 config.local.yaml
+
+# Run lock (concurrency guard, runtime artifact)
+*.lock
