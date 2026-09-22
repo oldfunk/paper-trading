@@ -108,3 +108,20 @@ def test_stock_name_cache_roundtrip():
     assert db.get_stock_names()["600519"] == "贵州茅台"
     assert db.get_pool_symbols() == sorted(db.get_pool_symbols())
     Path(f).unlink(missing_ok=True)
+
+
+def test_op_log_roundtrip():
+    import json
+
+    f = tempfile.mktemp(suffix=".db")
+    b = PaperBroker(f, TradingConfig(initial_cash=100000))
+    b.log_operation("buy", {"symbol": "600519"}, True,
+                    {"status": "filled", "filled_price": 10.0}, 90000.0, 100000.0)
+    b.log_operation("sell", {"symbol": "600519"}, False,
+                    {"error": "Insufficient available volume"}, 90000.0, 100000.0)
+    rows = b.get_op_log(10)
+    assert len(rows) == 2
+    assert rows[0]["action"] == "sell" and rows[0]["ok"] == 0  # 倒序
+    assert json.loads(rows[1]["result"])["status"] == "filled"
+    assert rows[1]["cash_after"] == 90000.0
+    Path(f).unlink(missing_ok=True)

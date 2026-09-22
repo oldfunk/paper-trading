@@ -22,7 +22,7 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Paper Trading 仪表盘</title>
+<title>模拟交易仪表盘</title>
 <style>
 :root{--up:#e53935;--down:#1e8e3e;--bg:#0e1621;--panel:#17212b;--fg:#e7ecf1;--mut:#8a9bab;--line:#263340}
 *{box-sizing:border-box}
@@ -52,12 +52,12 @@ tr:last-child td{border-bottom:none}
 </style>
 </head>
 <body>
-<header><h1>📈 Paper Trading 仪表盘</h1><span id="clock">加载中…</span></header>
+<header><h1>模拟交易仪表盘</h1><span id="clock">加载中…</span></header>
 
 <div class="cards" id="cards"></div>
 
 <section>
-  <h2>净值走势 (NAV)</h2>
+  <h2>资产走势</h2>
   <div class="scroll"><table id="nav"></table></div>
 </section>
 
@@ -84,34 +84,47 @@ const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&g
 async function get(u){const r=await fetch(u);return r.json()}
 function rows(t,head,body){t.innerHTML="<thead><tr>"+head.map(h=>`<th${h[1]?' class="num"':''}>${h[0]}</th>`).join("")+"</tr></thead><tbody>"+body+"</tbody>"}
 
-/* ---- 中文映射（名称表来自 /api/names，均为行情源真实名称） ---- */
+/* ---- 中文映射（名称表来自 /api/names，均为行情源真实名称） ----
+   展示规范：股票一律写成 名称(代码)，如 贵州茅台(600519)；
+   名称缺失时只写代码，不写“未知”等占位词。 */
 let NAMES={};                                   // {symbol: 真实名称}
-const sym=c=>NAMES[c]?`${NAMES[c]} ${c}`:c;     // "贵州茅台 600519"
+const sym=c=>NAMES[c]?`${NAMES[c]}(${c})`:c;
 const ACTION_CN={
-  "run":"每日结算","cron-run":"每日结算(cron)","run:dry-run":"试运行",
-  "buy":"买入","sell":"卖出","preview":"试算","status":"查询","nav":"查询净值","history":"查询历史","names":"刷新名称"};
-const ACTION_ICON={"run":"🚀","cron-run":"⏰","run:dry-run":"🧪","buy":"🔴 买入","sell":"🟢 卖出","preview":"🔍","status":"🔎","nav":"📈","history":"🗄","names":"🏷"};
+  "run":"每日结算","cron-run":"每日结算（定时任务）","run:dry-run":"试运行（仅预览，不下单）",
+  "buy":"买入","sell":"卖出","preview":"下单试算","status":"查询账户",
+  "nav":"查询净值","history":"查询记录","names":"刷新股票名称"};
 function errCN(e){
   if(!e)return"";
-  const M=[[/multiple of 100/i,"数量必须为100股整数倍"],[/Insufficient cash|need \d+, have/i,"资金不足"],
-    [/Insufficient available/i,"可用持仓不足(T+1未解冻)"],[/Risk rejected/i,"风控拒绝"],
-    [/exceeds max/i,"超单笔上限"],[/Position limit exceeded/i,"超单票仓位上限"],
-    [/Total position limit/i,"超总仓位上限"],[/Drawdown halt/i,"回撤熔断"],
-    [/over limit-up|above bar high/i,"超过当日可买价"],[/below limit-down|below bar low/i,"低于当日可卖价"],
-    [/No data for/i,"无行情数据"],[/no limit price/i,"未指定价格"]];
+  const M=[[/multiple of 100/i,"数量必须为 100 股的整数倍"],
+    [/Insufficient cash/i,"可用资金不足"],
+    [/Insufficient available/i,"可卖股数不足（当天买入的要下一个交易日才能卖）"],
+    [/Risk rejected/i,"风控拒绝"],
+    [/exceeds max/i,"超过单笔下单金额上限"],
+    [/Position limit exceeded/i,"单只股票持仓超限"],
+    [/Total position limit exceeded/i,"账户总持仓超限"],
+    [/Drawdown halt/i,"触发回撤熔断，已暂停交易"],
+    [/over limit-up/i,"买入价超过涨停价"],
+    [/below limit-down/i,"卖出价低于跌停价"],
+    [/below bar low/i,"买入价低于当日成交区间"],
+    [/above bar high/i,"卖出价高于当日成交区间"],
+    [/No data for/i,"没有该股票的行情数据"],
+    [/no limit price/i,"未指定买卖价格"],
+    [/Invalid direction/i,"买卖方向参数错误"]];
   for(const[r,c]of M){if(r.test(e))return c}
   return e;
 }
 function paramCN(a,j){let p={};try{p=JSON.parse(j||"{}")}catch(e){}
-  if(a.startsWith("run"))return`标的: ${(p.symbols||[]).map(sym).join("、")}`;
-  if(a==="buy"||a==="sell")return `${sym(p.symbol)} ×${p.volume}股${p.price?" @限价"+fmt(p.price):""}`;
-  if(a==="preview")return `${sym(p.symbol)} ${p.direction==="buy"?"买入":"卖出"} ×${p.volume}`;
-  return Object.entries(p).map(([k,v])=>`${k}=${Array.isArray(v)?v.map(sym).join(","):sym(v)}`).join(" ");}
+  if(a==="run"||a==="cron-run"||a==="run:dry-run")return`股票：${(p.symbols||[]).map(sym).join("、")}`;
+  if(a==="buy"||a==="sell"){const px=(p.price!=null&&p.price!=="")?`，限价 ${fmt(p.price)} 元`:"";return `${sym(p.symbol)} ${p.volume}股${px}`;}
+  if(a==="preview")return `${sym(p.symbol)} ${(p.direction==="buy"?"买入":"卖出")} ${p.volume}股`;
+  return Object.entries(p).map(([k,v])=>`${k}=${Array.isArray(v)?v.map(sym).join("、"):v}`).join(" ");}
 function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(!ok)return errCN(r.error||"被拒");
-  if(a==="buy"||a==="sell")return`成交 @${fmt(r.filled_price)}，佣金${fmt(r.commission)}`;
-  if(a.startsWith("run"))return`信号${r.signals??0}个 · 下单${r.orders??0}笔`;
-  if(a==="preview")return r.ok?"通过":"未通过";
+  if(a==="buy"||a==="sell"){const fee=(Number(r.commission)||0)+(Number(r.stamp_duty)||0)+(Number(r.transfer_fee)||0);
+    return `成交价 ${fmt(r.filled_price)} 元，手续费 ${fmt(fee)} 元`;}
+  if(a==="run:dry-run")return`产生信号 ${r.signals??0} 个（仅预览，未下单）`;
+  if(a==="run"||a==="cron-run")return`产生信号 ${r.signals??0} 个，下单 ${r.orders??0} 笔`;
+  if(a==="preview")return "风控检查通过";
   return "完成";}
 async function refresh(){
  try{
@@ -120,27 +133,27 @@ async function refresh(){
   document.getElementById("clock").textContent="更新于 "+new Date().toLocaleTimeString("zh-CN");
   const st=s.data;
   document.getElementById("cards").innerHTML=`
-   <div class="card"><div class="k">总资产</div><div class="v">${fmt(st.total_value)}</div><div class="s">现金 + 持仓市值</div></div>
+   <div class="card"><div class="k">总资产</div><div class="v">${fmt(st.total_value)}</div><div class="s">可用资金 + 持股市值</div></div>
    <div class="card"><div class="k">浮动盈亏</div><div class="v ${cls(st.pnl)}">${st.pnl>=0?"+":""}${fmt(st.pnl)}</div><div class="s ${cls(st.pnl)}">${pct(st.pnl_pct)}</div></div>
    <div class="card"><div class="k">可用资金</div><div class="v">${fmt(st.cash)}</div></div>
-   <div class="card"><div class="k">持仓市值</div><div class="v">${fmt(st.market_value)}</div><div class="s">${st.positions.length} 只标的</div></div>`;
-  rows(document.getElementById("nav"),[["时间"],["总资产",1],["现金",1],["盈亏",1]],
+   <div class="card"><div class="k">持仓市值</div><div class="v">${fmt(st.market_value)}</div><div class="s">${st.positions.length} 只股票</div></div>`;
+  rows(document.getElementById("nav"),[["时间"],["总资产",1],["可用资金",1],["浮动盈亏",1]],
     (nav.data||[]).reverse().map(r=>{const d=new Date(r.timestamp);const pn=Number(r.pnl);
     return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td class="num">${fmt(r.total_value)}</td><td class="num">${fmt(r.cash)}</td><td class="num ${cls(pn)}">${pn>=0?"+":""}${fmt(pn)}</td></tr>`}).join(""));
-  rows(document.getElementById("ops"),[["时间"],["动作"],["参数"],["结果"],["资产后",1]],
+  rows(document.getElementById("ops"),[["时间"],["操作"],["详情"],["结果"],["操作后资产",1]],
     (ops.data||[]).map(r=>{const ok=!!r.ok;const d=new Date(r.timestamp);
-    const label=ACTION_ICON[r.action]||ACTION_CN[r.action]||r.action;
+    const label=ACTION_CN[r.action]||r.action;
     return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><b>${esc(label)}</b></td>`+
       `<td class="mut">${esc(paramCN(r.action,r.params))}</td>`+
       `<td class="${ok?"ok":"bad"}">${esc(resultCN(r.action,ok,r.result))}</td>`+
-      `<td class="num">${r.total_value_after!=null?fmt(r.total_value_after):"-"}</td></tr>`}).join("")||`<tr><td colspan="5" class="mut">暂无操作记录 —— AI 执行结算/买入/卖出后会出现在这里</td></tr>`);
-  rows(document.getElementById("pos"),[["标的"],["总仓",1],["可用",1],["成本",1],["现价",1],["市值",1],["盈亏",1]],
+      `<td class="num">${r.total_value_after!=null?fmt(r.total_value_after):"-"}</td></tr>`}).join("")||`<tr><td colspan="5" class="mut">暂无操作记录 —— AI 执行每日结算、买入、卖出后会出现在这里</td></tr>`);
+  rows(document.getElementById("pos"),[["股票"],["总股数",1],["可卖股数",1],["买入成本",1],["当前价",1],["持股市值",1],["浮动盈亏",1]],
     (st.positions||[]).map(p=>{const pn=(p.current_price-p.avg_cost)*p.total_volume;
     return `<tr><td><b>${esc(sym(p.symbol))}</b></td><td class="num">${p.total_volume}</td><td class="num">${p.available_volume}</td><td class="num">${fmt(p.avg_cost)}</td><td class="num">${fmt(p.current_price)}</td><td class="num">${fmt(p.market_value,0)}</td><td class="num ${cls(pn)}">${pn>=0?"+":""}${fmt(pn)}</td></tr>`}).join("")||`<tr><td colspan="7" class="mut">空仓</td></tr>`);
-  rows(document.getElementById("orders"),[["时间"],["方向"],["标的"],["数量",1],["价格",1],["状态"],["费用",1]],
+  rows(document.getElementById("orders"),[["时间"],["方向"],["股票"],["股数",1],["价格",1],["状态"],["手续费",1]],
     (ord.data||[]).map(r=>{const d=new Date(r.created_at);const buy=r.direction==1;
     const fee=(Number(r.commission)+Number(r.stamp_duty)+Number(r.transfer_fee));
-    const stt=r.status=="filled"?`<span class="ok">✓ 已成交</span>`:`<span class="bad">✗ 已拒绝</span>`;
+    const stt=r.status=="filled"?`<span class="ok">已成交</span>`:`<span class="bad">已拒绝</span>`;
     return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td><td><b>${esc(sym(r.symbol))}</b></td><td class="num">${r.volume}</td><td class="num">${fmt(r.filled_price||r.limit_price)}</td><td>${stt}</td><td class="num">${fmt(fee)}</td></tr>`}).join("")||`<tr><td colspan="7" class="mut">暂无订单</td></tr>`);
  }catch(e){document.getElementById("clock").textContent="刷新失败: "+e}
 }

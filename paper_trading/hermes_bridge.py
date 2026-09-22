@@ -510,7 +510,8 @@ def main() -> None:
                             "price": args.price},
                     r.get("ok", False),
                     {"status": r.get("status"), "error": r.get("error"),
-                     "filled_price": r.get("price"), "commission": r.get("commission")},
+                     "filled_price": r.get("price"), "commission": r.get("commission"),
+                     "stamp_duty": r.get("stamp_duty"), "transfer_fee": r.get("transfer_fee")},
                     st["cash"], st["total_value"])
                 emit(r, ok=r.get("ok", False), error=r.get("error"))
                 if not r.get("ok"):
@@ -525,7 +526,8 @@ def main() -> None:
                              "price": args.price},
                     r.get("ok", False),
                     {"status": r.get("status"), "error": r.get("error"),
-                     "filled_price": r.get("price"), "commission": r.get("commission")},
+                     "filled_price": r.get("price"), "commission": r.get("commission"),
+                     "stamp_duty": r.get("stamp_duty"), "transfer_fee": r.get("transfer_fee")},
                     st["cash"], st["total_value"])
                 emit(r, ok=r.get("ok", False), error=r.get("error"))
                 if not r.get("ok"):
