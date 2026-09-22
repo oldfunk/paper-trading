@@ -67,6 +67,7 @@ class HermesBridge:
         # config.yaml 单一真相源（显式 TradingConfig 优先，其次 config_path，其次默认 config.yaml）
         risk_kwargs: dict = {}
         strat_kwargs: dict = {"short_window": 5, "long_window": 20}
+        stock_pool: list[str] = []
         if config is None:
             try:
                 from paper_trading.utils.config import load_config
@@ -76,6 +77,7 @@ class HermesBridge:
                     config = cfg["trading_config"]
                     risk_kwargs = cfg.get("risk", {})
                     strat_kwargs = cfg.get("strategy", {})
+                    stock_pool = [str(s) for s in cfg.get("stock_pool", [])]
             except Exception:
                 config = TradingConfig()
         self.data_db = DataDBManager(data_db)
@@ -89,6 +91,7 @@ class HermesBridge:
             sell_volume=int(strat_kwargs.get("sell_volume", 100)),
         )
         self.config = config or TradingConfig()
+        self.stock_pool = stock_pool
 
     def run_daily(self, symbols: list[str]) -> dict:
         """
@@ -124,7 +127,8 @@ class HermesBridge:
         # 1.5 刷新真实股票名称（全池 + 持仓，一次批量调用，失败保缓存）
         if Fetcher is not None:
             try:
-                names_sym = set(symbols) | set(self.data_db.get_pool_symbols()) | \
+                names_sym = set(symbols) | set(self.stock_pool) | \
+                    set(self.data_db.get_pool_symbols()) | \
                     {p.symbol for p in self.broker.get_all_positions()}
                 fresh = Fetcher.fetch_stock_names(sorted(names_sym))
                 if fresh:
@@ -535,7 +539,8 @@ def main() -> None:
 
         elif args.command == "names":
             targets = set(args.symbols or []) or (
-                set(bridge.data_db.get_pool_symbols())
+                set(bridge.stock_pool)
+                | set(bridge.data_db.get_pool_symbols())
                 | {p.symbol for p in bridge.broker.get_all_positions()}
             )
             fresh = {}
