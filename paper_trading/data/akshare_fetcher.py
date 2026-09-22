@@ -117,6 +117,11 @@ class AkshareFetcher:
         先走全市场代码-名称表（一次调用），失败再逐只兑底。
         """
         out: dict[str, str] = {}
+
+        def _clean(nm) -> str:
+            # akshare 代码表偶带字间空格（如“五 粮 液”），A 股简称无合法空格，直接压掉
+            return "".join(str(nm).split())
+
         want = set(symbols)
         try:
             df = ak.stock_info_a_code_name()
@@ -125,7 +130,7 @@ class AkshareFetcher:
             for _, row in df.iterrows():
                 code = str(row[code_col]).strip()
                 if code in want:
-                    out[code] = str(row[name_col]).strip()
+                    out[code] = _clean(row[name_col])
         except Exception as e:
             logger.warning(f"stock_info_a_code_name failed: {e}")
         for sym in symbols:
@@ -136,7 +141,7 @@ class AkshareFetcher:
                 d = dict(zip(info["item"], info["value"]))
                 nm = d.get("股票简称")
                 if nm:
-                    out[sym] = str(nm).strip()
+                    out[sym] = _clean(nm)
             except Exception as e:
                 logger.warning(f"Name lookup failed for {sym}: {e}")
         return out
