@@ -133,8 +133,8 @@ async function refresh(){
  try{
   const [s,ops,pos,ord,nav,nm]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names"].map(get));
   NAMES=(nm&&nm.data)||{};
-  document.getElementById("clock").textContent="行情截至 "+(st.data_asof||"无数据")+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
   const st=s.data;
+  document.getElementById("clock").textContent="行情截至 "+(st.data_asof||"无数据")+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
   document.getElementById("cards").innerHTML=`
    <div class="card"><div class="k">总资产</div><div class="v">${fmt(st.total_value)}</div><div class="s">可用资金 + 持股市值</div></div>
    <div class="card"><div class="k">浮动盈亏</div><div class="v ${cls(st.pnl)}">${st.pnl>=0?"+":""}${fmt(st.pnl)}</div><div class="s ${cls(st.pnl)}">${pct(st.pnl_pct)}</div></div>
