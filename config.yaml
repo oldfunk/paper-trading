@@ -1,10 +1,10 @@
 stock_pool:
-  - 600519
   - 000858
   - 601318
+  - 600036
 
 account:
-  initial_cash: 1000000.0
+  initial_cash: 100000.0
 
 trading:
   commission_rate: 0.00025
@@ -23,7 +23,7 @@ strategy:
   sell_volume: 100
 
 risk:
-  max_single_order_value: 200000.0
+  max_single_order_value: 30000.0
   max_position_pct: 0.3
   max_total_position_pct: 0.95
   max_drawdown_pct: 0.20
