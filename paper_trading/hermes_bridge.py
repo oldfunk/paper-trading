@@ -93,6 +93,39 @@ class HermesBridge:
         self.config = config or TradingConfig()
         self.stock_pool = stock_pool
 
+    def sync_data(self, symbols: list[str]) -> dict:
+        """只同步行情+名称，不发信号、不下单、不记 NAV（供日内补数/定时任务用）。"""
+        try:
+            Fetcher = _get_fetcher()
+        except Exception as e:
+            logger.error(f"Fetcher unavailable (offline mode): {e}")
+            return {"ok": False, "symbols": symbols, "updated": {},
+                    "error": "akshare unavailable"}
+        updated: dict[str, int] = {}
+        for sym in symbols:
+            try:
+                latest = self.data_db.get_latest_timestamp(sym)
+                start = latest[:10].replace("-", "") if latest else None
+                bars = Fetcher.fetch_daily(sym, start_date=start)
+                if bars:
+                    self.data_db.upsert_bars(bars)
+                    self.data_db.add_stock_to_pool(sym)
+                updated[sym] = len(bars) if bars else 0
+            except Exception as e:
+                logger.error(f"Failed to sync {sym}: {e}")
+                updated[sym] = -1
+        try:
+            targets = sorted(set(symbols) | set(self.stock_pool)
+                             | set(self.data_db.get_pool_symbols())
+                             | {p.symbol for p in self.broker.get_all_positions()})
+            fresh = Fetcher.fetch_stock_names(targets)
+            if fresh:
+                self.data_db.upsert_stock_names(fresh)
+        except Exception as e:
+            logger.warning(f"Stock name refresh skipped: {e}")
+        ok = all(v >= 0 for v in updated.values())
+        return {"ok": ok, "symbols": symbols, "updated": updated}
+
     def run_daily(self, symbols: list[str]) -> dict:
         """
         执行每日结算流程（Run-Daily）。
@@ -105,36 +138,8 @@ class HermesBridge:
         """
         logger.info(f"=== HermesBridge Run-Daily started at {datetime.now().isoformat()} ===")
 
-        # 1. 更新行情
-        try:
-            Fetcher = _get_fetcher()
-        except Exception as e:
-            logger.error(f"Fetcher unavailable (offline mode): {e}")
-            Fetcher = None
-        for sym in symbols:
-            try:
-                if Fetcher is None:
-                    continue
-                latest = self.data_db.get_latest_timestamp(sym)
-                start = latest[:10].replace("-", "") if latest else None
-                bars = Fetcher.fetch_daily(sym, start_date=start)
-                if bars:
-                    self.data_db.upsert_bars(bars)
-                    self.data_db.add_stock_to_pool(sym)
-            except Exception as e:
-                logger.error(f"Failed to update data for {sym}: {e}")
-
-        # 1.5 刷新真实股票名称（全池 + 持仓，一次批量调用，失败保缓存）
-        if Fetcher is not None:
-            try:
-                names_sym = set(symbols) | set(self.stock_pool) | \
-                    set(self.data_db.get_pool_symbols()) | \
-                    {p.symbol for p in self.broker.get_all_positions()}
-                fresh = Fetcher.fetch_stock_names(sorted(names_sym))
-                if fresh:
-                    self.data_db.upsert_stock_names(fresh)
-            except Exception as e:
-                logger.warning(f"Stock name refresh skipped: {e}")
+        # 1. 更新行情 + 名称（复用 sync，与 sync 命令同一口径）
+        self.sync_data(symbols)
 
         # 2. 获取最新K线并生成信号
         all_bars: dict[str, list] = {}
@@ -144,6 +149,33 @@ class HermesBridge:
             if bars:
                 all_bars[sym] = bars
                 latest_prices[sym] = bars[-1].close
+
+        # 2.5 无新鲜数据守卫：节假日/拉取失败时不交易只记 NAV，
+        #     避免用停滞的末根 K 线重复触发历史交叉信号
+        today = datetime.now().date()
+        fresh = any(bars and bars[-1].timestamp.date() >= today
+                    for bars in all_bars.values())
+        if not fresh:
+            logger.warning("No fresh bars today, skip signals+unfreeze, record NAV only")
+            self.portfolio.record_nav(latest_prices)
+            nav0 = self.broker.get_nav(latest_prices)
+            self.broker.log_operation(
+                "run", {"symbols": symbols, "skipped": "no-fresh-bars"}, True,
+                {"signals": 0, "orders": 0}, nav0.cash, nav0.total_value)
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "symbols": symbols,
+                "signals_generated": 0,
+                "orders_executed": 0,
+                "orders": [],
+                "skipped": "no-fresh-bars",
+                "nav": self.broker.get_nav(latest_prices).__dict__,
+                "positions": [
+                    {"symbol": p.symbol, "total_volume": p.total_volume,
+                     "available_volume": p.available_volume, "avg_cost": p.avg_cost}
+                    for p in self.broker.get_all_positions()
+                ],
+            }
 
         # 3. T+1 结算（先解冻再交易）
         self.broker.unfreeze_t1()
@@ -214,7 +246,7 @@ class HermesBridge:
         return result
 
     def get_status(self) -> dict:
-        """获取账户状态。"""
+        """获取账户状态（含行情新鲜度 data_asof）。"""
         positions = self.broker.get_all_positions()
         cash = self.broker.get_cash()
 
@@ -227,8 +259,15 @@ class HermesBridge:
 
         nav = self.broker.get_nav(latest_prices)
 
+        # 行情新鲜度：全库最新 K 线日期（让你一眼看到数据到哪天）
+        try:
+            data_asof = self.data_db.get_data_asof()
+        except Exception:
+            data_asof = None
+
         return {
             "timestamp": datetime.now().isoformat(),
+            "data_asof": data_asof,
             "cash": cash,
             "market_value": nav.market_value,
             "total_value": nav.total_value,
@@ -399,9 +438,16 @@ def main() -> None:
 
     # run
     run_parser = subparsers.add_parser("run", help="执行每日结算流程")
-    run_parser.add_argument("--symbols", nargs="+", default=["600519"], help="股票代码")
+    run_parser.add_argument("--symbols", nargs="*", default=None,
+                            help="缺省=config.yaml 股票池")
     run_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
     run_parser.add_argument("--dry-run", action="store_true", help="只生成信号与风控预览，不下单")
+
+    # sync
+    sync_parser = subparsers.add_parser("sync", help="只同步行情+名称，不交易（可日内执行）")
+    sync_parser.add_argument("--symbols", nargs="*", default=None,
+                             help="缺省=config.yaml 股票池")
+    sync_parser.add_argument("--json", action="store_true")
 
     # buy
     buy_parser = subparsers.add_parser("buy", help="买入")
@@ -443,7 +489,8 @@ def main() -> None:
 
     # cron-run
     cron_parser = subparsers.add_parser("cron-run", help="Cron 模式执行")
-    cron_parser.add_argument("--symbols", nargs="+", default=["600519"], help="股票代码")
+    cron_parser.add_argument("--symbols", nargs="*", default=None,
+                             help="缺省=config.yaml 股票池")
     cron_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
 
     args = parser.parse_args()
@@ -469,12 +516,24 @@ def main() -> None:
         if args.command == "status":
             emit(bridge.get_status())
 
+        elif args.command == "sync":
+            syms = args.symbols or bridge.stock_pool or ["600519"]
+            with run_lock(args.lock_file):
+                res = bridge.sync_data(syms)
+            bridge.broker.log_operation(
+                "sync", {"symbols": syms}, res.get("ok", False),
+                {"updated": res.get("updated")}, None, None)
+            emit(res, ok=res.get("ok", False), error=res.get("error"))
+            if not res.get("ok"):
+                sys.exit(3)
+
         elif args.command in ("run", "cron-run"):
+            syms = args.symbols or bridge.stock_pool or ["600519"]
             if getattr(args, "dry_run", False):
                 # dry-run：信号+风控预览，不下单不记NAV
                 all_bars = {}
                 latest = {}
-                for sym in args.symbols:
+                for sym in syms:
                     bars = bridge.data_db.get_bars(sym, limit=30)
                     if bars:
                         all_bars[sym] = bars
@@ -491,15 +550,15 @@ def main() -> None:
                                     "volume": sig.volume, "price": sig.price,
                                     "pass": ok, "reason": reason})
                 bridge.broker.log_operation(
-                    "run:dry-run", {"symbols": args.symbols}, True,
+                    "run:dry-run", {"symbols": syms}, True,
                     {"signals": len(preview)}, nav.cash, nav.total_value)
                 emit({"signals": preview, "nav": nav.__dict__})
             else:
                 with run_lock(args.lock_file):
-                    res = bridge.run_daily(args.symbols)
+                    res = bridge.run_daily(syms)
                 nav = res.get("nav") or {}
                 bridge.broker.log_operation(
-                    "run", {"symbols": args.symbols}, True,
+                    "run", {"symbols": syms}, True,
                     {"signals": res.get("signals_generated"),
                      "orders": res.get("orders_executed")},
                     nav.get("cash"), nav.get("total_value"))

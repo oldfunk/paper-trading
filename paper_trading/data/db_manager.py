@@ -166,3 +166,11 @@ class DataDBManager:
         with self._connect() as conn:
             rows = conn.execute("SELECT symbol FROM stock_pool").fetchall()
         return [r["symbol"] for r in rows]
+
+    def get_data_asof(self) -> Optional[str]:
+        """全库最新 K 线日期（YYYY-MM-DD），无数据返回 None。"""
+        with self._connect() as conn:
+            row = conn.execute("SELECT MAX(timestamp) FROM daily_bars").fetchone()
+        if not row or not row[0]:
+            return None
+        return str(row[0])[:10]

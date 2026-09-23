@@ -91,7 +91,7 @@ let NAMES={};                                   // {symbol: 真实名称}
 const sym=c=>NAMES[c]?`${NAMES[c]}(${c})`:c;
 const ACTION_CN={
   "run":"每日结算","cron-run":"每日结算（定时任务）","run:dry-run":"试运行（仅预览，不下单）",
-  "buy":"买入","sell":"卖出","preview":"下单试算","status":"查询账户",
+  "sync":"同步行情","buy":"买入","sell":"卖出","preview":"下单试算","status":"查询账户",
   "nav":"查询净值","history":"查询记录","names":"刷新股票名称"};
 function errCN(e){
   if(!e)return"";
@@ -114,7 +114,7 @@ function errCN(e){
   return e;
 }
 function paramCN(a,j){let p={};try{p=JSON.parse(j||"{}")}catch(e){}
-  if(a==="run"||a==="cron-run"||a==="run:dry-run")return`股票：${(p.symbols||[]).map(sym).join("、")}`;
+  if(a==="run"||a==="cron-run"||a==="run:dry-run"||a==="sync")return`股票：${(p.symbols||[]).map(sym).join("、")}`;
   if(a==="buy"||a==="sell"){const px=(p.price!=null&&p.price!=="")?`，限价 ${fmt(p.price)} 元`:"";return `${sym(p.symbol)} ${p.volume}股${px}`;}
   if(a==="preview")return `${sym(p.symbol)} ${(p.direction==="buy"?"买入":"卖出")} ${p.volume}股`;
   return Object.entries(p).map(([k,v])=>`${k}=${Array.isArray(v)?v.map(sym).join("、"):v}`).join(" ");}
@@ -123,6 +123,9 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="buy"||a==="sell"){const fee=(Number(r.commission)||0)+(Number(r.stamp_duty)||0)+(Number(r.transfer_fee)||0);
     return `成交价 ${fmt(r.filled_price)} 元，手续费 ${fmt(fee)} 元`;}
   if(a==="run:dry-run")return`产生信号 ${r.signals??0} 个（仅预览，未下单）`;
+  if(a==="sync"){const u=r.updated||{};const ks=Object.keys(u);
+    if(!ks.length)return "无更新";
+    return ks.map(s=>`${sym(s)}${u[s]<0?"同步失败":`新增 ${u[s]} 根K线`}`).join("、");}
   if(a==="run"||a==="cron-run")return`产生信号 ${r.signals??0} 个，下单 ${r.orders??0} 笔`;
   if(a==="preview")return "风控检查通过";
   return "完成";}
@@ -130,7 +133,7 @@ async function refresh(){
  try{
   const [s,ops,pos,ord,nav,nm]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names"].map(get));
   NAMES=(nm&&nm.data)||{};
-  document.getElementById("clock").textContent="更新于 "+new Date().toLocaleTimeString("zh-CN");
+  document.getElementById("clock").textContent="行情截至 "+(st.data_asof||"无数据")+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
   const st=s.data;
   document.getElementById("cards").innerHTML=`
    <div class="card"><div class="k">总资产</div><div class="v">${fmt(st.total_value)}</div><div class="s">可用资金 + 持股市值</div></div>

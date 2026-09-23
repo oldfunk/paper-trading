@@ -125,3 +125,38 @@ def test_op_log_roundtrip():
     assert json.loads(rows[1]["result"])["status"] == "filled"
     assert rows[1]["cash_after"] == 90000.0
     Path(f).unlink(missing_ok=True)
+
+
+def _fake_bridge(monkeypatch, tmp, bars):
+    import paper_trading.hermes_bridge as hb
+
+    class FakeFetcher:
+        @staticmethod
+        def fetch_daily(symbol, start_date=None, end_date=None, adjust="qfq", **kw):
+            return bars
+
+        @staticmethod
+        def fetch_stock_names(symbols):
+            return {"600519": "贵州茅台"}
+
+    monkeypatch.setattr(hb, "_get_fetcher", lambda: FakeFetcher)
+    f1 = tempfile.mktemp(suffix=".db", dir=tmp)
+    f2 = tempfile.mktemp(suffix=".db", dir=tmp)
+    return hb.HermesBridge(data_db=f1, account_db=f2, config_path="/nonexistent.yaml")
+
+
+def test_sync_data_with_fake_fetcher(monkeypatch, tmp_path):
+    b = _fake_bridge(monkeypatch, str(tmp_path),
+                     [mkbar("600519", i, 10 + i) for i in range(5)])
+    res = b.sync_data(["600519"])
+    assert res["ok"] and res["updated"] == {"600519": 5}
+    assert b.data_db.get_data_asof() == "2024-01-05"
+    assert b.get_status()["data_asof"] == "2024-01-05"
+
+
+def test_run_daily_skips_without_fresh_bars(monkeypatch, tmp_path):
+    b = _fake_bridge(monkeypatch, str(tmp_path), [])  # 源端无新数据
+    b.data_db.upsert_bars([mkbar("600519", i, 10 + i) for i in range(30)])  # 旧数据
+    res = b.run_daily(["600519"])
+    assert res.get("skipped") == "no-fresh-bars"
+    assert res["orders_executed"] == 0

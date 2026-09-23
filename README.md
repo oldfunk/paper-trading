@@ -187,8 +187,11 @@ NAV: total=999628.43, pnl=-371.57 (-0.04%)
 # 查看账户状态（统一信封 {"ok","data","error"}，失败非0退出码）
 python -m paper_trading.hermes_bridge status --json
 
-# 执行每日结算（带文件锁防并发；--dry-run 只预览不下单）
+# 执行每日结算（缺省=config.yaml 股票池；带文件锁防并发；--dry-run 只预览不下单）
 python -m paper_trading.hermes_bridge run --symbols 600519 000858 --json
+
+# 只同步行情+名称，不交易（日内任意时间可执行）
+python -m paper_trading.hermes_bridge sync --json
 
 # 下单前试算（不落库）
 python -m paper_trading.hermes_bridge preview --symbol 600519 --direction buy --volume 100 --json
@@ -220,16 +223,15 @@ python -m paper_trading.dashboard --port 8080
 
 流水写入 `paper_account.db` 的 `op_log` 表（`broker.log_operation`），仪表盘纯只读，可与交易进程并存。
 
-### Cron 定时任务
+### Cron 定时任务（工作日收盘后 16:05 跑一次即可；日线一天只变一次）
 
 ```bash
-# 工作日每天 16:00 执行结算
-hermes cron add \
-  --name "paper-trading-daily" \
-  --schedule "0 16 * * 1-5" \
-  --command "cd /path/to/paper-trading && python -m paper_trading.hermes_bridge cron-run --symbols 600519 000858 --json" \
-  --no-agent
+# 工作日每天 16:05 执行结算（symbols 缺省走 config.yaml 股票池）
+(crontab -l 2>/dev/null; echo "5 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.hermes_bridge cron-run --json >> run.log 2>&1") | crontab -
 ```
+
+说明：`run` 内含增量补数（自动从库中断点续拉，失败次日自愈，无需重试 cron）；
+节假日无新 K 线时自动只记 NAV 不交易；日内如需刷新价格只用 `sync`，不要盘中跑 `run`（当日 K 未收盘会产生假信号）。
 
 ### Agent 调用
 
