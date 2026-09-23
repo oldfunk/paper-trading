@@ -202,12 +202,12 @@ class PaperBroker:
         return commission, stamp_duty, transfer_fee
 
     def _apply_slippage(self, price: float, direction: int) -> float:
-        """应用滑点。direction=1买入(加价), direction=-1卖出(减价)。"""
+        """应用滑点并按最小变动价位(0.01元)取整。direction=1买入(加价), direction=-1卖出(减价)。"""
         if self.config.use_slippage_pct:
             slippage = price * self.config.slippage_pct
         else:
             slippage = self.config.slippage_fixed
-        return price + direction * slippage
+        return round(price + direction * slippage + 1e-9, 2)
 
     def _holidays(self) -> set[str]:
         try:

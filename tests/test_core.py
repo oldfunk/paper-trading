@@ -78,6 +78,8 @@ def test_limit_band_and_avg_cost_with_fees():
     b.submit_order(Order(symbol="600519", direction=1, volume=100,
                          order_type=OrderType.LIMIT, limit_price=10.0))
     assert b.get_position("600519").avg_cost > 10.0  # 含佣金
+    fills = b.get_fill_history(1)
+    assert fills[0]["price"] == round(fills[0]["price"], 2)  # 最小变动价位 0.01
     Path(f).unlink(missing_ok=True)
 
 
