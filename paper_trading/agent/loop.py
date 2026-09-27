@@ -135,8 +135,7 @@ class AgentTrader:
             cfg = b._llm_config()
             raw = _ask_llm(cfg, prompt, system,
                            self.cfg.llm_timeout, self.cfg.llm_retries,
-                           self.cfg.llm_max_tokens, self.cfg.llm_thinking,
-                           self.cfg.llm_max_tokens)
+                           self.cfg.llm_max_tokens, self.cfg.llm_thinking)
         except LLMError as e:
             b.broker.log_operation("ai:plan", {"symbols": symbols}, False,
                                    {"error": str(e)}, None, None)
@@ -249,8 +248,7 @@ class AgentTrader:
             cfg = b._llm_config()
             raw = _ask_llm(cfg, prompt, system,
                            self.cfg.llm_timeout, self.cfg.llm_retries,
-                           self.cfg.llm_max_tokens, self.cfg.llm_thinking,
-                           self.cfg.llm_max_tokens)
+                           self.cfg.llm_max_tokens, self.cfg.llm_thinking)
         except LLMError as e:
             b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
                                    False, {"error": str(e)}, None, None)
