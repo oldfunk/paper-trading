@@ -180,6 +180,14 @@ def test_agent_plan_then_execute(monkeypatch, tmp_path):
     assert b.broker.get_position("600519").total_volume == 100
     assert b.broker.get_pending_plan(
         __import__("datetime").date.today().isoformat()) is None  # 已消费
+    # 同日再存计划，旧 pending 自动作废，只剩最新
+    b.broker.save_plan(__import__("datetime").date.today().isoformat(),
+                       ["600519"], {"actions": [], "summary": "新计划"})
+    b.broker.save_plan(__import__("datetime").date.today().isoformat(),
+                       ["600519"], {"actions": [], "summary": "更新计划"})
+    pend2 = b.broker.get_pending_plan(
+        __import__("datetime").date.today().isoformat())
+    assert pend2["plan"]["summary"] == "更新计划"
 
 
 def test_agent_volume_aliases_and_token_budget(monkeypatch, tmp_path):

@@ -515,10 +515,15 @@ class PaperBroker:
         return [dict(r) for r in rows]
 
     def save_plan(self, plan_date: str, symbols: list[str], plan: dict) -> int:
-        """存一条待执行计划（ai:plan），返回 id。"""
+        """存一条待执行计划（ai:plan），返回 id；同日旧 pending 自动作废。"""
         import json as _json
 
         with self._connect() as conn:
+            conn.execute(
+                "UPDATE agent_plans SET status = 'superseded' "
+                "WHERE plan_date = ? AND status = 'pending'",
+                (plan_date,),
+            )
             cur = conn.execute(
                 """INSERT INTO agent_plans (plan_date, symbols, plan_json, status, created_at)
                    VALUES (?, ?, ?, 'pending', ?)""",
