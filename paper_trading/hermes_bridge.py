@@ -565,11 +565,14 @@ def main() -> None:
     llm_cfg.add_argument("--model", default="")
     llm_cfg.add_argument("--api-key", default="")
     llm_cfg.add_argument("--show", action="store_true", help="只显示当前配置（掩码）")
+    llm_cfg.add_argument("--json", action="store_true")
 
-    llm_sub.add_parser("models", help="拉取远端模型列表")
+    llm_models_p = llm_sub.add_parser("models", help="拉取远端模型列表")
+    llm_models_p.add_argument("--json", action="store_true")
     llm_ask = llm_sub.add_parser("ask", help="问 AI 一次（记流水）")
     llm_ask.add_argument("--prompt", required=True)
     llm_ask.add_argument("--system", default="")
+    llm_ask.add_argument("--json", action="store_true")
 
     # nav
     nav_parser = subparsers.add_parser("nav", help="查看 NAV 历史")
