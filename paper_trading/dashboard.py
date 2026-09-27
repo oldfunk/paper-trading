@@ -176,7 +176,12 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
     return `成交价 ${fmt(r.filled_price)} 元，手续费 ${fmt(fee)} 元`;}
   if(a==="run:dry-run")return`产生信号 ${r.signals??0} 个（仅预览，未下单）`;
   if(a==="llm:ask")return (r.answer||"").slice(0,200);
-  if(a==="ai:decide"){const ds=r.decisions||[];
+  if(a==="ai:decide"){const sk=r.skipped||"";
+    if(sk==="no-fresh-bars")return "无今日新行情，跳过（节假日或源未更新）";
+    if(sk==="already-decided")return "今日已决策，跳过";
+    if(sk==="drawdown-halt")return `回撤熔断（${(r.drawdown*100).toFixed(2)}%），停手`;
+    if(sk==="daily-loss-halt")return `日亏熔断（${(r.pnl_pct*100).toFixed(2)}%），停手`;
+    const ds=r.decisions||[];
     if(!ds.length)return "无动作";
     return ds.map(d=>{const dir=d.action==="buy"?"买入":d.action==="sell"?"卖出":"持有";
       return `${dir}${sym(d.symbol)}${d.volume||""}股(${d.status||""})`}).join("；");}

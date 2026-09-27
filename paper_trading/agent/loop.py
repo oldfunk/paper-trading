@@ -43,9 +43,20 @@ class AgentTrader:
         self.cfg = cfg or AgentConfig()
 
     def _decided_today(self) -> bool:
+        """今日是否已有实质决策（跳过类流水不算，避免早盘空跑锁死午后真跑）。"""
         today = datetime.now().date().isoformat()
         for o in self.bridge.broker.get_op_log(50):
-            if o["action"] == "ai:decide" and o["ok"] and str(o["timestamp"])[:10] == today:
+            if o["action"] != "ai:decide" or not o["ok"]:
+                continue
+            if str(o["timestamp"])[:10] != today:
+                continue
+            try:
+                import json as _json
+
+                res = _json.loads(o["result"] or "{}")
+            except Exception:
+                res = {}
+            if "skipped" not in res:
                 return True
         return False
 
@@ -61,6 +72,8 @@ class AgentTrader:
 
         if not dry_run and not force and self._decided_today():
             logger.warning("AI already decided today, skip (idempotency)")
+            b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
+                                   True, {"skipped": "already-decided"}, None, None)
             return {"ok": True, "skipped": "already-decided", "timestamp": now,
                     "symbols": symbols}
 
@@ -78,6 +91,8 @@ class AgentTrader:
         today = datetime.now().date()
         if not any(bars and bars[-1].timestamp.date() >= today for bars in all_bars.values()):
             logger.warning("No fresh bars, AI skips")
+            b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
+                                   True, {"skipped": "no-fresh-bars"}, None, None)
             return {"ok": True, "skipped": "no-fresh-bars", "timestamp": now,
                     "symbols": symbols}
 
@@ -93,9 +108,16 @@ class AgentTrader:
         halted, dd = b.risk.check_drawdown(nav.total_value)
         if halted:
             logger.error(f"Drawdown halt {dd:.2%}, AI skips")
+            b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
+                                   False, {"skipped": "drawdown-halt",
+                                           "drawdown": round(dd, 4)}, None, None)
             return {"ok": False, "error": f"回撤熔断 {dd:.2%}", "timestamp": now}
         if nav.pnl_pct <= -self.cfg.daily_loss_halt_pct:
             logger.error(f"Daily loss halt {nav.pnl_pct:.2%}, AI skips")
+            b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
+                                   False, {"skipped": "daily-loss-halt",
+                                           "pnl_pct": round(nav.pnl_pct, 4)},
+                                   None, None)
             return {"ok": False, "error": f"日亏熔断 {nav.pnl_pct:.2%}", "timestamp": now}
 
         # 5. 参考信号 + 上下文，问 LLM

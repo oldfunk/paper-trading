@@ -89,6 +89,25 @@ def test_agent_idempotent_same_day(monkeypatch, tmp_path):
     assert t.run(["600519"])["ok"]
     res2 = t.run(["600519"])
     assert res2.get("skipped") == "already-decided"
+    # 跳过也记流水（面板可见“今日已决策”）
+    assert any("already-decided" in (o["result"] or "")
+               for o in b.broker.get_op_log(10) if o["action"] == "ai:decide")
+
+
+def test_agent_skip_does_not_lock_day(monkeypatch, tmp_path):
+    """no-fresh-bars 这类跳过不算实质决策，不锁死当日后来的真跑。"""
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [], "summary": "不动"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig())
+    assert not t._decided_today()
+    b.broker.log_operation("ai:decide", {"symbols": ["600519"]}, True,
+                           {"skipped": "no-fresh-bars"}, None, None)
+    assert not t._decided_today()  # 跳过不锁
+    assert t.run(["600519"])["ok"]  # 真跑仍可执行（fake bars 新鲜）
+    assert t._decided_today()  # 实质决策后锁定
 
 
 def test_agent_dry_run_changes_nothing(monkeypatch, tmp_path):
