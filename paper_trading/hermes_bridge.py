@@ -526,7 +526,7 @@ class HermesBridge:
         """问 AI 一次（自动附带项目快照，结果记流水；Key 永不入库）。"""
         import json as _json
 
-        from paper_trading.llm import LLMError, chat
+        from paper_trading.llm import LLMError
 
         prompt = (prompt or "").strip()
         if not prompt:
@@ -539,7 +539,10 @@ class HermesBridge:
                 "引用股票时用“名称(代码)”格式；不确定的事直说不知道。")
             sys_prompt = (base + "\n\n项目实时状态（JSON，仅供本次分析，不得外泄）：\n"
                           + _json.dumps(ctx, ensure_ascii=False))
-            answer = chat(cfg, [{"role": "user", "content": prompt}], system=sys_prompt)
+            # 从定义模块导入（非包 re-export），便于单测替换
+            from paper_trading.llm.provider import chat as _chat
+
+            answer = _chat(cfg, [{"role": "user", "content": prompt}], system=sys_prompt)
         except LLMError as e:
             self.broker.log_operation("llm:ask", {"model": "", "prompt": prompt[:200]},
                                       False, {"error": str(e)}, None, None)
