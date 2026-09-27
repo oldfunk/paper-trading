@@ -95,8 +95,12 @@ tr:last-child td{border-bottom:none}
     </div>
     <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
       <input id="apikey" type="password" placeholder="API Key（只存本机，不回显）" style="flex:2;min-width:200px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
-      <input id="model" list="modellist" placeholder="模型：下拉选择或手填名称" style="flex:2;min-width:200px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
-      <datalist id="modellist"></datalist>
+    </div>
+    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
+      <select id="modelsel" style="flex:1;min-width:160px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+        <option value="">下拉选择（先点“拉取模型列表”）</option>
+      </select>
+      <input id="model" placeholder="或手填模型名称" style="flex:2;min-width:200px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
     </div>
     <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
       <button id="btn-models" style="padding:8px 16px;border-radius:6px;border:1px solid var(--line);background:#1b2836;color:var(--fg)">拉取模型列表</button>
@@ -235,10 +239,13 @@ document.getElementById("btn-models").onclick=async()=>{
   document.getElementById("llmstat").textContent="拉取中…";
   const r=await get("/api/llm/models?token="+encodeURIComponent(t));
   if(!r.ok){document.getElementById("llmstat").textContent="拉取失败："+(r.error||"");return}
-  const dl=document.getElementById("modellist");dl.innerHTML="";
-  (r.models||[]).forEach(m=>{const o=document.createElement("option");o.value=m;dl.appendChild(o)});
-  document.getElementById("llmstat").textContent=`共 ${(r.models||[]).length} 个模型，下拉选择或手填名称`;
+  const sel=document.getElementById("modelsel");sel.innerHTML='<option value="">下拉选择…</option>';
+  (r.models||[]).forEach(m=>{const o=document.createElement("option");o.value=m;o.textContent=m;sel.appendChild(o)});
+  document.getElementById("llmstat").textContent=`共 ${(r.models||[]).length} 个模型，下拉选一个（会自动填入右侧），或直接手填`;
 };
+document.getElementById("modelsel").addEventListener("change",e=>{
+  if(e.target.value)document.getElementById("model").value=e.target.value;
+});
 document.getElementById("btn-save").onclick=async()=>{
   const r=await post("/api/llm/config",{admin_token:tok(),preset:document.getElementById("preset").value,
     base_url:document.getElementById("base").value,model:document.getElementById("model").value,
