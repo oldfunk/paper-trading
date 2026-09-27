@@ -180,3 +180,27 @@ def test_agent_plan_then_execute(monkeypatch, tmp_path):
     assert b.broker.get_position("600519").total_volume == 100
     assert b.broker.get_pending_plan(
         __import__("datetime").date.today().isoformat()) is None  # 已消费
+
+
+def test_agent_volume_aliases_and_token_budget(monkeypatch, tmp_path):
+    """shares/quantity 别名照收；max_tokens 透传给 provider（推理模型留足答案区）。"""
+    from paper_trading.llm import provider as prov
+
+    seen: dict = {}
+    plan = {"actions": [
+        {"action": "buy", "symbol": "600519", "shares": 100, "reason": "别名1"},
+        {"action": "buy", "symbol": "600519", "quantity": 100, "reason": "别名2"},
+    ], "summary": "别名测试"}
+
+    def fake(cfg, messages, system=""):
+        seen["max_tokens"] = cfg.max_tokens
+        return json.dumps(plan)
+
+    monkeypatch.setattr(prov, "chat", fake)
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0,
+                                  llm_max_tokens=4096))
+    res = t.run(["600519"], dry_run=True)
+    assert seen["max_tokens"] == 4096
+    assert res["ok"]
+    assert all("试运行通过" in d["status"] for d in res["decisions"])

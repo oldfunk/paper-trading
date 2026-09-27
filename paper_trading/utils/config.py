@@ -61,5 +61,6 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "daily_loss_halt_pct": float(agent.get("daily_loss_halt_pct", 0.05)),
             "llm_timeout": float(agent.get("llm_timeout", 120.0)),
             "llm_retries": int(agent.get("llm_retries", 1)),
+            "llm_max_tokens": int(agent.get("llm_max_tokens", 4096)),
         },
     }

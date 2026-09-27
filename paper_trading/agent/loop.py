@@ -24,13 +24,16 @@ class AgentConfig:
     daily_loss_halt_pct: float = 0.05  # 累计浮亏超此比例，当天停手
     llm_timeout: float = 120.0  # 决策上下文大，放宽单次超时
     llm_retries: int = 1  # 仅超时重试一次，其他错误直接失败
+    llm_max_tokens: int = 4096  # 推理模型 thinking 占用输出预算，答案区必须留足
 
 
-def _ask_llm(cfg, prompt: str, system: str, timeout: float, retries: int) -> str:
+def _ask_llm(cfg, prompt: str, system: str, timeout: float, retries: int,
+             max_tokens: int = 4096) -> str:
     """带超时重试的 LLM 调用（只重试超时；Key 不进错误信息由 provider 保证）。"""
     from paper_trading.llm.provider import chat as _chat
 
     cfg.timeout = timeout
+    cfg.max_tokens = max_tokens  # 推理模型先烧 thinking tokens，答案预算必须留足
     last: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -124,7 +127,8 @@ class AgentTrader:
         try:
             cfg = b._llm_config()
             raw = _ask_llm(cfg, prompt, system,
-                           self.cfg.llm_timeout, self.cfg.llm_retries)
+                           self.cfg.llm_timeout, self.cfg.llm_retries,
+                           self.cfg.llm_max_tokens)
         except LLMError as e:
             b.broker.log_operation("ai:plan", {"symbols": symbols}, False,
                                    {"error": str(e)}, None, None)
@@ -236,7 +240,8 @@ class AgentTrader:
         try:
             cfg = b._llm_config()
             raw = _ask_llm(cfg, prompt, system,
-                           self.cfg.llm_timeout, self.cfg.llm_retries)
+                           self.cfg.llm_timeout, self.cfg.llm_retries,
+                           self.cfg.llm_max_tokens)
         except LLMError as e:
             b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
                                    False, {"error": str(e)}, None, None)
@@ -309,7 +314,9 @@ class AgentTrader:
                 decided.append(rec)
                 continue
             try:
-                vol = int(a.get("volume") or 0)
+                # 跨模型字段名容忍：volume / shares / quantity 都认
+                vraw = a.get("volume", a.get("shares", a.get("quantity")))
+                vol = int(vraw or 0)
             except (TypeError, ValueError):
                 vol = 0
             px = latest.get(sym, 0.0)
