@@ -120,7 +120,7 @@ tr:last-child td{border-bottom:none}
     <div style="display:flex;gap:8px;margin:8px 0">
       <button id="btn-ask" style="padding:8px 16px;border-radius:6px;border:none;background:#1565c0;color:#fff">提问（记流水）</button>
     </div>
-    <div id="ans" class="mut">回答会显示在这里，同时记入下方操作流水。</div>
+    <div id="ans" class="mut">回答会显示在这里，同时记入下方操作流水。每次提问会自动附带账户、持仓、近期行情与操作记录，不用你贴数据。</div>
   </div>
 </section>
 

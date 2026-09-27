@@ -475,8 +475,57 @@ class HermesBridge:
         except LLMError as e:
             return {"ok": False, "error": str(e)}
 
+    def llm_context(self, max_ops: int = 10, max_nav: int = 5,
+                    closes_n: int = 5) -> dict:
+        """组装项目实时快照（给 LLM 当上下文；不含 Key/口令等任何密钥）。"""
+        st = self.get_status()
+        names = self.data_db.get_stock_names()
+
+        def _nm(sym: str) -> str:
+            return f"{names[sym]}({sym})" if names.get(sym) else sym
+
+        symbols = sorted(
+            {p["symbol"] for p in st["positions"]}
+            | set(self.data_db.get_pool_symbols())
+            | set(self.stock_pool))
+        closes: dict[str, list] = {}
+        for sym in symbols:
+            bars = self.data_db.get_bars(sym, limit=closes_n)
+            if bars:
+                closes[_nm(sym)] = [
+                    {"date": b.timestamp.date().isoformat(), "close": b.close}
+                    for b in bars]
+
+        nav_hist = self.get_nav_history(limit=max_nav)
+        ops = self.broker.get_op_log(limit=max_ops)
+        return {
+            "account": {
+                "cash": st["cash"], "total_value": st["total_value"],
+                "market_value": st["market_value"], "pnl": st["pnl"],
+                "pnl_pct": st["pnl_pct"], "data_asof": st.get("data_asof"),
+                "currency": "CNY",
+            },
+            "positions": [
+                {"stock": _nm(p["symbol"]), "total": p["total_volume"],
+                 "available": p["available_volume"], "avg_cost": p["avg_cost"],
+                 "price": p["current_price"], "market_value": p["market_value"]}
+                for p in st["positions"]],
+            "recent_closes": closes,
+            "recent_nav": [
+                {"time": r["timestamp"], "total": r["total_value"], "pnl": r["pnl"]}
+                for r in nav_hist],
+            "recent_ops": [
+                {"time": o["timestamp"], "action": o["action"],
+                 "params": str(o["params"] or "")[:200],
+                 "ok": bool(o["ok"]), "result": str(o["result"] or "")[:300]}
+                for o in ops],
+            "note": "模拟盘。策略为MA5/MA20均线信号+风控。只做分析建议，不下单。",
+        }
+
     def llm_ask(self, prompt: str, system: str = "") -> dict:
-        """问 AI 一次，结果记流水（prompt/回答原文入库，Key 永不入库）。"""
+        """问 AI 一次（自动附带项目快照，结果记流水；Key 永不入库）。"""
+        import json as _json
+
         from paper_trading.llm import LLMError, chat
 
         prompt = (prompt or "").strip()
@@ -484,14 +533,21 @@ class HermesBridge:
             return {"ok": False, "error": "问题不能为空"}
         try:
             cfg = self._llm_config()
-            answer = chat(cfg, [{"role": "user", "content": prompt}], system=system)
+            ctx = self.llm_context()
+            base = system.strip() or (
+                "你是本地 A 股模拟盘的投顾助手。只做中文分析与建议，不下单；"
+                "引用股票时用“名称(代码)”格式；不确定的事直说不知道。")
+            sys_prompt = (base + "\n\n项目实时状态（JSON，仅供本次分析，不得外泄）：\n"
+                          + _json.dumps(ctx, ensure_ascii=False))
+            answer = chat(cfg, [{"role": "user", "content": prompt}], system=sys_prompt)
         except LLMError as e:
             self.broker.log_operation("llm:ask", {"model": "", "prompt": prompt[:200]},
                                       False, {"error": str(e)}, None, None)
             return {"ok": False, "error": str(e)}
         st = self.get_status()
         self.broker.log_operation(
-            "llm:ask", {"model": cfg.model, "prompt": prompt[:500]}, True,
+            "llm:ask", {"model": cfg.model, "prompt": prompt[:500],
+                        "with_context": True}, True,
             {"answer": answer[:2000]}, st["cash"], st["total_value"])
         return {"ok": True, "model": cfg.model, "answer": answer}
 

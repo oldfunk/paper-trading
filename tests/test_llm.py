@@ -128,3 +128,33 @@ def test_llm_save_merge_keeps_key(tmp_path):
     r = b.llm_save("qwen", "", "q", "sk-new-2")  # 换厂商+换 Key
     assert r["ok"] and "dashscope" in r["base_url"]
     assert load_secrets(sec)["provider"]["api_key"] == "sk-new-2"
+
+
+def test_llm_ask_injects_project_context(monkeypatch, tmp_path):
+    """ask 必须把项目快照塞进 system，且不泄露 Key。"""
+    import paper_trading.hermes_bridge as hb
+    from paper_trading.llm import provider as prov
+
+    captured: dict = {}
+
+    def fake_chat(cfg, messages, system=""):
+        captured["system"] = system
+        captured["messages"] = messages
+        assert cfg.model == "m"
+        return "答"
+
+    monkeypatch.setattr(prov, "chat", fake_chat)
+    b = hb.HermesBridge(data_db=str(tmp_path / "d.db"),
+                        account_db=str(tmp_path / "a.db"),
+                        config_path="/nonexistent.yaml",
+                        secrets_path=str(tmp_path / "s.json"))
+    b.llm_save("deepseek", "https://x/v1", "m", "sk-SECRET")
+    r = b.llm_ask("持仓怎么样")
+    assert r["ok"] and r["answer"] == "答"
+    assert captured["messages"] == [{"role": "user", "content": "持仓怎么样"}]
+    sys_text = captured["system"]
+    for key in ("account", "positions", "recent_closes", "recent_nav", "recent_ops"):
+        assert key in sys_text, key
+    assert "sk-SECRET" not in sys_text  # 上下文无 Key
+    ops = b.broker.get_op_log(5)
+    assert ops[0]["action"] == "llm:ask"
