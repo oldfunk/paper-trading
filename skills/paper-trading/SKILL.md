@@ -77,6 +77,8 @@ Presets: deepseek / qwen / moonshot / glm / doubao / openai / custom (any OpenAI
 ```bash
 python -m paper_trading.hermes_bridge agent run --dry-run --json
 python -m paper_trading.hermes_bridge agent run --json
+# plan during closed market, auto-executed at open (no ledger touch)
+python -m paper_trading.hermes_bridge agent run --plan-only --json
 ```
 
 ### View History

@@ -24,6 +24,11 @@ class AgentConfig:
     daily_loss_halt_pct: float = 0.05  # 累计浮亏超此比例，当天停手
 
 
+def today_str() -> str:
+    """今日日期 YYYY-MM-DD（计划/幂等键用）。"""
+    return datetime.now().date().isoformat()
+
+
 def _extract_json(text: str) -> Optional[dict]:
     """从 LLM 输出中提取第一个 {...} 并解析，失败返回 None（fail-closed）。"""
     try:
@@ -60,15 +65,78 @@ class AgentTrader:
                 return True
         return False
 
+    def _plan(self, symbols: list[str]) -> dict:
+        """休盘做计划：基于最新已收盘定稿数据问 LLM，存待执行，不碰账本。"""
+        from paper_trading.utils import get_logger
+
+        logger = get_logger(__name__)
+        b = self.bridge
+        now = datetime.now().isoformat()
+
+        b.sync_data(symbols)
+        all_bars: dict[str, list] = {}
+        for sym in symbols:
+            bars = b.data_db.get_bars(sym, limit=30)
+            if bars:
+                all_bars[sym] = bars
+        if not all_bars:
+            return {"ok": False, "error": "无历史数据，无法做计划", "timestamp": now}
+        asof = max(bars[-1].timestamp.date().isoformat() for bars in all_bars.values())
+
+        ref = b.strategy.generate_signals(all_bars)
+        ref_txt = "无" if not ref else "、".join(
+            f"{s.symbol}{'买入' if s.direction.value == 1 else '卖出'}{s.volume}股@{s.price:.2f}"
+            for s in ref.values())
+        ctx = b.llm_context(max_ops=10, max_nav=3, closes_n=10)
+        prompt = USER_TMPL.format(
+            pool="、".join(symbols),
+            max_orders=self.cfg.max_orders_per_run,
+            max_order_value=int(self.cfg.max_order_value),
+            signals=ref_txt,
+            context=_json.dumps(ctx, ensure_ascii=False))
+        system = (TRADER_SYSTEM.format(
+            max_order_value=int(self.cfg.max_order_value),
+            max_orders=self.cfg.max_orders_per_run)
+            + f"\n注意：当前为休盘，最新定稿数据截至 {asof}。"
+              "你的决策将在下一个开盘执行。")
+        from paper_trading.llm import LLMError
+        from paper_trading.llm.provider import chat as _chat
+
+        try:
+            cfg = b._llm_config()
+            raw = _chat(cfg, [{"role": "user", "content": prompt}], system=system)
+        except LLMError as e:
+            b.broker.log_operation("ai:plan", {"symbols": symbols}, False,
+                                   {"error": str(e)}, None, None)
+            return {"ok": False, "error": str(e), "timestamp": now}
+        plan = _extract_json(raw or "")
+        actions = (plan or {}).get("actions", []) if isinstance(plan, dict) else []
+        if not isinstance(actions, list):
+            return {"ok": False, "error": "LLM 输出非 JSON 计划，已作废",
+                    "timestamp": now, "symbols": symbols}
+        summary = str((plan or {}).get("summary", ""))[:200]
+        pid = b.broker.save_plan(today_str(), symbols,
+                                 {"actions": actions, "summary": summary, "asof": asof})
+        b.broker.log_operation("ai:plan", {"symbols": symbols, "asof": asof}, True,
+                               {"plan_id": pid, "summary": summary,
+                                "n_actions": len(actions)}, None, None)
+        logger.info(f"AI plan saved id={pid} asof={asof}")
+        return {"ok": True, "mode": "plan", "plan_id": pid, "asof": asof,
+                "timestamp": now, "symbols": symbols,
+                "actions": actions, "summary": summary}
+
     def run(self, symbols: list[str], dry_run: bool = False,
-            force: bool = False) -> dict:
-        from paper_trading.models import Order, OrderType
+            force: bool = False, plan_only: bool = False) -> dict:
+        """三态：plan_only 只做计划存着；默认先执行今日待执行计划，无则现决现执。"""
         from paper_trading.utils import get_logger
 
         logger = get_logger(__name__)
         b = self.bridge
         now = datetime.now().isoformat()
         mode = "dry" if dry_run else "live"
+
+        if plan_only:
+            return self._plan(symbols)
 
         if not dry_run and not force and self._decided_today():
             logger.warning("AI already decided today, skip (idempotency)")
@@ -120,6 +188,13 @@ class AgentTrader:
                                    None, None)
             return {"ok": False, "error": f"日亏熔断 {nav.pnl_pct:.2%}", "timestamp": now}
 
+        # 4.5 待执行计划优先（休盘计划开盘执行；dry-run 不消费计划）
+        if not dry_run:
+            pending = b.broker.get_pending_plan(today_str())
+            if pending:
+                logger.info(f"Executing pending AI plan {pending['id']}")
+                return self._execute_plan(pending, all_bars, latest)
+
         # 5. 参考信号 + 上下文，问 LLM
         ref = b.strategy.generate_signals(all_bars)
         ref_txt = "无" if not ref else "、".join(
@@ -153,9 +228,50 @@ class AgentTrader:
             actions = []
         summary = str((plan or {}).get("summary", ""))[:200] if plan else ""
 
-        # 7. 逐条钳制执行
-        from paper_trading.models import Signal, SignalType
+        # 7. 逐条钳制执行（现决与计划执行共用实现）
+        return self._execute_actions(
+            actions=actions, summary=summary, symbols=symbols,
+            all_bars=all_bars, latest_prices=latest, cash=cash,
+            positions=positions, nav_total=nav.total_value,
+            dry_run=dry_run, mode=mode, now=now, from_plan=False)
 
+    def _execute_plan(self, pending: dict, all_bars: dict,
+                      latest: dict) -> dict:
+        """执行今日待执行计划（开盘执行休盘计划；价格沿用计划基准防盘中污染）。"""
+        from paper_trading.utils import get_logger
+
+        logger = get_logger(__name__)
+        b = self.bridge
+        plan = pending.get("plan") or {}
+        actions = plan.get("actions", [])
+        if not isinstance(actions, list):
+            actions = []
+        summary = str(plan.get("summary", ""))[:200]
+        syms = [s for s in str(pending.get("symbols", "")).split(",") if s]
+        cash = b.broker.get_cash()
+        positions = {p.symbol: p for p in b.broker.get_all_positions()}
+        nav = b.broker.get_nav(latest)
+        res = self._execute_actions(
+            actions=actions, summary=summary, symbols=syms,
+            all_bars=all_bars, latest_prices=latest, cash=cash,
+            positions=positions, nav_total=nav.total_value,
+            dry_run=False, mode="live", now=datetime.now().isoformat(),
+            from_plan=True)
+        b.broker.mark_plan_done(int(pending["id"]))
+        logger.info(f"AI plan {pending['id']} executed")
+        return res
+
+    def _execute_actions(self, *, actions: list, summary: str, symbols: list,
+                         all_bars: dict, latest_prices: dict, cash: float,
+                         positions: dict, nav_total: float, dry_run: bool,
+                         mode: str, now: str, from_plan: bool) -> dict:
+        """逐条钳制执行（dry_run 不碰账本；from_plan 仅标记来源）。"""
+        from paper_trading.models import Order, OrderType, Signal, SignalType
+        from paper_trading.utils import get_logger
+
+        logger = get_logger(__name__)
+        b = self.bridge
+        latest = latest_prices
         allow = set(symbols)
         decided: list[dict] = []
         n_orders = 0
@@ -192,7 +308,7 @@ class AgentTrader:
                     rec["status"] = "拒绝：未知动作"
                 else:
                     ok, why = b.risk.check_signal(sig, px, cash, positions,
-                                                 nav.total_value, prices=latest)
+                                                 nav_total, prices=latest)
                     if not ok:
                         rec["status"] = f"风控拒绝：{why}"
                     elif dry_run:
@@ -222,10 +338,10 @@ class AgentTrader:
             b.portfolio.record_nav(latest)
         nav2 = b.broker.get_nav(latest)
         b.broker.log_operation(
-            "ai:decide", {"symbols": symbols, "mode": mode,
+            "ai:decide", {"symbols": symbols, "mode": mode, "from_plan": from_plan,
                           "summary": summary}, True,
             {"decisions": decided}, nav2.cash, nav2.total_value)
-        logger.info(f"AI decide done: {len(decided)} actions, mode={mode}")
+        logger.info(f"AI decide done: {len(decided)} actions, mode={mode}, from_plan={from_plan}")
         return {"ok": True, "timestamp": now, "symbols": symbols, "mode": mode,
-                "summary": summary, "decisions": decided,
+                "from_plan": from_plan, "summary": summary, "decisions": decided,
                 "nav": nav2.__dict__}

@@ -121,3 +121,28 @@ def test_agent_dry_run_changes_nothing(monkeypatch, tmp_path):
     res = t.run(["600519"], dry_run=True)
     assert res["ok"] and "试运行" in res["decisions"][0]["status"]
     assert b.broker.get_position("600519") is None
+
+
+def test_agent_plan_then_execute(monkeypatch, tmp_path):
+    """休盘做计划（不碰账本）→ 开盘执行计划（成交并标记done）。"""
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "buy", "symbol": "600519",
+                         "volume": 100, "price": None, "reason": "计划买"}],
+            "summary": "休盘计划"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig())
+    r1 = t.run(["600519"], plan_only=True)
+    assert r1["ok"] and r1["mode"] == "plan" and r1["plan_id"] > 0
+    assert b.broker.get_position("600519") is None  # 做计划不碰账本
+    assert b.broker.get_order_history(10) == []
+    pend = b.broker.get_pending_plan(
+        __import__("datetime").date.today().isoformat())
+    assert pend and pend["status"] == "pending"
+    r2 = t.run(["600519"])  # 开盘执行（消费计划，不再问 LLM）
+    assert r2["ok"] and r2.get("from_plan") is True
+    assert r2["decisions"][0]["status"].startswith("已成交")
+    assert b.broker.get_position("600519").total_volume == 100
+    assert b.broker.get_pending_plan(
+        __import__("datetime").date.today().isoformat()) is None  # 已消费

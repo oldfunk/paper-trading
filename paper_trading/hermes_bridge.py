@@ -652,6 +652,8 @@ def main() -> None:
     agent_run.add_argument("--json", action="store_true")
     agent_run.add_argument("--dry-run", action="store_true", help="只决策不下单")
     agent_run.add_argument("--force", action="store_true", help="忽略今日已决策闸")
+    agent_run.add_argument("--plan-only", action="store_true",
+                           help="休盘做计划存着，开盘执行（不碰账本）")
 
     # nav
     nav_parser = subparsers.add_parser("nav", help="查看 NAV 历史")
@@ -829,7 +831,8 @@ def main() -> None:
                 sys.exit(3)
             with run_lock(args.lock_file):
                 trader = AgentTrader(bridge, bridge.agent_cfg)
-                res = trader.run(syms, dry_run=args.dry_run, force=args.force)
+                res = trader.run(syms, dry_run=args.dry_run, force=args.force,
+                                 plan_only=args.plan_only)
             emit(res, ok=res.get("ok", False), error=res.get("error"))
             if not res.get("ok"):
                 sys.exit(3)

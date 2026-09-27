@@ -201,6 +201,8 @@ python -m paper_trading.hermes_bridge llm ask --prompt "评价一下当前持仓
 # AI 交易员（日内一次决策；dry-run 只决策不下单；与 run 二选一，不可同日混跑）
 python -m paper_trading.hermes_bridge agent run --dry-run --json
 python -m paper_trading.hermes_bridge agent run --json
+# 休盘做计划（存着，开盘自动执行；不碰账本）
+python -m paper_trading.hermes_bridge agent run --plan-only --json
 
 # 下单前试算（不落库）
 python -m paper_trading.hermes_bridge preview --symbol 600519 --direction buy --volume 100 --json

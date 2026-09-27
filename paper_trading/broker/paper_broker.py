@@ -142,6 +142,17 @@ class PaperBroker:
                     total_value_after REAL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_plans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plan_date TEXT NOT NULL,
+                    symbols TEXT NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL,
+                    executed_at TEXT
+                )
+            """)
 
     def _ensure_account(self) -> None:
         with self._connect() as conn:
@@ -502,6 +513,46 @@ class PaperBroker:
                 "SELECT * FROM op_log ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def save_plan(self, plan_date: str, symbols: list[str], plan: dict) -> int:
+        """存一条待执行计划（ai:plan），返回 id。"""
+        import json as _json
+
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO agent_plans (plan_date, symbols, plan_json, status, created_at)
+                   VALUES (?, ?, ?, 'pending', ?)""",
+                (plan_date, ",".join(symbols),
+                 _json.dumps(plan, ensure_ascii=False, default=str),
+                 datetime.now().isoformat()),
+            )
+            return int(cur.lastrowid)
+
+    def get_pending_plan(self, plan_date: str) -> Optional[dict]:
+        """取某日待执行的计划（无则 None）。"""
+        import json as _json
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM agent_plans WHERE plan_date = ? AND status = 'pending'
+                   ORDER BY id DESC LIMIT 1""",
+                (plan_date,),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["plan"] = _json.loads(d["plan_json"])
+        except Exception:
+            d["plan"] = {}
+        return d
+
+    def mark_plan_done(self, plan_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE agent_plans SET status = 'done', executed_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), plan_id),
+            )
 
     def get_order_history(self, limit: int = 100) -> list[dict]:
         with self._connect() as conn:
