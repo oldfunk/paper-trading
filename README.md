@@ -193,6 +193,11 @@ python -m paper_trading.hermes_bridge run --symbols 600519 000858 --json
 # 只同步行情+名称，不交易（日内任意时间可执行）
 python -m paper_trading.hermes_bridge sync --json
 
+# LLM 接入（只咨询，不交易；Key 只落本地 secrets.local.json）
+python -m paper_trading.hermes_bridge llm config --preset deepseek --api-key xxx --model deepseek-chat
+python -m paper_trading.hermes_bridge llm models --json
+python -m paper_trading.hermes_bridge llm ask --prompt "评价一下当前持仓" --json
+
 # 下单前试算（不落库）
 python -m paper_trading.hermes_bridge preview --symbol 600519 --direction buy --volume 100 --json
 

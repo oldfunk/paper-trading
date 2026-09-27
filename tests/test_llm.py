@@ -1,0 +1,107 @@
+"""LLM 接入层单测（本地 fake HTTP 服务 + 临时 secrets 文件，离线可跑）。"""
+import json
+import sys
+import tempfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from threading import Thread
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from paper_trading.llm import (  # noqa: E402
+    LLMConfig,
+    LLMError,
+    chat,
+    list_models,
+    load_secrets,
+    masked_key,
+    public_provider_view,
+    save_provider,
+)
+
+
+class _FakeAPI(BaseHTTPRequestHandler):
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):  # noqa: N802
+        if self.path == "/v1/models":
+            if self.headers.get("Authorization") != "Bearer good-key":
+                return self._send(401, {"error": "bad key"})
+            return self._send(200, {"data": [{"id": "m-a"}, {"id": "m-b"}]})
+        return self._send(404, {})
+
+    def do_POST(self):  # noqa: N802
+        if self.path == "/v1/chat/completions":
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            assert body["model"] == "m-a"
+            assert body["messages"][-1] == {"role": "user", "content": "你好"}
+            return self._send(200, {"choices": [{"message": {"content": "您好"}}]})
+        return self._send(404, {})
+
+    def log_message(self, *a):
+        pass
+
+
+def _srv():
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _FakeAPI)
+    Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def _cfg(srv, **kw):
+    args = {"base_url": f"http://127.0.0.1:{srv.server_port}/v1",
+            "api_key": "good-key", "model": "m-a"}
+    args.update(kw)
+    return LLMConfig(**args)
+
+
+def test_list_models_ok_and_auth_fail():
+    srv = _srv()
+    try:
+        assert list_models(_cfg(srv)) == ["m-a", "m-b"]
+        try:
+            list_models(_cfg(srv, api_key="sk-test-SECRETKEY-999"))
+            raise AssertionError("should raise")
+        except LLMError as e:
+            assert "401" in str(e)
+            # Key 原文永不出现在错误信息里（服务端回显的 "bad key" 与 Key 无关）
+            assert "sk-test-SECRETKEY-999" not in str(e)
+    finally:
+        srv.shutdown()
+
+
+def test_chat_ok_and_missing_model():
+    srv = _srv()
+    try:
+        assert chat(_cfg(srv), [{"role": "user", "content": "你好"}]) == "您好"
+        try:
+            chat(_cfg(srv, model=""), [{"role": "user", "content": "x"}])
+            raise AssertionError("should raise")
+        except LLMError as e:
+            assert "未指定模型" in str(e)
+    finally:
+        srv.shutdown()
+
+
+def test_secrets_roundtrip_masked_and_mode(tmp_path):
+    f = str(tmp_path / "s.json")
+    save_provider({"preset": "deepseek", "base_url": "https://x/v1",
+                   "model": "m", "api_key": "sk-secret-1234"}, f)
+    data = load_secrets(f)
+    assert data["provider"]["api_key"] == "sk-secret-1234"
+    assert data["admin_token"]  # 自动生成口令
+    view = public_provider_view(f)
+    assert view["key_masked"] == "****1234" and view["has_key"]
+    assert "sk-secret-1234" not in json.dumps(view)  # 安全视图无原文
+    assert "admin_token" not in json.dumps(view)  # 口令也不回显
+    assert masked_key("") == ""
+    import os
+    if os.name == "posix":
+        assert oct(os.stat(f).st_mode & 0o777) == "0o600"

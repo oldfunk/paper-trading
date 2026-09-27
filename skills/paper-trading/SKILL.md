@@ -59,6 +59,19 @@ python -m paper_trading.hermes_bridge buy --symbol 600519 --volume 100 --json
 python -m paper_trading.hermes_bridge sell --symbol 600519 --volume 100 --price 1500.00 --json
 ```
 
+### LLM (ask-only, never trades)
+
+```bash
+# Save provider (Key goes to local secrets.local.json only, 0600)
+python -m paper_trading.hermes_bridge llm config --preset deepseek --api-key xxx --model deepseek-chat
+
+# List remote models / ask once (logged to op_log, Key never logged)
+python -m paper_trading.hermes_bridge llm models --json
+python -m paper_trading.hermes_bridge llm ask --prompt "..." --json
+```
+
+Presets: deepseek / qwen / moonshot / glm / doubao / openai / custom (any OpenAI-compatible base-url; model name can always be typed manually).
+
 ### View History
 
 ```bash

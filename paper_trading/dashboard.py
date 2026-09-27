@@ -76,6 +76,53 @@ tr:last-child td{border-bottom:none}
   <div class="scroll"><table id="orders"></table></div>
 </section>
 
+<section>
+  <h2>模型设置</h2>
+  <div class="card">
+    <div class="k">管理口令（首次保存配置时自动生成，之后修改/提问都要填）</div>
+    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
+      <input id="adm" type="password" placeholder="管理口令" style="flex:1;min-width:140px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+    </div>
+    <div class="k">厂商 / 接口地址 / 模型</div>
+    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
+      <select id="preset" style="padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+        <option value="deepseek">DeepSeek</option>
+        <option value="qwen">通义千问（阿里）</option>
+        <option value="moonshot">Kimi（月之暗面）</option>
+        <option value="glm">智谱 GLM</option>
+        <option value="doubao">豆包（火山引擎 Ark）</option>
+        <option value="openai">OpenAI</option>
+        <option value="custom">自定义（兼容网关/代理）</option>
+      </select>
+      <input id="base" placeholder="接口地址 https://…/v1" style="flex:2;min-width:200px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+    </div>
+    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
+      <input id="apikey" type="password" placeholder="API Key（只存本机，不回显）" style="flex:2;min-width:200px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+      <input id="model" list="modellist" placeholder="模型：下拉选择或手填名称" style="flex:2;min-width:200px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+      <datalist id="modellist"></datalist>
+    </div>
+    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
+      <button id="btn-models" style="padding:8px 16px;border-radius:6px;border:1px solid var(--line);background:#1b2836;color:var(--fg)">拉取模型列表</button>
+      <button id="btn-save" style="padding:8px 16px;border-radius:6px;border:none;background:#1e8e3e;color:#fff">保存配置</button>
+      <span id="llmstat" class="mut" style="align-self:center"></span>
+    </div>
+    <div class="s">Key 只保存在本机 secrets.local.json（0600 权限），永不进 git、不进日志；页面只显示掩码。局域网使用，不要把面板暴露到公网。</div>
+  </div>
+</section>
+
+<section>
+  <h2>AI 问答</h2>
+  <div class="card">
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <textarea id="q" rows="3" placeholder="例如：结合持仓和行情，评价一下当前三只股票" style="flex:1;min-width:240px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px"></textarea>
+    </div>
+    <div style="display:flex;gap:8px;margin:8px 0">
+      <button id="btn-ask" style="padding:8px 16px;border-radius:6px;border:none;background:#1565c0;color:#fff">提问（记流水）</button>
+    </div>
+    <div id="ans" class="mut">回答会显示在这里，同时记入下方操作流水。</div>
+  </div>
+</section>
+
 <script>
 const fmt=(n,d=2)=>n==null?"-":Number(n).toLocaleString("zh-CN",{minimumFractionDigits:d,maximumFractionDigits:d});
 const pct=n=>n==null?"-":(n*100).toFixed(2)+"%";
@@ -92,7 +139,8 @@ const sym=c=>NAMES[c]?`${NAMES[c]}(${c})`:c;
 const ACTION_CN={
   "run":"每日结算","cron-run":"每日结算（定时任务）","run:dry-run":"试运行（仅预览，不下单）",
   "sync":"同步行情","buy":"买入","sell":"卖出","preview":"下单试算","status":"查询账户",
-  "nav":"查询净值","history":"查询记录","names":"刷新股票名称"};
+  "nav":"查询净值","history":"查询记录","names":"刷新股票名称",
+  "llm:ask":"AI 问答","llm:config":"保存模型配置"};
 function errCN(e){
   if(!e)return"";
   const M=[[/multiple of 100/i,"数量必须为 100 股的整数倍"],
@@ -116,6 +164,8 @@ function errCN(e){
 function paramCN(a,j){let p={};try{p=JSON.parse(j||"{}")}catch(e){}
   if(a==="run"||a==="cron-run"||a==="run:dry-run"||a==="sync")return`股票：${(p.symbols||[]).map(sym).join("、")}`;
   if(a==="buy"||a==="sell"){const px=(p.price!=null&&p.price!=="")?`，限价 ${fmt(p.price)} 元`:"";return `${sym(p.symbol)} ${p.volume}股${px}`;}
+  if(a==="llm:ask")return `问 ${p.model||"AI"}：${(p.prompt||"").slice(0,120)}`;
+  if(a==="llm:config")return `厂商 ${p.preset||""}，模型 ${p.model||"未填"}`;
   if(a==="preview")return `${sym(p.symbol)} ${(p.direction==="buy"?"买入":"卖出")} ${p.volume}股`;
   return Object.entries(p).map(([k,v])=>`${k}=${Array.isArray(v)?v.map(sym).join("、"):v}`).join(" ");}
 function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
@@ -123,6 +173,8 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="buy"||a==="sell"){const fee=(Number(r.commission)||0)+(Number(r.stamp_duty)||0)+(Number(r.transfer_fee)||0);
     return `成交价 ${fmt(r.filled_price)} 元，手续费 ${fmt(fee)} 元`;}
   if(a==="run:dry-run")return`产生信号 ${r.signals??0} 个（仅预览，未下单）`;
+  if(a==="llm:ask")return (r.answer||"").slice(0,200);
+  if(a==="llm:config")return `已保存（${r.base_url||""}）`;
   if(a==="sync"){const u=r.updated||{};const ks=Object.keys(u);
     if(!ks.length)return "无更新";
     return ks.map(s=>`${sym(s)}${u[s]<0?"同步失败":`新增 ${u[s]} 根K线`}`).join("、");}
@@ -161,6 +213,46 @@ async function refresh(){
  }catch(e){document.getElementById("clock").textContent="刷新失败: "+e}
 }
 refresh();setInterval(refresh,15000);
+
+/* ---- 模型设置与 AI 问答（写操作需管理口令） ---- */
+const tok=()=> (document.getElementById("adm").value||sessionStorage.getItem("pt_adm")||"");
+document.getElementById("adm").addEventListener("change",e=>{sessionStorage.setItem("pt_adm",e.target.value)});
+async function post(u,b){const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});return r.json()}
+async function llmStatus(){
+  const s=await get("/api/llm/status");const d=s.data||{};
+  document.getElementById("llmstat").textContent=d.configured?`已配置：${d.preset} / ${d.model||"未选模型"} / Key ${d.key_masked}`:"未配置：先填接口地址与 Key，点保存配置";
+  if(d.preset)document.getElementById("preset").value=d.preset;
+  if(d.base_url)document.getElementById("base").value=d.base_url;
+  if(d.model)document.getElementById("model").value=d.model;
+}
+document.getElementById("btn-models").onclick=async()=>{
+  const t=tok();if(!t){alert("先填写管理口令（首次保存配置时自动生成，如未保存请先保存一次）");return}
+  document.getElementById("llmstat").textContent="拉取中…";
+  const r=await get("/api/llm/models?token="+encodeURIComponent(t));
+  if(!r.ok){document.getElementById("llmstat").textContent="拉取失败："+(r.error||"");return}
+  const dl=document.getElementById("modellist");dl.innerHTML="";
+  r.data.forEach(m=>{const o=document.createElement("option");o.value=m;dl.appendChild(o)});
+  document.getElementById("llmstat").textContent=`共 ${r.data.length} 个模型，下拉选择或手填名称`;
+};
+document.getElementById("btn-save").onclick=async()=>{
+  const r=await post("/api/llm/config",{admin_token:tok(),preset:document.getElementById("preset").value,
+    base_url:document.getElementById("base").value,model:document.getElementById("model").value,
+    api_key:document.getElementById("apikey").value});
+  if(!r.ok){alert("保存失败："+(r.error||""));return}
+  document.getElementById("apikey").value="";
+  if(r.data&&r.data.admin_token){document.getElementById("adm").value=r.data.admin_token;sessionStorage.setItem("pt_adm",r.data.admin_token)}
+  await llmStatus();refresh();
+  alert("已保存。管理口令已填入上方口令框并记住在本次浏览器会话，后续修改/提问都要用它。");
+};
+document.getElementById("btn-ask").onclick=async()=>{
+  const q=document.getElementById("q").value.trim();if(!q){alert("先写问题");return}
+  document.getElementById("ans").textContent="思考中…";
+  const r=await post("/api/llm/ask",{admin_token:tok(),prompt:q});
+  if(!r.ok){document.getElementById("ans").textContent="失败："+(r.error||"");return}
+  document.getElementById("ans").textContent=r.data.answer||"(空回答)";
+  refresh();
+};
+llmStatus();
 </script>
 </body>
 </html>"""
@@ -175,6 +267,7 @@ def _ro(db_path: str) -> sqlite3.Connection:
 class Handler(BaseHTTPRequestHandler):
     data_db = "data.db"
     account_db = "paper_account.db"
+    secrets_path = None
 
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)
@@ -187,6 +280,34 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, data, code: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False, default=str).encode()
         self._send(code, body, "application/json; charset=utf-8")
+
+    def _bridge(self):
+        from paper_trading.hermes_bridge import HermesBridge
+
+        return HermesBridge(data_db=self.data_db, account_db=self.account_db,
+                            secrets_path=self.secrets_path)
+
+    def _read_json(self) -> dict:
+        try:
+            n = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            n = 0
+        if n <= 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+        except Exception:
+            return {}
+
+    def _admin_ok(self, body: dict) -> bool:
+        """写操作口令校验（头 X-Admin-Token 或 body.admin_token）。"""
+        from paper_trading.llm import load_secrets
+
+        want = (load_secrets(self.secrets_path).get("admin_token") or "")
+        if not want:
+            return False  # 未配置过=未设口令，拒绝写操作，引导先保存配置
+        got = (self.headers.get("X-Admin-Token") or "") or str(body.get("admin_token") or "")
+        return bool(got) and got == want
 
     def do_GET(self) -> None:  # noqa: N802
         u = urlparse(self.path)
@@ -213,6 +334,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "data": {r["symbol"]: r["name"] for r in rows}})
                 finally:
                     conn.close()
+            elif u.path == "/api/llm/status":
+                self._json({"ok": True, "data": self._bridge().llm_status()})
+            elif u.path == "/api/llm/models":
+                # GET 携带口令：/api/llm/models?token=xxx（仅本机局域网使用，勿外网暴露）
+                q = parse_qs(u.query)
+                tok = (q.get("token") or [""])[0]
+                if not self._admin_ok({"admin_token": tok}):
+                    self._json({"ok": False, "error": "口令错误或未设置（先保存一次配置生成口令）"},
+                               code=403)
+                else:
+                    r = self._bridge().llm_models()
+                    self._json(r, code=200 if r.get("ok") else 502)
             elif u.path in ("/api/nav", "/api/ops", "/api/orders", "/api/fills"):
                 q = parse_qs(u.query)
                 limit = int(q.get("limit", ["30"])[0])
@@ -234,6 +367,30 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, code=500)
 
+    def do_POST(self) -> None:  # noqa: N802
+        u = urlparse(self.path)
+        try:
+            body = self._read_json()
+            if u.path == "/api/llm/config":
+                if not self._admin_ok(body) and self._bridge().llm_status().get("configured"):
+                    # 已配置过则必须口令；首次保存允许无口令（保存时自动生成）
+                    self._json({"ok": False, "error": "口令错误"}, code=403)
+                    return
+                r = self._bridge().llm_save(
+                    body.get("preset", "custom"), body.get("base_url", ""),
+                    body.get("model", ""), body.get("api_key", ""))
+                self._json(r, code=200 if r.get("ok") else 400)
+            elif u.path == "/api/llm/ask":
+                if not self._admin_ok(body):
+                    self._json({"ok": False, "error": "口令错误或未设置"}, code=403)
+                    return
+                r = self._bridge().llm_ask(body.get("prompt", ""), body.get("system", ""))
+                self._json(r, code=200 if r.get("ok") else 502)
+            else:
+                self._send(404, b"not found", "text/plain")
+        except Exception as e:
+            self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, code=500)
+
     def log_message(self, fmt: str, *args) -> None:  # quiet access log
         pass
 
@@ -245,9 +402,11 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--data-db", default="data.db")
     ap.add_argument("--account-db", default="paper_account.db")
+    ap.add_argument("--secrets", default=None, help="LLM 密钥文件路径")
     args = ap.parse_args()
     global_handler.data_db = args.data_db
     global_handler.account_db = args.account_db
+    global_handler.secrets_path = args.secrets
 
     srv = ThreadingHTTPServer((args.host, args.port), global_handler)
     print(f"Dashboard: http://{args.host}:{args.port}  ({datetime.now().isoformat()})")

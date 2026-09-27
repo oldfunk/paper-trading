@@ -63,6 +63,7 @@ class HermesBridge:
         account_db: str = "paper_account.db",
         config: Optional[TradingConfig] = None,
         config_path: Optional[str] = None,
+        secrets_path: Optional[str] = None,
     ) -> None:
         # config.yaml 单一真相源（显式 TradingConfig 优先，其次 config_path，其次默认 config.yaml）
         risk_kwargs: dict = {}
@@ -92,6 +93,7 @@ class HermesBridge:
         )
         self.config = config or TradingConfig()
         self.stock_pool = stock_pool
+        self.secrets_path = secrets_path
 
     def sync_data(self, symbols: list[str]) -> dict:
         """只同步行情+名称，不发信号、不下单、不记 NAV（供日内补数/定时任务用）。"""
@@ -420,6 +422,74 @@ class HermesBridge:
         """获取成交历史。"""
         return self.broker.get_fill_history(limit)
 
+    # ---------- LLM（P1：只咨询，不交易） ----------
+
+    def llm_status(self) -> dict:
+        """LLM 配置状态（安全视图，无 Key 原文）。"""
+        from paper_trading.llm import public_provider_view
+
+        return public_provider_view(self.secrets_path)
+
+    def llm_save(self, preset: str = "custom", base_url: str = "",
+                 model: str = "", api_key: str = "") -> dict:
+        """保存厂商配置。preset 未知时必须手填 base_url。"""
+        from paper_trading.llm import preset_base_url, public_provider_view, save_provider
+
+        base_url = base_url.strip() or preset_base_url(preset)
+        if not base_url:
+            return {"ok": False, "error": "未知厂商且未填写接口地址（base_url）"}
+        save_provider({"preset": preset, "base_url": base_url,
+                       "model": model.strip(), "api_key": api_key.strip()},
+                      self.secrets_path)
+        from paper_trading.llm import load_secrets as _load
+
+        view = public_provider_view(self.secrets_path)
+        self.broker.log_operation("llm:config", {"preset": preset, "model": view["model"]},
+                                  True, {"base_url": base_url}, None, None)
+        # 口令仅在此处返回一次（落盘+本次回显），日志与常规回显均不含它
+        return {"ok": True, "admin_token": _load(self.secrets_path).get("admin_token", ""),
+                **view}
+
+    def _llm_config(self):
+        from paper_trading.llm import LLMConfig, LLMError, load_secrets
+
+        data = load_secrets(self.secrets_path)
+        p = data.get("provider") or {}
+        if not p.get("base_url") or not p.get("api_key"):
+            raise LLMError("LLM 未配置（先在面板或 llm-config 填写接口地址与 Key）")
+        return LLMConfig(base_url=p["base_url"], api_key=p["api_key"],
+                         model=p.get("model", ""))
+
+    def llm_models(self) -> dict:
+        """拉取远端模型列表（Key 不出本机，只返回 id）。"""
+        from paper_trading.llm import LLMError, list_models
+
+        try:
+            models = list_models(self._llm_config())
+            return {"ok": True, "models": models}
+        except LLMError as e:
+            return {"ok": False, "error": str(e)}
+
+    def llm_ask(self, prompt: str, system: str = "") -> dict:
+        """问 AI 一次，结果记流水（prompt/回答原文入库，Key 永不入库）。"""
+        from paper_trading.llm import LLMError, chat
+
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return {"ok": False, "error": "问题不能为空"}
+        try:
+            cfg = self._llm_config()
+            answer = chat(cfg, [{"role": "user", "content": prompt}], system=system)
+        except LLMError as e:
+            self.broker.log_operation("llm:ask", {"model": "", "prompt": prompt[:200]},
+                                      False, {"error": str(e)}, None, None)
+            return {"ok": False, "error": str(e)}
+        st = self.get_status()
+        self.broker.log_operation(
+            "llm:ask", {"model": cfg.model, "prompt": prompt[:500]}, True,
+            {"answer": answer[:2000]}, st["cash"], st["total_value"])
+        return {"ok": True, "model": cfg.model, "answer": answer}
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -429,6 +499,7 @@ def main() -> None:
     parser.add_argument("--account-db", default="paper_account.db", help="账户数据库路径")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
     parser.add_argument("--lock-file", default="paper_trading.lock", help="运行锁文件")
+    parser.add_argument("--secrets", default=None, help="LLM 密钥文件路径（缺省 secrets.local.json）")
 
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
 
@@ -477,6 +548,24 @@ def main() -> None:
     preview_parser.add_argument("--price", type=float, default=None)
     preview_parser.add_argument("--json", action="store_true")
 
+    # llm
+    llm_parser = subparsers.add_parser("llm", help="LLM 接入（只咨询，不交易）")
+    llm_parser.add_argument("--json", action="store_true")
+    llm_sub = llm_parser.add_subparsers(dest="llm_command")
+
+    llm_cfg = llm_sub.add_parser("config", help="保存厂商配置（Key 只落本地文件）")
+    llm_cfg.add_argument("--preset", default="custom",
+                         help="deepseek/qwen/moonshot/glm/doubao/openai/custom")
+    llm_cfg.add_argument("--base-url", default="")
+    llm_cfg.add_argument("--model", default="")
+    llm_cfg.add_argument("--api-key", default="")
+    llm_cfg.add_argument("--show", action="store_true", help="只显示当前配置（掩码）")
+
+    llm_sub.add_parser("models", help="拉取远端模型列表")
+    llm_ask = llm_sub.add_parser("ask", help="问 AI 一次（记流水）")
+    llm_ask.add_argument("--prompt", required=True)
+    llm_ask.add_argument("--system", default="")
+
     # nav
     nav_parser = subparsers.add_parser("nav", help="查看 NAV 历史")
     nav_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
@@ -507,7 +596,7 @@ def main() -> None:
 
     try:
         bridge = HermesBridge(data_db=args.data_db, account_db=args.account_db,
-                              config_path=args.config)
+                              config_path=args.config, secrets_path=args.secrets)
     except Exception as e:
         emit(None, ok=False, error=f"Init failed: {e}")
         sys.exit(1)
@@ -616,6 +705,30 @@ def main() -> None:
 
         elif args.command == "preview":
             emit(bridge.preview_order(args.symbol, args.direction, args.volume, args.price))
+
+        elif args.command == "llm":
+            if args.llm_command == "config":
+                if args.show:
+                    emit(bridge.llm_status())
+                else:
+                    if args.api_key:
+                        logger.warning("Key 经命令行传入会留在 shell 历史里，敏感环境请改用面板设置页")
+                    r = bridge.llm_save(args.preset, args.base_url, args.model, args.api_key)
+                    emit(r, ok=r.get("ok", False), error=r.get("error"))
+                    if not r.get("ok"):
+                        sys.exit(3)
+            elif args.llm_command == "models":
+                r = bridge.llm_models()
+                emit(r, ok=r.get("ok", False), error=r.get("error"))
+                if not r.get("ok"):
+                    sys.exit(3)
+            elif args.llm_command == "ask":
+                r = bridge.llm_ask(args.prompt, args.system)
+                emit(r, ok=r.get("ok", False), error=r.get("error"))
+                if not r.get("ok"):
+                    sys.exit(3)
+            else:
+                emit(bridge.llm_status())
 
         elif args.command == "nav":
             emit(bridge.get_nav_history())

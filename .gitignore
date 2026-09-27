@@ -55,5 +55,6 @@ htmlcov/
 # Config overrides
 config.local.yaml
 
-# Run lock (concurrency guard, runtime artifact)
+# Secrets (LLM keys, NEVER commit)
+secrets.local.json
 *.lock

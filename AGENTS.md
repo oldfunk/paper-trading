@@ -92,6 +92,13 @@ hermes cron add \
 2. 新增股票池标的时，先确认板块前缀（6/0/3/688/8/4）对应的涨跌幅档，ST 主板按 10%（2026-07 新规），不得沿用“ST=5%”旧口径。
 3. 对用户只承诺 `已建模` 项；`简化` 项必须如实说明与实盘的差异，不得声称“与实盘一致”。
 
+## LLM 接入安全（P1：只咨询，不交易）
+
+1. **Key 三不**：不进 git（`secrets.local.json` 已 gitignore）、不进日志（`op_log` params/result 禁止出现 Key，单测锁定）、面板只回显掩码（`****末4位`）。
+2. **面板写操作必须口令**：`admin_token` 首次保存配置时自动生成并一次性回显；后续 `config/ask/models` 调用必须携带。局域网使用，禁止把面板暴露到公网。
+3. **LLM 不碰下单链**：`llm:ask` 只问答记流水；任何决策环（P2）必须走 fail-closed 钳制（schema/白名单/100 股倍数/金额上限），再经 `RiskManager`，缺一不可。
+4. 命令行传 Key 会留 shell 历史，敏感环境一律用面板设置页。
+
 ## Risk Parameters
 
 | Parameter | Default | Description |
