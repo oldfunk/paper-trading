@@ -95,7 +95,23 @@ class AgentTrader:
                 return True
         return False
 
-    def _plan(self, symbols: list[str]) -> dict:
+    def _cand_txt(self, candidates: Optional[list]) -> str:
+        if not candidates:
+            return ""
+        from paper_trading.agent.prompts import CAND_TMPL
+
+        lines = []
+        for c in (candidates or [])[:20]:
+            if not isinstance(c, dict):
+                continue
+            lines.append(
+                f"{c.get('name', '')}({c.get('symbol', '')}) "
+                f"score={c.get('score')} PE={c.get('pe')} "
+                f"理由：{str(c.get('reason') or '')[:80]}")
+        return CAND_TMPL.format(cand_lines="\n".join(lines)) if lines else ""
+
+    def _plan(self, symbols: list[str], candidates: Optional[list] = None,
+              pool_source: str = "config") -> dict:
         """休盘做计划：基于最新已收盘定稿数据问 LLM，存待执行，不碰账本。"""
         from paper_trading.utils import get_logger
 
@@ -122,6 +138,7 @@ class AgentTrader:
             pool="、".join(symbols),
             max_orders=self.cfg.max_orders_per_run,
             max_order_value=int(self.cfg.max_order_value),
+            candidates=self._cand_txt(candidates),
             signals=ref_txt,
             context=_json.dumps(ctx, ensure_ascii=False))
         system = (TRADER_SYSTEM.format(
@@ -137,7 +154,7 @@ class AgentTrader:
                            self.cfg.llm_timeout, self.cfg.llm_retries,
                            self.cfg.llm_max_tokens, self.cfg.llm_thinking)
         except LLMError as e:
-            b.broker.log_operation("ai:plan", {"symbols": symbols}, False,
+            b.broker.log_operation("ai:plan", {"symbols": symbols, "pool_source": pool_source}, False,
                                    {"error": str(e)}, None, None)
             return {"ok": False, "error": str(e), "timestamp": now}
         plan = _extract_json(raw or "")
@@ -147,18 +164,22 @@ class AgentTrader:
                     "timestamp": now, "symbols": symbols}
         summary = str((plan or {}).get("summary", ""))[:200]
         pid = b.broker.save_plan(today_str(), symbols,
-                                 {"actions": actions, "summary": summary, "asof": asof})
-        b.broker.log_operation("ai:plan", {"symbols": symbols, "asof": asof}, True,
+                                 {"actions": actions, "summary": summary, "asof": asof,
+                                  "pool_source": pool_source})
+        b.broker.log_operation("ai:plan", {"symbols": symbols, "asof": asof,
+                                           "pool_source": pool_source}, True,
                                {"plan_id": pid, "summary": summary,
                                 "n_actions": len(actions),
                                 "raw": str(raw or "")[:1500]}, None, None)
         logger.info(f"AI plan saved id={pid} asof={asof}")
         return {"ok": True, "mode": "plan", "plan_id": pid, "asof": asof,
-                "timestamp": now, "symbols": symbols,
+                "timestamp": now, "symbols": symbols, "pool_source": pool_source,
                 "actions": actions, "summary": summary}
 
     def run(self, symbols: list[str], dry_run: bool = False,
-            force: bool = False, plan_only: bool = False) -> dict:
+            force: bool = False, plan_only: bool = False,
+            candidates: Optional[list] = None,
+            pool_source: str = "config") -> dict:
         """三态：plan_only 只做计划存着；默认先执行今日待执行计划，无则现决现执。"""
         from paper_trading.utils import get_logger
 
@@ -168,7 +189,7 @@ class AgentTrader:
         mode = "dry" if dry_run else "live"
 
         if plan_only:
-            return self._plan(symbols)
+            return self._plan(symbols, candidates=candidates, pool_source=pool_source)
 
         if not dry_run and not force and self._decided_today():
             logger.warning("AI already decided today, skip (idempotency)")
@@ -237,6 +258,7 @@ class AgentTrader:
             pool="、".join(symbols),
             max_orders=self.cfg.max_orders_per_run,
             max_order_value=int(self.cfg.max_order_value),
+            candidates=self._cand_txt(candidates),
             signals=ref_txt,
             context=_json.dumps(ctx, ensure_ascii=False))
         system = TRADER_SYSTEM.format(
@@ -250,7 +272,8 @@ class AgentTrader:
                            self.cfg.llm_timeout, self.cfg.llm_retries,
                            self.cfg.llm_max_tokens, self.cfg.llm_thinking)
         except LLMError as e:
-            b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
+            b.broker.log_operation("ai:decide", {"symbols": symbols, "pool_source": pool_source,
+                                                 "mode": mode},
                                    False, {"error": str(e)}, None, None)
             return {"ok": False, "error": str(e), "timestamp": now}
 
@@ -266,7 +289,8 @@ class AgentTrader:
             actions=actions, summary=summary, symbols=symbols,
             all_bars=all_bars, latest_prices=latest, cash=cash,
             positions=positions, nav_total=nav.total_value,
-            dry_run=dry_run, mode=mode, now=now, from_plan=False)
+            dry_run=dry_run, mode=mode, now=now, from_plan=False,
+            pool_source=pool_source)
 
     def _execute_plan(self, pending: dict, all_bars: dict,
                       latest: dict) -> dict:
@@ -289,7 +313,7 @@ class AgentTrader:
             all_bars=all_bars, latest_prices=latest, cash=cash,
             positions=positions, nav_total=nav.total_value,
             dry_run=False, mode="live", now=datetime.now().isoformat(),
-            from_plan=True)
+            from_plan=True, pool_source=str(plan.get("pool_source", "config")))
         b.broker.mark_plan_done(int(pending["id"]))
         logger.info(f"AI plan {pending['id']} executed")
         return res
@@ -297,7 +321,8 @@ class AgentTrader:
     def _execute_actions(self, *, actions: list, summary: str, symbols: list,
                          all_bars: dict, latest_prices: dict, cash: float,
                          positions: dict, nav_total: float, dry_run: bool,
-                         mode: str, now: str, from_plan: bool) -> dict:
+                         mode: str, now: str, from_plan: bool,
+                         pool_source: str = "config") -> dict:
         """逐条钳制执行（dry_run 不碰账本；from_plan 仅标记来源）。"""
         from paper_trading.models import Order, OrderType, Signal, SignalType
         from paper_trading.utils import get_logger
@@ -374,9 +399,10 @@ class AgentTrader:
         nav2 = b.broker.get_nav(latest)
         b.broker.log_operation(
             "ai:decide", {"symbols": symbols, "mode": mode, "from_plan": from_plan,
-                          "summary": summary}, True,
+                          "pool_source": pool_source, "summary": summary}, True,
             {"decisions": decided}, nav2.cash, nav2.total_value)
         logger.info(f"AI decide done: {len(decided)} actions, mode={mode}, from_plan={from_plan}")
         return {"ok": True, "timestamp": now, "symbols": symbols, "mode": mode,
-                "from_plan": from_plan, "summary": summary, "decisions": decided,
+                "from_plan": from_plan, "pool_source": pool_source,
+                "summary": summary, "decisions": decided,
                 "nav": nav2.__dict__}

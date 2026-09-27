@@ -203,6 +203,8 @@ python -m paper_trading.hermes_bridge agent run --dry-run --json
 python -m paper_trading.hermes_bridge agent run --json
 # 休盘做计划（存着，开盘自动执行；不碰账本）
 python -m paper_trading.hermes_bridge agent run --plan-only --json
+# 股票池来源（需母项目在同一台机器，否则自动回退 config）
+python -m paper_trading.hermes_bridge agent run --pool-from screening --pool-limit 20 --json
 
 # 下单前试算（不落库）
 python -m paper_trading.hermes_bridge preview --symbol 600519 --direction buy --volume 100 --json

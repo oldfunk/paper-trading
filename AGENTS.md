@@ -107,6 +107,7 @@ hermes cron add \
 4. **可审计**：每次决策记原文摘要 + 逐条处置（已成交/拒绝原因）+ 决策后资产；面板“AI 决策”中文渲染。
 5. dry-run 不碰账本（不解冻不下单不记 NAV），只走校验链。
 6. **休盘计划开盘执行**：`--plan-only` 基于最新定稿数据做计划存 `agent_plans`（不碰账本、不锁日）；开盘 `agent run` 优先消费当日待执行计划（价格沿用计划基准，风控重验），消费后标记 done。开盘 gap 与定稿价的差异是已知简化。
+7. **母项目连接只读**：`paper_trading/integration/` 是唯一允许碰母库的地方，且只能 SQLite 只读打开；母库缺失/异常时静默回退本地，永不阻断交易。`--pool-from`（config/watchlist/screening/all）是唯一的池来源开关，缺省 `config`（行为零变化）。
 
 ## Risk Parameters
 

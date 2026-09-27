@@ -491,7 +491,11 @@ class HermesBridge:
 
     def llm_context(self, max_ops: int = 10, max_nav: int = 5,
                     closes_n: int = 5) -> dict:
-        """组装项目实时快照（给 LLM 当上下文；不含 Key/口令等任何密钥）。"""
+        """组装项目实时快照（给 LLM 当上下文；不含 Key/口令等任何密钥）。
+
+        合并模式下自动附加母项目的价值视角（基本面/AI 分析/论点/大盘），
+        母库不可读时该段为空，绝不影响主流程。
+        """
         st = self.get_status()
         names = self.data_db.get_stock_names()
 
@@ -512,7 +516,7 @@ class HermesBridge:
 
         nav_hist = self.get_nav_history(limit=max_nav)
         ops = self.broker.get_op_log(limit=max_ops)
-        return {
+        out: dict = {
             "account": {
                 "cash": st["cash"], "total_value": st["total_value"],
                 "market_value": st["market_value"], "pnl": st["pnl"],
@@ -535,6 +539,16 @@ class HermesBridge:
                 for o in ops],
             "note": "模拟盘。策略为MA5/MA20均线信号+风控。只做分析建议，不下单。",
         }
+        try:
+            from paper_trading.integration import read_market_regime, read_stock_cards
+
+            cards = read_stock_cards(symbols)
+            regime = read_market_regime()
+            if cards or regime:
+                out["value_view"] = {"stock_cards": cards, "market_regime": regime}
+        except Exception:
+            pass
+        return out
 
     def llm_ask(self, prompt: str, system: str = "") -> dict:
         """问 AI 一次（自动附带项目快照，结果记流水；Key 永不入库）。"""
@@ -589,6 +603,9 @@ def main() -> None:
     run_parser = subparsers.add_parser("run", help="执行每日结算流程")
     run_parser.add_argument("--symbols", nargs="*", default=None,
                             help="缺省=config.yaml 股票池")
+    run_parser.add_argument("--pool-from", default="config",
+                            choices=["config", "watchlist", "screening", "all"],
+                            help="股票池来源（watchlist/screening 需母项目在同一台机器）")
     run_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
     run_parser.add_argument("--dry-run", action="store_true", help="只生成信号与风控预览，不下单")
 
@@ -596,6 +613,8 @@ def main() -> None:
     sync_parser = subparsers.add_parser("sync", help="只同步行情+名称，不交易（可日内执行）")
     sync_parser.add_argument("--symbols", nargs="*", default=None,
                              help="缺省=config.yaml 股票池")
+    sync_parser.add_argument("--pool-from", default="config",
+                             choices=["config", "watchlist", "screening", "all"])
     sync_parser.add_argument("--json", action="store_true")
 
     # buy
@@ -653,6 +672,10 @@ def main() -> None:
     agent_sub = agent_parser.add_subparsers(dest="agent_command")
     agent_run = agent_sub.add_parser("run", help="执行一次 AI 决策（默认走配置池）")
     agent_run.add_argument("--symbols", nargs="*", default=None)
+    agent_run.add_argument("--pool-from", default="config",
+                           choices=["config", "watchlist", "screening", "all"],
+                           help="AI 选股范围（screening=母项目最新候选）")
+    agent_run.add_argument("--pool-limit", type=int, default=20)
     agent_run.add_argument("--json", action="store_true")
     agent_run.add_argument("--dry-run", action="store_true", help="只决策不下单")
     agent_run.add_argument("--force", action="store_true", help="忽略今日已决策闸")
@@ -681,6 +704,14 @@ def main() -> None:
         print(json.dumps({"ok": ok, "data": data, "error": error},
                          indent=2, ensure_ascii=False, default=str))
 
+    def _resolve_syms(b, a):
+        """解析股票池：CLI > pool-from > config；返回 (symbols, source_note, candidates)。"""
+        from paper_trading.integration import resolve_pool
+
+        return resolve_pool(getattr(a, "symbols", None), b.stock_pool,
+                            getattr(a, "pool_from", "config") or "config",
+                            getattr(a, "pool_limit", 20) or 20)
+
     if not args.command:
         parser.print_help()
         sys.exit(2)
@@ -699,18 +730,19 @@ def main() -> None:
             emit(bridge.get_status())
 
         elif args.command == "sync":
-            syms = args.symbols or bridge.stock_pool or ["600519"]
+            syms, note, _ = _resolve_syms(bridge, args)
             with run_lock(args.lock_file):
                 res = bridge.sync_data(syms)
+            res["pool_source"] = note
             bridge.broker.log_operation(
-                "sync", {"symbols": syms}, res.get("ok", False),
+                "sync", {"symbols": syms, "pool_source": note}, res.get("ok", False),
                 {"updated": res.get("updated")}, None, None)
             emit(res, ok=res.get("ok", False), error=res.get("error"))
             if not res.get("ok"):
                 sys.exit(3)
 
         elif args.command in ("run", "cron-run"):
-            syms = args.symbols or bridge.stock_pool or ["600519"]
+            syms, note, _ = _resolve_syms(bridge, args)
             if getattr(args, "dry_run", False):
                 # dry-run：信号+风控预览，不下单不记NAV
                 all_bars = {}
@@ -732,15 +764,16 @@ def main() -> None:
                                     "volume": sig.volume, "price": sig.price,
                                     "pass": ok, "reason": reason})
                 bridge.broker.log_operation(
-                    "run:dry-run", {"symbols": syms}, True,
+                    "run:dry-run", {"symbols": syms, "pool_source": note}, True,
                     {"signals": len(preview)}, nav.cash, nav.total_value)
-                emit({"signals": preview, "nav": nav.__dict__})
+                emit({"signals": preview, "nav": nav.__dict__, "pool_source": note})
             else:
                 with run_lock(args.lock_file):
                     res = bridge.run_daily(syms)
+                res["pool_source"] = note
                 nav = res.get("nav") or {}
                 bridge.broker.log_operation(
-                    "run", {"symbols": syms}, True,
+                    "run", {"symbols": syms, "pool_source": note}, True,
                     {"signals": res.get("signals_generated"),
                      "orders": res.get("orders_executed")},
                     nav.get("cash"), nav.get("total_value"))
@@ -829,14 +862,15 @@ def main() -> None:
             if args.agent_command != "run":
                 parser.print_help()
                 sys.exit(2)
-            syms = args.symbols or bridge.stock_pool or ["600519"]
+            syms, note, cands = _resolve_syms(bridge, args)
             if not bridge.agent_cfg.enabled and not args.force:
                 emit(None, ok=False, error="agent 未启用（config.yaml agent.enabled）")
                 sys.exit(3)
             with run_lock(args.lock_file):
                 trader = AgentTrader(bridge, bridge.agent_cfg)
                 res = trader.run(syms, dry_run=args.dry_run, force=args.force,
-                                 plan_only=args.plan_only)
+                                 plan_only=args.plan_only, candidates=cands,
+                                 pool_source=note)
             emit(res, ok=res.get("ok", False), error=res.get("error"))
             if not res.get("ok"):
                 sys.exit(3)
