@@ -18,71 +18,123 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 PAGE = r"""<!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light" data-color-scheme="cn">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>模拟交易仪表盘</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--up:#e53935;--down:#1e8e3e;--bg:#0e1621;--panel:#17212b;--fg:#e7ecf1;--mut:#8a9bab;--line:#263340}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-header{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
-h1{font-size:18px;margin:0;font-weight:600}
-#clock{color:var(--mut);font-size:13px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;padding:16px 22px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
-.card .k{color:var(--mut);font-size:12px;letter-spacing:.05em}
-.card .v{font-size:26px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums}
-.card .s{font-size:12px;color:var(--mut);margin-top:2px}
-section{padding:6px 22px 18px}
-h2{font-size:14px;color:var(--mut);font-weight:600;margin:18px 0 8px;text-transform:uppercase;letter-spacing:.08em}
-table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-th,td{padding:9px 12px;text-align:left;font-size:13px;border-bottom:1px solid var(--line);white-space:nowrap}
-th{color:var(--mut);font-weight:600;background:#1b2836}
+/* 设计语言与 stock-dashboard 对齐：浅色主题 / 红涨绿跌 / 8px 圆角 */
+:root{
+--font-sans:'Inter','Noto Sans SC',-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+--bg-primary:#f8f9fa;--bg-secondary:#ffffff;--bg-tertiary:#f0f1f3;--bg-hover:#e8eaed;
+--text-primary:#1a1c1e;--text-secondary:#5f6368;--text-tertiary:#9aa0a6;
+--accent:#1a73e8;--accent-hover:#1557b0;--accent-soft:#e8f0fe;
+--green:#137333;--green-bg:#e6f4ea;--red:#c5221f;--red-bg:#fce8e6;
+--color-up:var(--red);--color-up-bg:var(--red-bg);--color-down:var(--green);--color-down-bg:var(--green-bg);
+--divider:#e0e3e7;--divider-thin:#e8eaed;
+--shadow:0 1px 3px rgba(0,0,0,0.04),0 1px 2px rgba(0,0,0,0.02);
+--radius:8px;--radius-sm:4px}
+[data-theme="dark"]{
+--bg-primary:#1a1c1e;--bg-secondary:#202124;--bg-tertiary:#282a2d;--bg-hover:#303134;
+--text-primary:#e8eaed;--text-secondary:#9aa0a6;--text-tertiary:#5f6368;
+--accent:#8ab4f8;--accent-hover:#aecbfa;--accent-soft:#1a3a5c;
+--green:#81c995;--green-bg:#1e3527;--red:#f28b82;--red-bg:#3c2022;
+--divider:#3c4043;--divider-thin:#303134;--shadow:0 1px 3px rgba(0,0,0,0.2)}
+*{box-sizing:border-box}*,*::before,*::after{margin:0;padding:0}
+body{margin:0;background:var(--bg-primary);color:var(--text-primary);font:400 14px/1.5 var(--font-sans);-webkit-font-smoothing:antialiased;transition:background .2s,color .2s}
+.app{max-width:1440px;margin:0 auto;padding:24px 32px;overflow-x:hidden}
+.header{display:flex;justify-content:space-between;align-items:center;padding-bottom:16px;border-bottom:1px solid var(--divider-thin);margin-bottom:24px}
+.header-left{display:flex;align-items:baseline;gap:16px}
+.header-title{font-size:18px;font-weight:500;letter-spacing:-.01em;margin:0}
+.header-subtitle{font-size:12px;color:var(--text-tertiary)}
+.header-right{display:flex;align-items:center;gap:12px}
+.live-indicator{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:500;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.05em}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse-dot 2s ease-in-out infinite}
+@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.4}}
+.last-updated{font-size:11px;color:var(--text-tertiary)}
+.theme-toggle{background:none;border-width:0;cursor:pointer;padding:6px;border-radius:var(--radius-sm);color:var(--text-secondary);font-size:14px;line-height:1}
+.theme-toggle:hover{background:var(--bg-hover);color:var(--text-primary)}
+.market-row{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:16px 0;margin-bottom:24px;border-bottom:1px solid var(--divider-thin)}
+.market-item{padding:10px 0}
+.market-name{font-size:11px;font-weight:500;color:var(--text-tertiary);letter-spacing:.06em;margin-bottom:2px}
+.market-value{font-size:21px;font-weight:300;letter-spacing:-.02em;line-height:1.2;font-variant-numeric:tabular-nums}
+.market-change{font-size:12px;margin-top:2px;color:var(--text-tertiary)}
+.status-bar{display:flex;gap:24px;padding:10px 0;margin-bottom:24px;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--divider-thin);flex-wrap:wrap}
+.status-item{display:flex;align-items:center;gap:6px}
+.status-label{color:var(--text-tertiary)}
+.status-value{font-weight:500;color:var(--text-primary)}
+.section-header{display:flex;justify-content:space-between;align-items:center;padding:12px 0 8px;margin-bottom:16px;border-bottom:1px solid var(--divider-thin)}
+.section-title{font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em;margin:0}
+.section-count{font-size:12px;color:var(--text-tertiary)}
+table{width:100%;border-collapse:collapse;font-size:13px;background:var(--bg-secondary)}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--divider);white-space:nowrap}
+th{color:var(--text-secondary);font-weight:600;font-size:12px}
 tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--bg-hover)}
 .num{text-align:right;font-variant-numeric:tabular-nums}
-.up{color:var(--up)} .down{color:var(--down)}
-.ok{color:var(--down);font-weight:600} .bad{color:var(--up);font-weight:600}
-.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px}
-.tag.buy{background:#3a1518;color:#ff8a80} .tag.sell{background:#0e2a17;color:#69f0ae}
-.scroll{overflow-x:auto;border-radius:10px}
-.mut{color:var(--mut)}
-#navchart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px}
+.up{color:var(--color-up)} .down{color:var(--color-down)}
+.ok{color:var(--green);font-weight:600} .bad{color:var(--red);font-weight:600}
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600}
+.tag.buy{background:var(--color-up-bg);color:var(--color-up)} .tag.sell{background:var(--color-down-bg);color:var(--color-down)}
+.scroll{overflow-x:auto}
+.mut{color:var(--text-tertiary)}
+.ai-panel{background:var(--bg-secondary);border:1px solid var(--divider);border-radius:var(--radius);padding:14px 16px;margin-bottom:14px;box-shadow:var(--shadow)}
+.ai-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.ai-row label{font-size:13px;color:var(--text-secondary);white-space:nowrap}
+.ai-row select,.ai-row input,.ai-row textarea{font-size:13px;padding:6px 8px;border:1px solid var(--divider);border-radius:var(--radius-sm);background:var(--bg-secondary);color:var(--text-primary);font-family:inherit}
+.ai-row button{font-size:13px;padding:6px 14px;border-radius:var(--radius-sm);border:1px solid var(--divider);background:var(--bg-secondary);color:var(--text-primary);cursor:pointer}
+.ai-row button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.ai-row button.primary:hover{background:var(--accent-hover)}
+.ai-msg{font-size:13px;min-height:18px;margin:4px 0}
+.ai-answer{white-space:pre-wrap;font-size:13px;line-height:1.7;background:var(--bg-primary);border:1px solid var(--divider);border-radius:var(--radius-sm);padding:10px;margin:6px 0}
+.s{font-size:12px;color:var(--text-tertiary);margin-top:2px}
+@media(max-width:720px){.app{padding:16px}.market-row{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
-<header><h1>模拟交易仪表盘</h1><span id="clock">加载中…</span></header>
+<div class="app">
+<header class="header">
+  <div class="header-left"><h1 class="header-title">模拟交易仪表盘</h1><span class="header-subtitle">纸盘交易 · 只读</span></div>
+  <div class="header-right">
+    <div class="live-indicator"><span class="live-dot"></span><span>运行中</span></div>
+    <span class="last-updated" id="clock">加载中…</span>
+    <button class="theme-toggle" id="themeBtn" title="切换深色/浅色">◐</button>
+  </div>
+</header>
 
-<div class="cards" id="cards"></div>
+<div class="market-row" id="cards"></div>
+<div class="status-bar" id="statusbar"></div>
 
 <section>
-  <h2>资产走势</h2>
+  <div class="section-header"><h2 class="section-title">资产走势</h2><span class="section-count" id="c-nav"></span></div>
   <div class="scroll"><table id="nav"></table></div>
 </section>
 
 <section>
-  <h2>AI 操作流水</h2>
+  <div class="section-header"><h2 class="section-title">AI 操作流水</h2><span class="section-count" id="c-ops"></span></div>
   <div class="scroll"><table id="ops"></table></div>
 </section>
 
 <section>
-  <h2>当前持仓</h2>
+  <div class="section-header"><h2 class="section-title">当前持仓</h2><span class="section-count" id="c-pos"></span></div>
   <div class="scroll"><table id="pos"></table></div>
 </section>
 
 <section>
-  <h2>订单记录</h2>
+  <div class="section-header"><h2 class="section-title">订单记录</h2><span class="section-count" id="c-orders"></span></div>
   <div class="scroll"><table id="orders"></table></div>
 </section>
 
 <section>
-  <h2>模型设置</h2>
-  <div class="card">
+  <div class="section-header"><h2 class="section-title">模型设置</h2></div>
+  <div class="ai-panel">
     <div class="s">先选厂商（接口地址自动填好），填 Key，拉模型列表选一个，保存即可。管理口令由浏览器自动保管，不用填也不用记；换浏览器后凭 API Key 保存一次即接管。</div>
-    <div class="k">厂商 / 接口地址 / 模型</div>
-    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
-      <select id="preset" style="padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+    <div class="ai-row"><label>厂商 / 接口地址 / 模型</label></div>
+    <div class="ai-row">
+      <select id="preset">
         <option value="deepseek">DeepSeek</option>
         <option value="qwen">通义千问（阿里）</option>
         <option value="moonshot">Kimi（月之暗面）</option>
@@ -91,20 +143,20 @@ tr:last-child td{border-bottom:none}
         <option value="openai">OpenAI</option>
         <option value="custom">自定义（兼容网关/代理）</option>
       </select>
-      <input id="base" placeholder="接口地址 https://…/v1" style="flex:2;min-width:200px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+      <input id="base" placeholder="接口地址 https://…/v1" style="flex:2;min-width:200px">
     </div>
-    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
-      <input id="apikey" type="password" placeholder="API Key（只存本机，不回显）" style="flex:2;min-width:200px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+    <div class="ai-row">
+      <input id="apikey" type="password" placeholder="API Key（只存本机，不回显）" style="flex:2;min-width:200px">
     </div>
-    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
-      <select id="modelsel" style="flex:1;min-width:160px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+    <div class="ai-row">
+      <select id="modelsel" style="flex:1;min-width:160px">
         <option value="">下拉选择（先点“拉取模型列表”）</option>
       </select>
-      <input id="model" placeholder="或手填模型名称" style="flex:2;min-width:200px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
+      <input id="model" placeholder="或手填模型名称" style="flex:2;min-width:200px">
     </div>
-    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
-      <button id="btn-models" style="padding:8px 16px;border-radius:6px;border:1px solid var(--line);background:#1b2836;color:var(--fg)">拉取模型列表</button>
-      <button id="btn-save" style="padding:8px 16px;border-radius:6px;border:none;background:#1e8e3e;color:#fff">保存配置</button>
+    <div class="ai-row">
+      <button id="btn-models">拉取模型列表</button>
+      <button id="btn-save" class="primary">保存配置</button>
       <span id="llmstat" class="mut" style="align-self:center"></span>
     </div>
     <div class="s">Key 只保存在本机 secrets.local.json（0600 权限），永不进 git、不进日志；页面只显示掩码。局域网使用，不要把面板暴露到公网。</div>
@@ -112,17 +164,18 @@ tr:last-child td{border-bottom:none}
 </section>
 
 <section>
-  <h2>AI 问答</h2>
-  <div class="card">
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <textarea id="q" rows="3" placeholder="例如：结合持仓和行情，评价一下当前三只股票" style="flex:1;min-width:240px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px"></textarea>
+  <div class="section-header"><h2 class="section-title">AI 问答</h2></div>
+  <div class="ai-panel">
+    <div class="ai-row">
+      <textarea id="q" rows="3" placeholder="例如：结合持仓和行情，评价一下当前三只股票" style="flex:1;min-width:240px"></textarea>
     </div>
-    <div style="display:flex;gap:8px;margin:8px 0">
-      <button id="btn-ask" style="padding:8px 16px;border-radius:6px;border:none;background:#1565c0;color:#fff">提问（记流水）</button>
+    <div class="ai-row">
+      <button id="btn-ask" class="primary">提问（记流水）</button>
     </div>
-    <div id="ans" class="mut">回答会显示在这里，同时记入下方操作流水。每次提问会自动附带账户、持仓、近期行情与操作记录，不用你贴数据。</div>
+    <div id="ans" class="ai-msg">回答会显示在这里，同时记入下方操作流水。每次提问会自动附带账户、持仓、近期行情与操作记录，不用你贴数据。</div>
   </div>
 </section>
+</div>
 
 <script>
 const fmt=(n,d=2)=>n==null?"-":Number(n).toLocaleString("zh-CN",{minimumFractionDigits:d,maximumFractionDigits:d});
@@ -200,11 +253,19 @@ async function refresh(){
   NAMES=(nm&&nm.data)||{};
   const st=s.data;
   document.getElementById("clock").textContent="行情截至 "+(st.data_asof||"无数据")+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
+  document.getElementById("statusbar").innerHTML=`
+   <div class="status-item"><span class="status-label">行情截至</span><span class="status-value">${st.data_asof||"无数据"}</span></div>
+   <div class="status-item"><span class="status-label">持仓</span><span class="status-value">${st.positions.length} 只</span></div>
+   <div class="status-item"><span class="status-label">模式</span><span class="status-value">纸盘 · 只读面板</span></div>`;
   document.getElementById("cards").innerHTML=`
-   <div class="card"><div class="k">总资产</div><div class="v">${fmt(st.total_value)}</div><div class="s">可用资金 + 持股市值</div></div>
-   <div class="card"><div class="k">浮动盈亏</div><div class="v ${cls(st.pnl)}">${st.pnl>=0?"+":""}${fmt(st.pnl)}</div><div class="s ${cls(st.pnl)}">${pct(st.pnl_pct)}</div></div>
-   <div class="card"><div class="k">可用资金</div><div class="v">${fmt(st.cash)}</div></div>
-   <div class="card"><div class="k">持仓市值</div><div class="v">${fmt(st.market_value)}</div><div class="s">${st.positions.length} 只股票</div></div>`;
+   <div class="market-item"><div class="market-name">总资产 CNY</div><div class="market-value">${fmt(st.total_value,0)}</div><div class="market-change">可用资金 + 持股市值</div></div>
+   <div class="market-item"><div class="market-name">浮动盈亏</div><div class="market-value ${cls(st.pnl)}">${st.pnl>=0?"+":""}${fmt(st.pnl)}</div><div class="market-change ${cls(st.pnl)}">${pct(st.pnl_pct)}</div></div>
+   <div class="market-item"><div class="market-name">可用资金</div><div class="market-value">${fmt(st.cash,0)}</div><div class="market-change">可下单金额</div></div>
+   <div class="market-item"><div class="market-name">持股市值</div><div class="market-value">${fmt(st.market_value,0)}</div><div class="market-change">${st.positions.length} 只股票</div></div>`;
+  document.getElementById("c-nav").textContent=(nav.data||[]).length+" 条记录";
+  document.getElementById("c-ops").textContent=(ops.data||[]).length+" 条";
+  document.getElementById("c-pos").textContent=(st.positions||[]).length+" 只股票";
+  document.getElementById("c-orders").textContent=(ord.data||[]).length+" 笔";
   rows(document.getElementById("nav"),[["时间"],["总资产",1],["可用资金",1],["浮动盈亏",1]],
     (nav.data||[]).reverse().map(r=>{const d=new Date(r.timestamp);const pn=Number(r.pnl);
     return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td class="num">${fmt(r.total_value)}</td><td class="num">${fmt(r.cash)}</td><td class="num ${cls(pn)}">${pn>=0?"+":""}${fmt(pn)}</td></tr>`}).join(""));
@@ -271,11 +332,21 @@ document.getElementById("btn-save").onclick=async()=>{
 };
 document.getElementById("btn-ask").onclick=async()=>{
   const q=document.getElementById("q").value.trim();if(!q){alert("先写问题");return}
-  document.getElementById("ans").textContent="思考中…";
+  const ans=document.getElementById("ans");ans.className="ai-msg";ans.textContent="思考中…";
   const r=await post("/api/llm/ask",{admin_token:tok(),prompt:q});
-  if(!r.ok){document.getElementById("ans").textContent="失败："+(r.error||"");return}
-  document.getElementById("ans").textContent=r.answer||"(空回答)";
+  if(!r.ok){ans.textContent="失败："+(r.error||"");return}
+  ans.className="ai-answer";ans.textContent=r.answer||"(空回答)";
   refresh();
+};
+/* 主题：跟随 stock-dashboard，localStorage 持久化，默认浅色 */
+try{
+  const saved=localStorage.getItem("pt_theme");
+  if(saved)document.documentElement.setAttribute("data-theme",saved);
+}catch(e){}
+document.getElementById("themeBtn").onclick=()=>{
+  const cur=document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark";
+  document.documentElement.setAttribute("data-theme",cur);
+  try{localStorage.setItem("pt_theme",cur)}catch(e){}
 };
 llmStatus();
 </script>
