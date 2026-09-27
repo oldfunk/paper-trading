@@ -25,6 +25,7 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
     account = raw.get("account", {})
     strategy = raw.get("strategy", {})
     risk = raw.get("risk", {})
+    agent = raw.get("agent", {})
 
     tcfg = TradingConfig(
         commission_rate=float(trading.get("commission_rate", 0.00025)),
@@ -53,4 +54,10 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "max_drawdown_pct": float(risk.get("max_drawdown_pct", 0.20)),
         },
         "stock_pool": list(raw.get("stock_pool", [])),
+        "agent": {
+            "enabled": bool(agent.get("enabled", True)),
+            "max_orders_per_run": int(agent.get("max_orders_per_run", 3)),
+            "max_order_value": float(agent.get("max_order_value", 20000.0)),
+            "daily_loss_halt_pct": float(agent.get("daily_loss_halt_pct", 0.05)),
+        },
     }

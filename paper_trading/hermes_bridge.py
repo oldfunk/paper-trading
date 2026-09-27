@@ -69,6 +69,7 @@ class HermesBridge:
         risk_kwargs: dict = {}
         strat_kwargs: dict = {"short_window": 5, "long_window": 20}
         stock_pool: list[str] = []
+        agent_kwargs: dict = {}
         if config is None:
             try:
                 from paper_trading.utils.config import load_config
@@ -79,6 +80,7 @@ class HermesBridge:
                     risk_kwargs = cfg.get("risk", {})
                     strat_kwargs = cfg.get("strategy", {})
                     stock_pool = [str(s) for s in cfg.get("stock_pool", [])]
+                    agent_kwargs = cfg.get("agent", {})
             except Exception:
                 config = TradingConfig()
         self.data_db = DataDBManager(data_db)
@@ -94,6 +96,14 @@ class HermesBridge:
         self.config = config or TradingConfig()
         self.stock_pool = stock_pool
         self.secrets_path = secrets_path
+        from paper_trading.agent import AgentConfig
+
+        self.agent_cfg = AgentConfig(
+            enabled=bool(agent_kwargs.get("enabled", True)),
+            max_orders_per_run=int(agent_kwargs.get("max_orders_per_run", 3)),
+            max_order_value=float(agent_kwargs.get("max_order_value", 20000.0)),
+            daily_loss_halt_pct=float(agent_kwargs.get("daily_loss_halt_pct", 0.05)),
+        )
 
     def sync_data(self, symbols: list[str]) -> dict:
         """只同步行情+名称，不发信号、不下单、不记 NAV（供日内补数/定时任务用）。"""
@@ -633,6 +643,16 @@ def main() -> None:
     llm_ask.add_argument("--system", default="")
     llm_ask.add_argument("--json", action="store_true")
 
+    # agent
+    agent_parser = subparsers.add_parser("agent", help="AI 交易员（日内一次决策，可自动下单）")
+    agent_parser.add_argument("--json", action="store_true")
+    agent_sub = agent_parser.add_subparsers(dest="agent_command")
+    agent_run = agent_sub.add_parser("run", help="执行一次 AI 决策（默认走配置池）")
+    agent_run.add_argument("--symbols", nargs="*", default=None)
+    agent_run.add_argument("--json", action="store_true")
+    agent_run.add_argument("--dry-run", action="store_true", help="只决策不下单")
+    agent_run.add_argument("--force", action="store_true", help="忽略今日已决策闸")
+
     # nav
     nav_parser = subparsers.add_parser("nav", help="查看 NAV 历史")
     nav_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
@@ -796,6 +816,23 @@ def main() -> None:
                     sys.exit(3)
             else:
                 emit(bridge.llm_status())
+
+        elif args.command == "agent":
+            from paper_trading.agent import AgentTrader
+
+            if args.agent_command != "run":
+                parser.print_help()
+                sys.exit(2)
+            syms = args.symbols or bridge.stock_pool or ["600519"]
+            if not bridge.agent_cfg.enabled and not args.force:
+                emit(None, ok=False, error="agent 未启用（config.yaml agent.enabled）")
+                sys.exit(3)
+            with run_lock(args.lock_file):
+                trader = AgentTrader(bridge, bridge.agent_cfg)
+                res = trader.run(syms, dry_run=args.dry_run, force=args.force)
+            emit(res, ok=res.get("ok", False), error=res.get("error"))
+            if not res.get("ok"):
+                sys.exit(3)
 
         elif args.command == "nav":
             emit(bridge.get_nav_history())

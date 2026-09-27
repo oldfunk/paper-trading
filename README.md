@@ -198,6 +198,10 @@ python -m paper_trading.hermes_bridge llm config --preset deepseek --api-key xxx
 python -m paper_trading.hermes_bridge llm models --json
 python -m paper_trading.hermes_bridge llm ask --prompt "评价一下当前持仓" --json
 
+# AI 交易员（日内一次决策；dry-run 只决策不下单；与 run 二选一，不可同日混跑）
+python -m paper_trading.hermes_bridge agent run --dry-run --json
+python -m paper_trading.hermes_bridge agent run --json
+
 # 下单前试算（不落库）
 python -m paper_trading.hermes_bridge preview --symbol 600519 --direction buy --volume 100 --json
 
@@ -228,11 +232,14 @@ python -m paper_trading.dashboard --port 8080
 
 流水写入 `paper_account.db` 的 `op_log` 表（`broker.log_operation`），仪表盘纯只读，可与交易进程并存。
 
-### Cron 定时任务（工作日收盘后 16:05 跑一次即可；日线一天只变一次）
+### Cron 定时任务（二选一，不可同日混跑）
 
 ```bash
-# 工作日每天 16:05 执行结算（symbols 缺省走 config.yaml 股票池）
+# MA 规则交易（工作日 16:05）
 (crontab -l 2>/dev/null; echo "5 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.hermes_bridge cron-run --json >> run.log 2>&1") | crontab -
+
+# 或 AI 交易员（工作日 16:10，同一账户只留其一）
+(crontab -l 2>/dev/null; echo "10 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.hermes_bridge agent run --json >> agent.log 2>&1") | crontab -
 ```
 
 说明：`run` 内含增量补数（自动从库中断点续拉，失败次日自愈，无需重试 cron）；

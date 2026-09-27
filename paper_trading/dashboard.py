@@ -141,7 +141,7 @@ const ACTION_CN={
   "run":"每日结算","cron-run":"每日结算（定时任务）","run:dry-run":"试运行（仅预览，不下单）",
   "sync":"同步行情","buy":"买入","sell":"卖出","preview":"下单试算","status":"查询账户",
   "nav":"查询净值","history":"查询记录","names":"刷新股票名称",
-  "llm:ask":"AI 问答","llm:config":"保存模型配置"};
+  "llm:ask":"AI 问答","llm:config":"保存模型配置","ai:decide":"AI 决策"};
 function errCN(e){
   if(!e)return"";
   const M=[[/multiple of 100/i,"数量必须为 100 股的整数倍"],
@@ -166,6 +166,7 @@ function paramCN(a,j){let p={};try{p=JSON.parse(j||"{}")}catch(e){}
   if(a==="run"||a==="cron-run"||a==="run:dry-run"||a==="sync")return`股票：${(p.symbols||[]).map(sym).join("、")}`;
   if(a==="buy"||a==="sell"){const px=(p.price!=null&&p.price!=="")?`，限价 ${fmt(p.price)} 元`:"";return `${sym(p.symbol)} ${p.volume}股${px}`;}
   if(a==="llm:ask")return `问 ${p.model||"AI"}：${(p.prompt||"").slice(0,120)}`;
+  if(a==="ai:decide")return `${p.mode==="dry"?"试运行":"实盘"}：股票 ${(p.symbols||[]).map(sym).join("、")}${p.summary?"——"+p.summary.slice(0,80):""}`;
   if(a==="llm:config")return `厂商 ${p.preset||""}，模型 ${p.model||"未填"}`;
   if(a==="preview")return `${sym(p.symbol)} ${(p.direction==="buy"?"买入":"卖出")} ${p.volume}股`;
   return Object.entries(p).map(([k,v])=>`${k}=${Array.isArray(v)?v.map(sym).join("、"):v}`).join(" ");}
@@ -175,6 +176,10 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
     return `成交价 ${fmt(r.filled_price)} 元，手续费 ${fmt(fee)} 元`;}
   if(a==="run:dry-run")return`产生信号 ${r.signals??0} 个（仅预览，未下单）`;
   if(a==="llm:ask")return (r.answer||"").slice(0,200);
+  if(a==="ai:decide"){const ds=r.decisions||[];
+    if(!ds.length)return "无动作";
+    return ds.map(d=>{const dir=d.action==="buy"?"买入":d.action==="sell"?"卖出":"持有";
+      return `${dir}${sym(d.symbol)}${d.volume||""}股(${d.status||""})`}).join("；");}
   if(a==="llm:config")return `已保存（${r.base_url||""}）`;
   if(a==="sync"){const u=r.updated||{};const ks=Object.keys(u);
     if(!ks.length)return "无更新";

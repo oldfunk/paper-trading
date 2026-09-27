@@ -27,3 +27,9 @@ risk:
   max_position_pct: 0.3
   max_total_position_pct: 0.95
   max_drawdown_pct: 0.20
+
+agent:
+  enabled: true
+  max_orders_per_run: 3
+  max_order_value: 20000.0
+  daily_loss_halt_pct: 0.05

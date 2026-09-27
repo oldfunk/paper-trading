@@ -72,6 +72,13 @@ python -m paper_trading.hermes_bridge llm ask --prompt "..." --json
 
 Presets: deepseek / qwen / moonshot / glm / doubao / openai / custom (any OpenAI-compatible base-url; model name can always be typed manually).
 
+### AI trader (one decision per day; mutually exclusive with `run` on the same account)
+
+```bash
+python -m paper_trading.hermes_bridge agent run --dry-run --json
+python -m paper_trading.hermes_bridge agent run --json
+```
+
 ### View History
 
 ```bash
