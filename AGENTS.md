@@ -95,7 +95,7 @@ hermes cron add \
 ## LLM 接入安全（P1：只咨询，不交易）
 
 1. **Key 三不**：不进 git（`secrets.local.json` 已 gitignore）、不进日志（`op_log` params/result 禁止出现 Key，单测锁定）、面板只回显掩码（`****末4位`）。
-2. **面板写操作必须口令**：`admin_token` 首次保存配置时自动生成并一次性回显；后续 `config/ask/models` 调用必须携带。局域网使用，禁止把面板暴露到公网。
+2. **面板写操作必须口令，但用户无感**：`admin_token` 首次保存自动生成，浏览器 localStorage 自动保管，用户永远不用看见；换浏览器凭 API Key 保存一次即接管。局域网使用，禁止把面板暴露到公网。
 3. **LLM 不碰下单链**：`llm:ask` 只问答记流水；任何决策环（P2）必须走 fail-closed 钳制（schema/白名单/100 股倍数/金额上限），再经 `RiskManager`，缺一不可。
 4. 命令行传 Key 会留 shell 历史，敏感环境一律用面板设置页。
 

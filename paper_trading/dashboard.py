@@ -79,10 +79,7 @@ tr:last-child td{border-bottom:none}
 <section>
   <h2>模型设置</h2>
   <div class="card">
-    <div class="k">管理口令（首次保存配置时自动生成，之后修改/提问都要填）</div>
-    <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
-      <input id="adm" type="password" placeholder="管理口令" style="flex:1;min-width:140px;padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
-    </div>
+    <div class="s">先选厂商（接口地址自动填好），填 Key，拉模型列表选一个，保存即可。管理口令由浏览器自动保管，不用填也不用记；换浏览器后凭 API Key 保存一次即接管。</div>
     <div class="k">厂商 / 接口地址 / 模型</div>
     <div style="display:flex;gap:8px;margin:8px 0;flex-wrap:wrap">
       <select id="preset" style="padding:8px;background:#0e1621;color:var(--fg);border:1px solid var(--line);border-radius:6px">
@@ -214,9 +211,17 @@ async function refresh(){
 }
 refresh();setInterval(refresh,15000);
 
-/* ---- 模型设置与 AI 问答（写操作需管理口令） ---- */
-const tok=()=> (document.getElementById("adm").value||sessionStorage.getItem("pt_adm")||"");
-document.getElementById("adm").addEventListener("change",e=>{sessionStorage.setItem("pt_adm",e.target.value)});
+/* ---- 模型设置与 AI 问答（口令浏览器自动保管，用户无感） ---- */
+const tok=()=> (localStorage.getItem("pt_adm")||"");
+const PRESET_URLS={deepseek:"https://api.deepseek.com/v1",qwen:"https://dashscope.aliyuncs.com/compatible-mode/v1",moonshot:"https://api.moonshot.cn/v1",glm:"https://open.bigmodel.cn/api/paas/v4",doubao:"https://ark.cn-beijing.volces.com/api/v3",openai:"https://api.openai.com/v1",custom:""};
+const PRESET_MODELS={deepseek:"deepseek-chat",qwen:"qwen-plus",moonshot:"moonshot-v1-8k",glm:"glm-4-flash",doubao:"",openai:"gpt-4o-mini",custom:""};
+const KNOWN_URLS=new Set(Object.values(PRESET_URLS));
+document.getElementById("preset").addEventListener("change",e=>{
+  const b=document.getElementById("base");
+  if(!b.value.trim()||KNOWN_URLS.has(b.value.trim()))b.value=PRESET_URLS[e.target.value]||"";
+  const m=document.getElementById("model");
+  if(!m.value.trim()&&PRESET_MODELS[e.target.value])m.value=PRESET_MODELS[e.target.value];
+});
 async function post(u,b){const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});return r.json()}
 async function llmStatus(){
   const s=await get("/api/llm/status");const d=s.data||{};
@@ -226,7 +231,7 @@ async function llmStatus(){
   if(d.model)document.getElementById("model").value=d.model;
 }
 document.getElementById("btn-models").onclick=async()=>{
-  const t=tok();if(!t){alert("先填写管理口令（首次保存配置时自动生成，如未保存请先保存一次）");return}
+  const t=tok();if(!t){alert("请先保存一次配置（口令会自动生成并由浏览器保管）");return}
   document.getElementById("llmstat").textContent="拉取中…";
   const r=await get("/api/llm/models?token="+encodeURIComponent(t));
   if(!r.ok){document.getElementById("llmstat").textContent="拉取失败："+(r.error||"");return}
@@ -240,9 +245,9 @@ document.getElementById("btn-save").onclick=async()=>{
     api_key:document.getElementById("apikey").value});
   if(!r.ok){alert("保存失败："+(r.error||""));return}
   document.getElementById("apikey").value="";
-  if(r.data&&r.data.admin_token){document.getElementById("adm").value=r.data.admin_token;sessionStorage.setItem("pt_adm",r.data.admin_token)}
+  if(r.data&&r.data.admin_token)localStorage.setItem("pt_adm",r.data.admin_token);
   await llmStatus();refresh();
-  alert("已保存。管理口令已填入上方口令框并记住在本次浏览器会话，后续修改/提问都要用它。");
+  alert("已保存，以后换模型直接改，不用再碰口令。");
 };
 document.getElementById("btn-ask").onclick=async()=>{
   const q=document.getElementById("q").value.trim();if(!q){alert("先写问题");return}
@@ -372,9 +377,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = self._read_json()
             if u.path == "/api/llm/config":
-                if not self._admin_ok(body) and self._bridge().llm_status().get("configured"):
-                    # 已配置过则必须口令；首次保存允许无口令（保存时自动生成）
-                    self._json({"ok": False, "error": "口令错误"}, code=403)
+                st0 = self._bridge().llm_status()
+                # 口令规则：未配置过→直接存；已配置→要口令，或凭 Key 接管（换浏览器不用旧口令）
+                if st0.get("configured") and not self._admin_ok(body) \
+                        and not str(body.get("api_key") or "").strip():
+                    self._json({"ok": False,
+                                "error": "口令错误（换了浏览器？填写 API Key 后保存即可接管）"},
+                               code=403)
                     return
                 r = self._bridge().llm_save(
                     body.get("preset", "custom"), body.get("base_url", ""),
