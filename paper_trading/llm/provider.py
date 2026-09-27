@@ -21,8 +21,13 @@ class LLMConfig:
     api_key: str = ""
     model: str = ""
     timeout: float = 30.0
-    max_tokens: int = 1024
+    max_tokens: int = 4096  # 推理模型 thinking 占用输出预算，默认留足
     temperature: float = 0.2
+    extra_body: dict = None  # 厂商透传参数（如 {"thinking": {"type": "disabled"}}）
+
+    def __post_init__(self) -> None:
+        if self.extra_body is None:
+            self.extra_body = {}
 
 
 def _join(base: str, path: str) -> str:
@@ -73,12 +78,15 @@ def chat(cfg: LLMConfig, messages: list[dict], system: str = "") -> str:
     if not cfg.model:
         raise LLMError("未指定模型（先选模型或手填模型名）")
     msgs = ([{"role": "system", "content": system}] if system else []) + list(messages)
-    body = _request(cfg, "/chat/completions", {
+    payload = {
         "model": cfg.model,
         "messages": msgs,
         "temperature": cfg.temperature,
         "max_tokens": cfg.max_tokens,
-    })
+    }
+    if cfg.extra_body:
+        payload.update(cfg.extra_body)
+    body = _request(cfg, "/chat/completions", payload)
     try:
         return str(body["choices"][0]["message"]["content"] or "")
     except (KeyError, IndexError, TypeError):

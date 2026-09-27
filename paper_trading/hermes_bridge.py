@@ -105,7 +105,8 @@ class HermesBridge:
             daily_loss_halt_pct=float(agent_kwargs.get("daily_loss_halt_pct", 0.05)),
             llm_timeout=float(agent_kwargs.get("llm_timeout", 120.0)),
             llm_retries=int(agent_kwargs.get("llm_retries", 1)),
-            llm_max_tokens=int(agent_kwargs.get("llm_max_tokens", 4096)),
+            llm_max_tokens=int(agent_kwargs.get("llm_max_tokens", 8192)),
+            llm_thinking=str(agent_kwargs.get("llm_thinking", "disabled")),
         )
 
     def sync_data(self, symbols: list[str]) -> dict:

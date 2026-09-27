@@ -194,13 +194,15 @@ def test_agent_volume_aliases_and_token_budget(monkeypatch, tmp_path):
 
     def fake(cfg, messages, system=""):
         seen["max_tokens"] = cfg.max_tokens
+        seen["extra_body"] = cfg.extra_body
         return json.dumps(plan)
 
     monkeypatch.setattr(prov, "chat", fake)
     b = _bridge(str(tmp_path), _fresh_bars())
     t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0,
-                                  llm_max_tokens=4096))
+                                  llm_max_tokens=4096, llm_thinking="disabled"))
     res = t.run(["600519"], dry_run=True)
     assert seen["max_tokens"] == 4096
+    assert seen["extra_body"] == {"thinking": {"type": "disabled"}}
     assert res["ok"]
     assert all("试运行通过" in d["status"] for d in res["decisions"])

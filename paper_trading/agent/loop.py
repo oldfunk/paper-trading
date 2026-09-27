@@ -24,16 +24,23 @@ class AgentConfig:
     daily_loss_halt_pct: float = 0.05  # 累计浮亏超此比例，当天停手
     llm_timeout: float = 120.0  # 决策上下文大，放宽单次超时
     llm_retries: int = 1  # 仅超时重试一次，其他错误直接失败
-    llm_max_tokens: int = 4096  # 推理模型 thinking 占用输出预算，答案区必须留足
+    llm_max_tokens: int = 8192  # 答案区预算（实测推理 3000+ thinking 会挤掉答案）
+    llm_thinking: str = "disabled"  # 格式受限决策默认关 thinking，又快又省又稳
 
 
 def _ask_llm(cfg, prompt: str, system: str, timeout: float, retries: int,
-             max_tokens: int = 4096) -> str:
-    """带超时重试的 LLM 调用（只重试超时；Key 不进错误信息由 provider 保证）。"""
+             max_tokens: int = 8192, thinking: str = "disabled") -> str:
+    """带超时重试的 LLM 调用（只重试超时；Key 不进错误信息由 provider 保证）。
+
+    thinking="disabled" 时透传厂商开关，关掉 chain-of-thought：
+    格式受限的 JSON 决策不需要思考过程，开着只会烧掉输出预算
+    （曾实测 3220 thinking tokens 挤掉答案导致空返回）。
+    """
     from paper_trading.llm.provider import chat as _chat
 
     cfg.timeout = timeout
-    cfg.max_tokens = max_tokens  # 推理模型先烧 thinking tokens，答案预算必须留足
+    cfg.max_tokens = max_tokens
+    cfg.extra_body = {"thinking": {"type": "disabled"}} if thinking == "disabled" else {}
     last: Exception | None = None
     for attempt in range(retries + 1):
         try:
@@ -128,6 +135,7 @@ class AgentTrader:
             cfg = b._llm_config()
             raw = _ask_llm(cfg, prompt, system,
                            self.cfg.llm_timeout, self.cfg.llm_retries,
+                           self.cfg.llm_max_tokens, self.cfg.llm_thinking,
                            self.cfg.llm_max_tokens)
         except LLMError as e:
             b.broker.log_operation("ai:plan", {"symbols": symbols}, False,
@@ -241,6 +249,7 @@ class AgentTrader:
             cfg = b._llm_config()
             raw = _ask_llm(cfg, prompt, system,
                            self.cfg.llm_timeout, self.cfg.llm_retries,
+                           self.cfg.llm_max_tokens, self.cfg.llm_thinking,
                            self.cfg.llm_max_tokens)
         except LLMError as e:
             b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
