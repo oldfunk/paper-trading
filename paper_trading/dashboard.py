@@ -236,8 +236,8 @@ document.getElementById("btn-models").onclick=async()=>{
   const r=await get("/api/llm/models?token="+encodeURIComponent(t));
   if(!r.ok){document.getElementById("llmstat").textContent="拉取失败："+(r.error||"");return}
   const dl=document.getElementById("modellist");dl.innerHTML="";
-  r.data.forEach(m=>{const o=document.createElement("option");o.value=m;dl.appendChild(o)});
-  document.getElementById("llmstat").textContent=`共 ${r.data.length} 个模型，下拉选择或手填名称`;
+  (r.models||[]).forEach(m=>{const o=document.createElement("option");o.value=m;dl.appendChild(o)});
+  document.getElementById("llmstat").textContent=`共 ${(r.models||[]).length} 个模型，下拉选择或手填名称`;
 };
 document.getElementById("btn-save").onclick=async()=>{
   const r=await post("/api/llm/config",{admin_token:tok(),preset:document.getElementById("preset").value,
@@ -245,7 +245,7 @@ document.getElementById("btn-save").onclick=async()=>{
     api_key:document.getElementById("apikey").value});
   if(!r.ok){alert("保存失败："+(r.error||""));return}
   document.getElementById("apikey").value="";
-  if(r.data&&r.data.admin_token)localStorage.setItem("pt_adm",r.data.admin_token);
+  if(r.admin_token)localStorage.setItem("pt_adm",r.admin_token);
   await llmStatus();refresh();
   alert("已保存，以后换模型直接改，不用再碰口令。");
 };
@@ -254,7 +254,7 @@ document.getElementById("btn-ask").onclick=async()=>{
   document.getElementById("ans").textContent="思考中…";
   const r=await post("/api/llm/ask",{admin_token:tok(),prompt:q});
   if(!r.ok){document.getElementById("ans").textContent="失败："+(r.error||"");return}
-  document.getElementById("ans").textContent=r.data.answer||"(空回答)";
+  document.getElementById("ans").textContent=r.answer||"(空回答)";
   refresh();
 };
 llmStatus();
