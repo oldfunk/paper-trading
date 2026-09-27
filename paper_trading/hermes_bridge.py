@@ -103,6 +103,8 @@ class HermesBridge:
             max_orders_per_run=int(agent_kwargs.get("max_orders_per_run", 3)),
             max_order_value=float(agent_kwargs.get("max_order_value", 20000.0)),
             daily_loss_halt_pct=float(agent_kwargs.get("daily_loss_halt_pct", 0.05)),
+            llm_timeout=float(agent_kwargs.get("llm_timeout", 120.0)),
+            llm_retries=int(agent_kwargs.get("llm_retries", 1)),
         )
 
     def sync_data(self, symbols: list[str]) -> dict:

@@ -22,6 +22,26 @@ class AgentConfig:
     max_orders_per_run: int = 3
     max_order_value: float = 20000.0
     daily_loss_halt_pct: float = 0.05  # 累计浮亏超此比例，当天停手
+    llm_timeout: float = 120.0  # 决策上下文大，放宽单次超时
+    llm_retries: int = 1  # 仅超时重试一次，其他错误直接失败
+
+
+def _ask_llm(cfg, prompt: str, system: str, timeout: float, retries: int) -> str:
+    """带超时重试的 LLM 调用（只重试超时；Key 不进错误信息由 provider 保证）。"""
+    from paper_trading.llm.provider import chat as _chat
+
+    cfg.timeout = timeout
+    last: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return _chat(cfg, [{"role": "user", "content": prompt}], system=system)
+        except Exception as e:  # noqa: BLE001 - 仅超时重试，其余直接抛
+            last = e
+            if "timed out" not in str(e).lower() and "timeout" not in str(e).lower():
+                raise
+            if attempt >= retries:
+                raise
+    raise last or RuntimeError("LLM unreachable")
 
 
 def today_str() -> str:
@@ -100,11 +120,11 @@ class AgentTrader:
             + f"\n注意：当前为休盘，最新定稿数据截至 {asof}。"
               "你的决策将在下一个开盘执行。")
         from paper_trading.llm import LLMError
-        from paper_trading.llm.provider import chat as _chat
 
         try:
             cfg = b._llm_config()
-            raw = _chat(cfg, [{"role": "user", "content": prompt}], system=system)
+            raw = _ask_llm(cfg, prompt, system,
+                           self.cfg.llm_timeout, self.cfg.llm_retries)
         except LLMError as e:
             b.broker.log_operation("ai:plan", {"symbols": symbols}, False,
                                    {"error": str(e)}, None, None)
@@ -211,11 +231,11 @@ class AgentTrader:
             max_order_value=int(self.cfg.max_order_value),
             max_orders=self.cfg.max_orders_per_run)
         from paper_trading.llm import LLMError
-        from paper_trading.llm.provider import chat as _chat
 
         try:
             cfg = b._llm_config()
-            raw = _chat(cfg, [{"role": "user", "content": prompt}], system=system)
+            raw = _ask_llm(cfg, prompt, system,
+                           self.cfg.llm_timeout, self.cfg.llm_retries)
         except LLMError as e:
             b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
                                    False, {"error": str(e)}, None, None)

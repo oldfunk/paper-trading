@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from paper_trading.agent import AgentConfig, AgentTrader  # noqa: E402
+from paper_trading.llm.provider import LLMConfig  # noqa: E402
 from paper_trading.models import Bar  # noqa: E402
 
 
@@ -108,6 +109,39 @@ def test_agent_skip_does_not_lock_day(monkeypatch, tmp_path):
     assert not t._decided_today()  # 跳过不锁
     assert t.run(["600519"])["ok"]  # 真跑仍可执行（fake bars 新鲜）
     assert t._decided_today()  # 实质决策后锁定
+
+
+def test_agent_llm_timeout_retries_once(monkeypatch, tmp_path):
+    """超时重试一次：第一次超时、第二次成功则整体成功。"""
+    from paper_trading.agent import loop as agent_loop
+    from paper_trading.llm import LLMError, provider as prov
+
+    calls = {"n": 0}
+
+    def flaky(cfg, messages, system=""):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LLMError("请求失败：TimeoutError: timed out")
+        return '{"actions": [], "summary": "ok"}'
+
+    monkeypatch.setattr(prov, "chat", flaky)
+    cfg = AgentConfig(llm_timeout=5.0, llm_retries=1)
+    out = agent_loop._ask_llm(
+        LLMConfig(base_url="https://x/v1", api_key="k", model="m"),
+        "hi", "sys", cfg.llm_timeout, cfg.llm_retries)
+    assert out.startswith("{") and calls["n"] == 2
+
+    def always_timeout(cfg, messages, system=""):
+        raise LLMError("TimeoutError: timed out")
+
+    monkeypatch.setattr(prov, "chat", always_timeout)
+    try:
+        agent_loop._ask_llm(
+            LLMConfig(base_url="https://x/v1", api_key="k", model="m"),
+            "hi", "sys", 5.0, 1)
+        raise AssertionError("should raise")
+    except LLMError:
+        pass
 
 
 def test_agent_dry_run_changes_nothing(monkeypatch, tmp_path):

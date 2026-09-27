@@ -59,5 +59,7 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "max_orders_per_run": int(agent.get("max_orders_per_run", 3)),
             "max_order_value": float(agent.get("max_order_value", 20000.0)),
             "daily_loss_halt_pct": float(agent.get("daily_loss_halt_pct", 0.05)),
+            "llm_timeout": float(agent.get("llm_timeout", 120.0)),
+            "llm_retries": int(agent.get("llm_retries", 1)),
         },
     }
