@@ -38,6 +38,12 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
         initial_cash=float(account.get("initial_cash", 1_000_000.0)),
         holidays=tuple(trading.get("holidays", []) or ()),
     )
+    def _norm_sym(s) -> str:
+        # YAML 1.1 会把 000333 这类全小数字解析成八进制 int（219）且不可逆，
+        # 因此 config 里必须加引号；这里再兜底：纯数字补齐 6 位
+        t = str(s).strip()
+        return t.zfill(6) if t.isdigit() else t
+
     return {
         "raw": raw,
         "trading_config": tcfg,
@@ -53,7 +59,7 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "max_total_position_pct": float(risk.get("max_total_position_pct", 0.95)),
             "max_drawdown_pct": float(risk.get("max_drawdown_pct", 0.20)),
         },
-        "stock_pool": list(raw.get("stock_pool", [])),
+        "stock_pool": [_norm_sym(s) for s in raw.get("stock_pool", [])],
         "agent": {
             "enabled": bool(agent.get("enabled", True)),
             "max_orders_per_run": int(agent.get("max_orders_per_run", 3)),

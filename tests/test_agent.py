@@ -190,6 +190,17 @@ def test_agent_plan_then_execute(monkeypatch, tmp_path):
     assert pend2["plan"]["summary"] == "更新计划"
 
 
+def test_stock_pool_yaml_octal_guard(tmp_path):
+    """000333 这类全小数字 YAML 会吞成八进制 int；引号+归一化必须保住原码。"""
+    from paper_trading.utils.config import load_config
+
+    f = tmp_path / "c.yaml"
+    f.write_text("stock_pool:\n  - \"000333\"\n  - \"000651\"\n  - 600519\n",
+                 encoding="utf-8")
+    cfg = load_config(str(f))
+    assert cfg["stock_pool"] == ["000333", "000651", "600519"]
+
+
 def test_agent_volume_aliases_and_token_budget(monkeypatch, tmp_path):
     """shares/quantity 别名照收；max_tokens 透传给 provider（推理模型留足答案区）。"""
     from paper_trading.llm import provider as prov
