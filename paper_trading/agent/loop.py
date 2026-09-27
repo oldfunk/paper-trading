@@ -139,7 +139,8 @@ class AgentTrader:
                                  {"actions": actions, "summary": summary, "asof": asof})
         b.broker.log_operation("ai:plan", {"symbols": symbols, "asof": asof}, True,
                                {"plan_id": pid, "summary": summary,
-                                "n_actions": len(actions)}, None, None)
+                                "n_actions": len(actions),
+                                "raw": str(raw or "")[:1500]}, None, None)
         logger.info(f"AI plan saved id={pid} asof={asof}")
         return {"ok": True, "mode": "plan", "plan_id": pid, "asof": asof,
                 "timestamp": now, "symbols": symbols,
