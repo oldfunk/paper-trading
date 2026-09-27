@@ -105,3 +105,26 @@ def test_secrets_roundtrip_masked_and_mode(tmp_path):
     import os
     if os.name == "posix":
         assert oct(os.stat(f).st_mode & 0o777) == "0o600"
+
+
+def test_llm_save_merge_keeps_key(tmp_path):
+    """换模型不重填 Key：空 Key=沿用；首次无 Key 拒绝；换 Key 生效。"""
+    import paper_trading.hermes_bridge as hb
+
+    sec = str(tmp_path / "s.json")
+    db1 = str(tmp_path / "d.db")
+    db2 = str(tmp_path / "a.db")
+    b = hb.HermesBridge(data_db=db1, account_db=db2, config_path="/nonexistent.yaml",
+                        secrets_path=sec)
+    r = b.llm_save("deepseek", "", "", "")
+    assert not r["ok"] and "API Key" in r["error"]  # 首次必须给 Key
+    r = b.llm_save("deepseek", "", "m-a", "sk-keep-1")
+    assert r["ok"] and r["key_masked"] == "****ep-1"
+    assert b.llm_status()["model"] == "m-a"
+    r = b.llm_save("deepseek", "", "m-b", "")  # 只换模型
+    assert r["ok"] and r["model"] == "m-b"
+    from paper_trading.llm import load_secrets
+    assert load_secrets(sec)["provider"]["api_key"] == "sk-keep-1"  # Key 未被洗掉
+    r = b.llm_save("qwen", "", "q", "sk-new-2")  # 换厂商+换 Key
+    assert r["ok"] and "dashscope" in r["base_url"]
+    assert load_secrets(sec)["provider"]["api_key"] == "sk-new-2"

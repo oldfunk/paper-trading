@@ -432,17 +432,22 @@ class HermesBridge:
 
     def llm_save(self, preset: str = "custom", base_url: str = "",
                  model: str = "", api_key: str = "") -> dict:
-        """保存厂商配置。preset 未知时必须手填 base_url。"""
-        from paper_trading.llm import preset_base_url, public_provider_view, save_provider
+        """保存厂商配置（合并语义：Key/地址留空=沿用已存值，不会被洗掉）。"""
+        from paper_trading.llm import (
+            load_secrets as _load, preset_base_url, public_provider_view, save_provider,
+        )
 
-        base_url = base_url.strip() or preset_base_url(preset)
+        existing = (_load(self.secrets_path).get("provider") or {})
+        base_url = base_url.strip() or preset_base_url(preset) \
+            or str(existing.get("base_url", ""))
         if not base_url:
             return {"ok": False, "error": "未知厂商且未填写接口地址（base_url）"}
+        api_key = api_key.strip() or str(existing.get("api_key", ""))
+        if not api_key:
+            return {"ok": False, "error": "请填写 API Key（首次配置必填；之后换模型不用重填）"}
         save_provider({"preset": preset, "base_url": base_url,
-                       "model": model.strip(), "api_key": api_key.strip()},
+                       "model": model.strip(), "api_key": api_key},
                       self.secrets_path)
-        from paper_trading.llm import load_secrets as _load
-
         view = public_provider_view(self.secrets_path)
         self.broker.log_operation("llm:config", {"preset": preset, "model": view["model"]},
                                   True, {"base_url": base_url}, None, None)

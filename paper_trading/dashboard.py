@@ -230,6 +230,7 @@ async function post(u,b){const r=await fetch(u,{method:"POST",headers:{"Content-
 async function llmStatus(){
   const s=await get("/api/llm/status");const d=s.data||{};
   document.getElementById("llmstat").textContent=d.configured?`已配置：${d.preset} / ${d.model||"未选模型"} / Key ${d.key_masked}`:"未配置：先填接口地址与 Key，点保存配置";
+  document.getElementById("apikey").placeholder=d.has_key?`已保存 Key（${d.key_masked}），换模型不用重填；换 Key 才需填写`:"API Key（只存本机，不回显）";
   if(d.preset)document.getElementById("preset").value=d.preset;
   if(d.base_url)document.getElementById("base").value=d.base_url;
   if(d.model)document.getElementById("model").value=d.model;
