@@ -72,6 +72,9 @@ body{margin:0;background:var(--bg-primary);color:var(--text-primary);font:400 14
 table{width:100%;border-collapse:collapse;font-size:13px;background:var(--bg-secondary)}
 th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--divider);white-space:nowrap}
 th{color:var(--text-secondary);font-weight:600;font-size:12px}
+/* AI 操作流水：详情与结果列自动换行，不左右滑动 */
+#ops td:nth-child(3),#ops td:nth-child(4){white-space:normal;word-break:break-word;min-width:220px}
+#ops td:nth-child(1),#ops td:nth-child(2),#ops td:nth-child(5){white-space:nowrap}
 tr:last-child td{border-bottom:none}
 tbody tr:hover{background:var(--bg-hover)}
 .num{text-align:right;font-variant-numeric:tabular-nums}
@@ -115,11 +118,6 @@ tbody tr:hover{background:var(--bg-hover)}
 </section>
 
 <section>
-  <div class="section-header"><h2 class="section-title">AI 操作流水</h2><span class="section-count" id="c-ops"></span></div>
-  <div class="scroll"><table id="ops"></table></div>
-</section>
-
-<section>
   <div class="section-header"><h2 class="section-title">当前持仓</h2><span class="section-count" id="c-pos"></span></div>
   <div class="scroll"><table id="pos"></table></div>
 </section>
@@ -127,6 +125,24 @@ tbody tr:hover{background:var(--bg-hover)}
 <section>
   <div class="section-header"><h2 class="section-title">订单记录</h2><span class="section-count" id="c-orders"></span></div>
   <div class="scroll"><table id="orders"></table></div>
+</section>
+
+<section>
+  <div class="section-header"><h2 class="section-title">AI 问答</h2></div>
+  <div class="ai-panel">
+    <div class="ai-row">
+      <textarea id="q" rows="3" placeholder="例如：结合持仓和行情，评价一下当前三只股票" style="flex:1;min-width:240px"></textarea>
+    </div>
+    <div class="ai-row">
+      <button id="btn-ask" class="primary">提问（记流水）</button>
+    </div>
+    <div id="ans" class="ai-msg">回答会显示在这里，同时记入下方操作流水。每次提问会自动附带账户、持仓、近期行情与操作记录，不用你贴数据。</div>
+  </div>
+</section>
+
+<section>
+  <div class="section-header"><h2 class="section-title">AI 操作流水</h2><span class="section-count" id="c-ops"></span></div>
+  <div class="scroll"><table id="ops"></table></div>
 </section>
 
 <section>
@@ -161,19 +177,6 @@ tbody tr:hover{background:var(--bg-hover)}
       <span id="llmstat" class="mut" style="align-self:center"></span>
     </div>
     <div class="s">Key 只保存在本机 secrets.local.json（0600 权限），永不进 git、不进日志；页面只显示掩码。局域网使用，不要把面板暴露到公网。</div>
-  </div>
-</section>
-
-<section>
-  <div class="section-header"><h2 class="section-title">AI 问答</h2></div>
-  <div class="ai-panel">
-    <div class="ai-row">
-      <textarea id="q" rows="3" placeholder="例如：结合持仓和行情，评价一下当前三只股票" style="flex:1;min-width:240px"></textarea>
-    </div>
-    <div class="ai-row">
-      <button id="btn-ask" class="primary">提问（记流水）</button>
-    </div>
-    <div id="ans" class="ai-msg">回答会显示在这里，同时记入下方操作流水。每次提问会自动附带账户、持仓、近期行情与操作记录，不用你贴数据。</div>
   </div>
 </section>
 </div>
