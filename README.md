@@ -206,6 +206,16 @@ python -m paper_trading.hermes_bridge agent run --plan-only --json
 # 股票池来源（需母项目在同一台机器，否则自动回退 config）
 python -m paper_trading.hermes_bridge agent run --pool-from screening --pool-limit 20 --json
 
+### 投资方案（打法一等公民；合并/独立通用）
+
+```bash
+# 查看与切换（写 gitignored 的 strategy.local.yaml，git 树保持干净）
+python -m paper_trading.hermes_bridge scheme list --json
+python -m paper_trading.hermes_bridge scheme use --name value_follow
+# 单次指定
+python -m paper_trading.hermes_bridge agent run --scheme defense --dry-run --json
+```
+
 # 下单前试算（不落库）
 python -m paper_trading.hermes_bridge preview --symbol 600519 --direction buy --volume 100 --json
 

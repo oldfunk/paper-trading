@@ -95,6 +95,14 @@ class AgentTrader:
                 return True
         return False
 
+    def _scheme_txt(self) -> str:
+        from paper_trading.agent.prompts import SCHEME_TMPL
+
+        s = self.bridge.scheme
+        return SCHEME_TMPL.format(title=s.title or s.name, name=s.name,
+                                  desc=s.desc or "（无说明）",
+                                  exits=s.exits_note or "MA 死叉离场")
+
     def _cand_txt(self, candidates: Optional[list]) -> str:
         if not candidates:
             return ""
@@ -140,6 +148,7 @@ class AgentTrader:
             max_order_value=int(self.cfg.max_order_value),
             candidates=self._cand_txt(candidates),
             signals=ref_txt,
+            scheme=self._scheme_txt(),
             context=_json.dumps(ctx, ensure_ascii=False))
         system = (TRADER_SYSTEM.format(
             max_order_value=int(self.cfg.max_order_value),
@@ -263,6 +272,7 @@ class AgentTrader:
             max_order_value=int(self.cfg.max_order_value),
             candidates=self._cand_txt(candidates),
             signals=ref_txt,
+            scheme=self._scheme_txt(),
             context=_json.dumps(ctx, ensure_ascii=False))
         system = TRADER_SYSTEM.format(
             max_order_value=int(self.cfg.max_order_value),
@@ -369,6 +379,8 @@ class AgentTrader:
                              volume=vol, price=px, reason="ai:" + reason)
                 if act not in ("buy", "sell"):
                     rec["status"] = "拒绝：未知动作"
+                elif act == "buy" and not self.bridge.scheme.allow_buy:
+                    rec["status"] = f"拒绝：本方案（{self.bridge.scheme.name}）禁止买入"
                 else:
                     ok, why = b.risk.check_signal(sig, px, cash, positions,
                                                  nav_total, prices=latest)

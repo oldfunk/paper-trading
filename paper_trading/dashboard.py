@@ -128,6 +128,19 @@ tbody tr:hover{background:var(--bg-hover)}
 </section>
 
 <section>
+  <div class="section-header"><h2 class="section-title">投资方案</h2><span class="section-count" id="c-scheme"></span></div>
+  <div class="ai-panel">
+    <div class="s">打法一等公民：内置方案随版本走；你的自选只写本地文件不进 git。合并后可直接引用母项目策略（成长/红利/困境反转）做选股宇宙。</div>
+    <div class="ai-row" id="schemelist"></div>
+    <div class="ai-row">
+      <button id="btn-scheme" class="primary">设为当前方案</button>
+      <span id="schemestat" class="mut" style="align-self:center"></span>
+    </div>
+    <div class="s" id="motherschemes"></div>
+  </div>
+</section>
+
+<section>
   <div class="section-header"><h2 class="section-title">AI 问答</h2></div>
   <div class="ai-panel">
     <div class="ai-row">
@@ -356,6 +369,32 @@ document.getElementById("themeBtn").onclick=()=>{
   document.documentElement.setAttribute("data-theme",cur);
   try{localStorage.setItem("pt_theme",cur)}catch(e){}
 };
+/* ---- 投资方案（单选切换，写本地文件不进 git） ---- */
+async function schemeStatus(){
+  const s=await get("/api/schemes");const d=(s&&s.data)||{};
+  document.getElementById("c-scheme").textContent=d.active?`当前：${d.active}（${d.source}）`:"";
+  const box=document.getElementById("schemelist");box.innerHTML="";
+  (d.schemes||[]).forEach(sc=>{
+    const lab=document.createElement("label");
+    lab.style.cssText="display:flex;gap:6px;align-items:flex-start;font-size:13px;min-width:220px;flex:1";
+    const radio=document.createElement("input");radio.type="radio";radio.name="scheme";radio.value=sc.name;
+    if(sc.name===d.active)radio.checked=true;
+    const tx=document.createElement("span");
+    tx.innerHTML=`<b>${esc(sc.title||sc.name)}</b> <span class="mut">${esc(sc.source)}</span><br><span class="mut">${esc(sc.desc||"")}</span><br><span class="mut">宇宙 ${esc(sc.universe||"")}${sc.allow_buy?"":" · 禁止买入"}</span>`;
+    lab.appendChild(radio);lab.appendChild(tx);box.appendChild(lab);
+  });
+  const ms=document.getElementById("motherschemes");
+  ms.textContent=(d.mother&&d.mother.length)?"母项目策略（选股侧，供参照）："+d.mother.map(m=>`${m.name}(${m.key},${m.n_rules}条规则)`).join("、"):"母项目未在同一台机器，暂无母策略参照";
+}
+document.getElementById("btn-scheme").onclick=async()=>{
+  const sel=document.querySelector('input[name="scheme"]:checked');
+  if(!sel){alert("先选一个方案");return}
+  const r=await post("/api/schemes/active",{admin_token:tok(),name:sel.value});
+  if(!r.ok){alert("切换失败："+(r.error||""));return}
+  document.getElementById("schemestat").textContent=r.data.message;
+  await schemeStatus();refresh();
+};
+schemeStatus();
 llmStatus();
 </script>
 </body>
@@ -438,8 +477,22 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "data": {r["symbol"]: r["name"] for r in rows}})
                 finally:
                     conn.close()
-            elif u.path == "/api/quotes":
-                # 盘中实时行情（60s 服务端缓存；非交易时段回空）
+            elif u.path == "/api/schemes":
+                from paper_trading.strategy import (all_schemes, mother_strategies)
+
+                cur = self._bridge()
+                ss = all_schemes()
+                self._json({"ok": True, "data": {
+                    "active": cur.scheme.name, "source": cur.scheme_source,
+                    "schemes": [{"name": s.name, "title": s.title, "desc": s.desc,
+                                 "source": s.source,
+                                 "universe": s.universe_source +
+                                 (f":{s.universe_tag}" if s.universe_tag else ""),
+                                 "allow_buy": s.allow_buy,
+                                 "exits": s.exits_note}
+                                for s in ss.values()],
+                    "mother": mother_strategies()}})
+            elif u.path == "/api/quotes":                # 盘中实时行情（60s 服务端缓存；非交易时段回空）
                 from paper_trading.data import realtime as _rt
 
                 q = parse_qs(u.query)
@@ -495,7 +548,19 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         try:
             body = self._read_json()
-            if u.path == "/api/llm/config":
+            if u.path == "/api/schemes/active":
+                if not self._admin_ok(body):
+                    self._json({"ok": False, "error": "口令错误"}, code=403)
+                    return
+                from paper_trading.strategy import set_active
+
+                from pathlib import Path as _P
+                ok, msg = set_active(
+                    _P(__file__).resolve().parents[1], str(body.get("name", "")))
+                self._json({"ok": ok, "data": {"message": msg} if ok else None,
+                            "error": None if ok else msg},
+                           code=200 if ok else 400)
+            elif u.path == "/api/llm/config":
                 st0 = self._bridge().llm_status()
                 # 口令规则：未配置过→直接存；已配置→要口令，或凭 Key 接管（换浏览器不用旧口令）
                 if st0.get("configured") and not self._admin_ok(body) \

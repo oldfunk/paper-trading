@@ -64,6 +64,7 @@ class HermesBridge:
         config: Optional[TradingConfig] = None,
         config_path: Optional[str] = None,
         secrets_path: Optional[str] = None,
+        scheme: Optional[str] = None,
     ) -> None:
         # config.yaml 单一真相源（显式 TradingConfig 优先，其次 config_path，其次默认 config.yaml）
         risk_kwargs: dict = {}
@@ -83,6 +84,37 @@ class HermesBridge:
                     agent_kwargs = cfg.get("agent", {})
             except Exception:
                 config = TradingConfig()
+        from pathlib import Path as _Path
+
+        from paper_trading.strategy.schemes import active_name as _active_name
+        from paper_trading.strategy.schemes import resolve_scheme as _resolve_scheme
+
+        _root = _Path(__file__).resolve().parents[1]
+        _cfg_active = str(strat_kwargs.get("active", "ma_trend") or "ma_trend")
+        if scheme:
+            _scheme_name, _scheme_src = scheme, "cli"
+        else:
+            _scheme_name, _scheme_src = _active_name(_root, _cfg_active)
+            if _scheme_src == "default":
+                _scheme_src = "config"
+        self.scheme = _resolve_scheme(_scheme_name, _root)
+        self.scheme_source = _scheme_src
+        # 方案参数覆盖同名配置（方案没写的沿用 config；注意 agent 类归 agent_kwargs）
+        _sig = self.scheme.signal or {}
+        for _k in ("short_window", "long_window", "buy_volume", "sell_volume"):
+            if _k in _sig:
+                try:
+                    strat_kwargs[_k] = int(_sig[_k])
+                except (TypeError, ValueError):
+                    pass
+        for _k, _cast in (("max_orders_per_run", int), ("max_order_value", float),
+                          ("daily_loss_halt_pct", float)):
+            for _src in (self.scheme.sizing or {}, self.scheme.risk or {}):
+                if _k in _src:
+                    try:
+                        agent_kwargs[_k] = _cast(_src[_k])
+                    except (TypeError, ValueError):
+                        pass
         self.data_db = DataDBManager(data_db)
         self.broker = PaperBroker(account_db, config)
         self.portfolio = Portfolio(self.broker)
@@ -625,6 +657,7 @@ def main() -> None:
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
     parser.add_argument("--lock-file", default="paper_trading.lock", help="运行锁文件")
     parser.add_argument("--secrets", default=None, help="LLM 密钥文件路径（缺省 secrets.local.json）")
+    parser.add_argument("--scheme", default=None, help="投资方案名（缺省按 strategy.local.yaml/config.yaml）")
 
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
 
@@ -639,6 +672,8 @@ def main() -> None:
     run_parser.add_argument("--pool-from", default="config",
                             choices=["config", "watchlist", "screening", "all"],
                             help="股票池来源（watchlist/screening 需母项目在同一台机器）")
+    run_parser.add_argument("--pool-tag", default="",
+                            help="screening 按母策略 tag 过滤（如 growth；为空不过滤）")
     run_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
     run_parser.add_argument("--dry-run", action="store_true", help="只生成信号与风控预览，不下单")
 
@@ -648,6 +683,7 @@ def main() -> None:
                              help="缺省=config.yaml 股票池")
     sync_parser.add_argument("--pool-from", default="config",
                              choices=["config", "watchlist", "screening", "all"])
+    sync_parser.add_argument("--pool-tag", default="")
     sync_parser.add_argument("--json", action="store_true")
 
     # buy
@@ -677,6 +713,16 @@ def main() -> None:
     preview_parser.add_argument("--volume", type=int, required=True)
     preview_parser.add_argument("--price", type=float, default=None)
     preview_parser.add_argument("--json", action="store_true")
+
+    # scheme
+    scheme_parser = subparsers.add_parser("scheme", help="投资方案（打法）查看与切换")
+    scheme_parser.add_argument("--json", action="store_true")
+    scheme_sub = scheme_parser.add_subparsers(dest="scheme_command")
+    scheme_list_p = scheme_sub.add_parser("list", help="列出内置/自选/母项目策略与当前选中")
+    scheme_list_p.add_argument("--json", action="store_true")
+    scheme_use = scheme_sub.add_parser("use", help="切换当前方案（写本地文件，不进 git）")
+    scheme_use.add_argument("--name", required=True)
+    scheme_use.add_argument("--json", action="store_true")
 
     # llm
     llm_parser = subparsers.add_parser("llm", help="LLM 接入（只咨询，不交易）")
@@ -708,6 +754,8 @@ def main() -> None:
     agent_run.add_argument("--pool-from", default="config",
                            choices=["config", "watchlist", "screening", "all"],
                            help="AI 选股范围（screening=母项目最新候选）")
+    agent_run.add_argument("--pool-tag", default="",
+                           help="screening 按母策略 tag 过滤；空则用当前方案自带 tag")
     agent_run.add_argument("--pool-limit", type=int, default=20)
     agent_run.add_argument("--json", action="store_true")
     agent_run.add_argument("--dry-run", action="store_true", help="只决策不下单")
@@ -741,9 +789,12 @@ def main() -> None:
         """解析股票池：CLI > pool-from > config；返回 (symbols, source_note, candidates)。"""
         from paper_trading.integration import resolve_pool
 
-        return resolve_pool(getattr(a, "symbols", None), b.stock_pool,
-                            getattr(a, "pool_from", "config") or "config",
-                            getattr(a, "pool_limit", 20) or 20)
+        pf = getattr(a, "pool_from", "config") or "config"
+        tag = getattr(a, "pool_tag", "") or ""
+        if not tag and pf == "screening":
+            tag = (b.scheme.universe_tag or "")  # 方案自带母策略 tag
+        return resolve_pool(getattr(a, "symbols", None), b.stock_pool, pf,
+                            getattr(a, "pool_limit", 20) or 20, None, tag)
 
     if not args.command:
         parser.print_help()
@@ -753,7 +804,8 @@ def main() -> None:
 
     try:
         bridge = HermesBridge(data_db=args.data_db, account_db=args.account_db,
-                              config_path=args.config, secrets_path=args.secrets)
+                              config_path=args.config, secrets_path=args.secrets,
+                              scheme=args.scheme)
     except Exception as e:
         emit(None, ok=False, error=f"Init failed: {e}")
         sys.exit(1)
@@ -863,6 +915,29 @@ def main() -> None:
 
         elif args.command == "preview":
             emit(bridge.preview_order(args.symbol, args.direction, args.volume, args.price))
+
+        elif args.command == "scheme":
+            from paper_trading.strategy import (all_schemes, mother_strategies,
+                                                set_active)
+
+            from pathlib import Path as _P
+            if args.scheme_command == "use":
+                ok, msg = set_active(_P(__file__).resolve().parents[1], args.name)
+                # 切换后重载 bridge 以便后继命令即时生效由调用方重建；此处仅回显
+                emit({"ok": ok, "message": msg} if ok else None,
+                     ok=ok, error=None if ok else msg)
+                if not ok:
+                    sys.exit(3)
+            else:
+                ss = all_schemes()
+                emit({"active": bridge.scheme.name, "source": bridge.scheme_source,
+                      "schemes": [{"name": s.name, "title": s.title, "desc": s.desc,
+                                   "source": s.source,
+                                   "universe": s.universe_source +
+                                   (f":{s.universe_tag}" if s.universe_tag else ""),
+                                   "allow_buy": s.allow_buy, "exits": s.exits_note}
+                                  for s in ss.values()],
+                      "mother": mother_strategies()})
 
         elif args.command == "llm":
             if args.llm_command == "config":

@@ -24,6 +24,7 @@ trading:
   holidays: []
 
 strategy:
+  active: ma_trend
   short_window: 5
   long_window: 20
   buy_volume: 100
