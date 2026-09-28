@@ -130,10 +130,13 @@ tbody tr:hover{background:var(--bg-hover)}
 <section>
   <div class="section-header"><h2 class="section-title">投资方案</h2><span class="section-count" id="c-scheme"></span></div>
   <div class="ai-panel">
-    <div class="s">打法一等公民：内置方案随版本走；你的自选只写本地文件不进 git。合并后可直接引用母项目策略（成长/红利/困境反转）做选股宇宙。</div>
+    <div class="s">三种方案只选其一。母价值需母项目在同一台机器；自定义在下面用自然语言写交易策略。切换只写本地文件，不进 git。</div>
     <div class="ai-row" id="schemelist"></div>
     <div class="ai-row">
-      <button id="btn-scheme" class="primary">设为当前方案</button>
+      <textarea id="instruction" rows="3" placeholder="自定义指令，例如：只做银行股反弹，单只最多买5000元，跌破买入价5%就卖" style="flex:1;min-width:240px"></textarea>
+    </div>
+    <div class="ai-row">
+      <button id="btn-scheme" class="primary">保存方案与指令</button>
       <span id="schemestat" class="mut" style="align-self:center"></span>
     </div>
     <div class="s" id="motherschemes"></div>
@@ -374,30 +377,29 @@ async function schemeStatus(){
   const s=await get("/api/schemes");const d=(s&&s.data)||{};
   document.getElementById("c-scheme").textContent=d.active?`当前：${d.active}（${d.source}）`:"";
   const box=document.getElementById("schemelist");box.innerHTML="";
-  const groups=[["mother","母策略（需母项目在同一台机器）"],["builtin","通用策略"],["custom","自定义"]];
-  groups.forEach(([src,label])=>{
-    const items=(d.schemes||[]).filter(sc=>sc.source===src);
-    if(!items.length)return;
-    const h=document.createElement("div");h.style.cssText="width:100%;font-size:12px;color:var(--text-tertiary);margin:6px 0 2px";
-    h.textContent=label;box.appendChild(h);
-    items.forEach(sc=>{
-      const lab=document.createElement("label");
-      lab.style.cssText="display:flex;gap:6px;align-items:flex-start;font-size:13px;min-width:220px;flex:1";
-      if(sc.available===false){lab.style.opacity="0.45"}
-      const radio=document.createElement("input");radio.type="radio";radio.name="scheme";radio.value=sc.name;
-      if(sc.name===d.active)radio.checked=true;
-      const tx=document.createElement("span");
-      tx.innerHTML=`<b>${esc(sc.title||sc.name)}</b>${sc.available===false?' <span class="mut">（不可用）</span>':""}<br><span class="mut">${esc(sc.desc||"")}</span><br><span class="mut">宇宙 ${esc(sc.universe||"")}${sc.allow_buy?"":" · 禁止买入"}</span>`;
-      lab.appendChild(radio);lab.appendChild(tx);box.appendChild(lab);
-    });
+  const byName={};(d.schemes||[]).forEach(sc=>{byName[sc.name]=sc});
+  [["mother","母价值"], ["general","通用默认"], ["custom","自定义"]].forEach(([name,label])=>{
+    const sc=byName[name];if(!sc)return;
+    const lab=document.createElement("label");
+    lab.style.cssText="display:flex;gap:6px;align-items:flex-start;font-size:13px;min-width:220px;flex:1";
+    const gone=sc.available===false;
+    if(gone){lab.style.opacity="0.45"}
+    const radio=document.createElement("input");radio.type="radio";radio.name="scheme";radio.value=sc.name;
+    if(gone)radio.disabled=true;
+    if(sc.name===d.active)radio.checked=true;
+    const tx=document.createElement("span");
+    tx.innerHTML=`<b>${esc(label)} · ${esc(sc.title||sc.name)}</b>${gone?' <span class="mut">（需母项目在同一台机器）</span>':""}<br><span class="mut">${esc(sc.desc||"")}</span><br><span class="mut">宇宙 ${esc(sc.universe||"")}</span>`;
+    lab.appendChild(radio);lab.appendChild(tx);box.appendChild(lab);
   });
+  if(d.instruction!==undefined)document.getElementById("instruction").value=d.instruction||"";
   const ms=document.getElementById("motherschemes");
   ms.textContent=(d.mother&&d.mother.length)?"母项目策略（选股侧，供参照）："+d.mother.map(m=>`${m.name}(${m.key},${m.n_rules}条规则)`).join("、"):"母项目未在同一台机器，暂无母策略参照";
 }
 document.getElementById("btn-scheme").onclick=async()=>{
   const sel=document.querySelector('input[name="scheme"]:checked');
   if(!sel){alert("先选一个方案");return}
-  const r=await post("/api/schemes/active",{admin_token:tok(),name:sel.value});
+  const r=await post("/api/schemes/active",{admin_token:tok(),name:sel.value,
+    instruction:document.getElementById("instruction").value});
   if(!r.ok){alert("切换失败："+(r.error||""));return}
   document.getElementById("schemestat").textContent=r.data.message;
   await schemeStatus();refresh();
@@ -486,19 +488,33 @@ class Handler(BaseHTTPRequestHandler):
                 finally:
                     conn.close()
             elif u.path == "/api/schemes":
-                from paper_trading.strategy import (all_schemes, mother_strategies)
+                from paper_trading.strategy import all_schemes, mother_strategies
+                from paper_trading.strategy.schemes import (
+                    CUSTOM_ID, GENERAL_ID, MOTHER_ID, custom_instruction)
 
+                from pathlib import Path as _P
                 cur = self._bridge()
-                ss = all_schemes()
+                _root = _P(__file__).resolve().parents[1]
+                _ss = all_schemes(_root)
+                _g = _ss.get(GENERAL_ID)
+                _items = [
+                    {"name": MOTHER_ID, "title": "母项目价值",
+                     "desc": "母项目价值投资理念；需母项目在同一台机器",
+                     "source": "mother",
+                     "available": MOTHER_ID in _ss,
+                     "universe": "screening", "exits": "论点卖出条件一票否决"},
+                    {"name": GENERAL_ID, "title": _g.title, "desc": _g.desc,
+                     "source": "general", "available": True,
+                     "universe": _g.universe_source, "exits": _g.exits_note},
+                    {"name": CUSTOM_ID, "title": "自定义指令",
+                     "desc": "你用自然语言写交易策略，AI 照此执行（风控钳制不变）",
+                     "source": "custom", "available": True,
+                     "universe": "config", "exits": "以你的指令为准"},
+                ]
                 self._json({"ok": True, "data": {
                     "active": cur.scheme.name, "source": cur.scheme_source,
-                    "schemes": [{"name": s.name, "title": s.title, "desc": s.desc,
-                                 "source": s.source, "available": s.available,
-                                 "universe": s.universe_source +
-                                 (f":{s.universe_tag}" if s.universe_tag else ""),
-                                 "allow_buy": s.allow_buy,
-                                 "exits": s.exits_note}
-                                for s in ss.values()],
+                    "instruction": custom_instruction(_root),
+                    "schemes": _items,
                     "mother": mother_strategies()}})
             elif u.path == "/api/quotes":                # 盘中实时行情（60s 服务端缓存；非交易时段回空）
                 from paper_trading.data import realtime as _rt
@@ -564,7 +580,8 @@ class Handler(BaseHTTPRequestHandler):
 
                 from pathlib import Path as _P
                 ok, msg = set_active(
-                    _P(__file__).resolve().parents[1], str(body.get("name", "")))
+                    _P(__file__).resolve().parents[1], str(body.get("name", "")),
+                    body.get("instruction"))
                 self._json({"ok": ok, "data": {"message": msg} if ok else None,
                             "error": None if ok else msg},
                            code=200 if ok else 400)

@@ -99,9 +99,13 @@ class AgentTrader:
         from paper_trading.agent.prompts import SCHEME_TMPL
 
         s = self.bridge.scheme
-        return SCHEME_TMPL.format(title=s.title or s.name, name=s.name,
-                                  desc=s.desc or "（无说明）",
-                                  exits=s.exits_note or "MA 死叉离场")
+        txt = SCHEME_TMPL.format(title=s.title or s.name, name=s.name,
+                                 desc=s.desc or "（无说明）",
+                                 exits=s.exits_note or "MA 死叉离场")
+        if s.name == "custom" and (s.instruction or "").strip():
+            txt += ("\n用户自定义交易指令（最高优先级，风控与合规除外）：\n"
+                    + s.instruction.strip()[:2000])
+        return txt
 
     def _cand_txt(self, candidates: Optional[list]) -> str:
         if not candidates:
@@ -379,8 +383,6 @@ class AgentTrader:
                              volume=vol, price=px, reason="ai:" + reason)
                 if act not in ("buy", "sell"):
                     rec["status"] = "拒绝：未知动作"
-                elif act == "buy" and not self.bridge.scheme.allow_buy:
-                    rec["status"] = f"拒绝：本方案（{self.bridge.scheme.name}）禁止买入"
                 else:
                     ok, why = b.risk.check_signal(sig, px, cash, positions,
                                                  nav_total, prices=latest)

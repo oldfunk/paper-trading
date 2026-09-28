@@ -90,7 +90,7 @@ class HermesBridge:
         from paper_trading.strategy.schemes import resolve_scheme as _resolve_scheme
 
         _root = _Path(__file__).resolve().parents[1]
-        _cfg_active = str(strat_kwargs.get("active", "ma_trend") or "ma_trend")
+        _cfg_active = str(strat_kwargs.get("active", "general") or "general")
         if scheme:
             _scheme_name, _scheme_src = scheme, "cli"
         else:
@@ -725,6 +725,8 @@ def main() -> None:
     scheme_list_p.add_argument("--json", action="store_true")
     scheme_use = scheme_sub.add_parser("use", help="切换当前方案（写本地文件，不进 git）")
     scheme_use.add_argument("--name", required=True)
+    scheme_use.add_argument("--instruction", default=None,
+                            help="自定义指令（仅 custom 方案，自然语言）")
     scheme_use.add_argument("--json", action="store_true")
 
     # llm
@@ -925,7 +927,8 @@ def main() -> None:
 
             from pathlib import Path as _P
             if args.scheme_command == "use":
-                ok, msg = set_active(_P(__file__).resolve().parents[1], args.name)
+                ok, msg = set_active(_P(__file__).resolve().parents[1], args.name,
+                                     getattr(args, "instruction", None))
                 # 切换后重载 bridge 以便后继命令即时生效由调用方重建；此处仅回显
                 emit({"ok": ok, "message": msg} if ok else None,
                      ok=ok, error=None if ok else msg)
