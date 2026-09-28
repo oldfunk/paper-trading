@@ -79,6 +79,7 @@ tbody tr:hover{background:var(--bg-hover)}
 .ok{color:var(--green);font-weight:600} .bad{color:var(--red);font-weight:600}
 .tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600}
 .tag.buy{background:var(--color-up-bg);color:var(--color-up)} .tag.sell{background:var(--color-down-bg);color:var(--color-down)}
+.tag.live{background:var(--accent-soft);color:var(--accent)}
 .scroll{overflow-x:auto}
 .mut{color:var(--text-tertiary)}
 .ai-panel{background:var(--bg-secondary);border:1px solid var(--divider);border-radius:var(--radius);padding:14px 16px;margin-bottom:14px;box-shadow:var(--shadow)}
@@ -189,6 +190,7 @@ function rows(t,head,body){t.innerHTML="<thead><tr>"+head.map(h=>`<th${h[1]?' cl
    展示规范：股票一律写成 名称(代码)，如 贵州茅台(600519)；
    名称缺失时只写代码，不写“未知”等占位词。 */
 let NAMES={};                                   // {symbol: 真实名称}
+let QUOTES={};                                  // {symbol: 腾讯实时}（盘中才有）
 const sym=c=>NAMES[c]?`${NAMES[c]}(${c})`:c;
 const ACTION_CN={
   "run":"每日结算","cron-run":"每日结算（定时任务）","run:dry-run":"试运行（仅预览，不下单）",
@@ -251,6 +253,7 @@ async function refresh(){
  try{
   const [s,ops,pos,ord,nav,nm]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names"].map(get));
   NAMES=(nm&&nm.data)||{};
+  try{const qq=await get("/api/quotes");QUOTES=(qq&&qq.data)||{};}catch(e){QUOTES={};}
   const st=s.data;
   document.getElementById("clock").textContent="行情截至 "+(st.data_asof||"无数据")+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
   document.getElementById("statusbar").innerHTML=`
@@ -276,9 +279,11 @@ async function refresh(){
       `<td class="mut">${esc(paramCN(r.action,r.params))}</td>`+
       `<td class="${ok?"ok":"bad"}">${esc(resultCN(r.action,ok,r.result))}</td>`+
       `<td class="num">${r.total_value_after!=null?fmt(r.total_value_after):"-"}</td></tr>`}).join("")||`<tr><td colspan="5" class="mut">暂无操作记录 —— AI 执行每日结算、买入、卖出后会出现在这里</td></tr>`);
-  rows(document.getElementById("pos"),[["股票"],["总股数",1],["可卖股数",1],["买入成本",1],["当前价",1],["持股市值",1],["浮动盈亏",1]],
+  rows(document.getElementById("pos"),[["股票"],["总股数",1],["可卖股数",1],["买入成本",1],["当前价",1],["持股市值(收盘)",1],["浮动盈亏",1]],
     (st.positions||[]).map(p=>{const pn=(p.current_price-p.avg_cost)*p.total_volume;
-    return `<tr><td><b>${esc(sym(p.symbol))}</b></td><td class="num">${p.total_volume}</td><td class="num">${p.available_volume}</td><td class="num">${fmt(p.avg_cost)}</td><td class="num">${fmt(p.current_price)}</td><td class="num">${fmt(p.market_value,0)}</td><td class="num ${cls(pn)}">${pn>=0?"+":""}${fmt(pn)}</td></tr>`}).join("")||`<tr><td colspan="7" class="mut">空仓</td></tr>`);
+    const live=(QUOTES||{})[p.symbol];
+    const pxHtml=live&&live.price?`${fmt(live.price)} <span class="tag live">实时</span>`:`${fmt(p.current_price)}`;
+    return `<tr><td><b>${esc(sym(p.symbol))}</b></td><td class="num">${p.total_volume}</td><td class="num">${p.available_volume}</td><td class="num">${fmt(p.avg_cost)}</td><td class="num">${pxHtml}</td><td class="num">${fmt(p.market_value,0)}</td><td class="num ${cls(pn)}">${pn>=0?"+":""}${fmt(pn)}</td></tr>`}).join("")||`<tr><td colspan="7" class="mut">空仓</td></tr>`);
   rows(document.getElementById("orders"),[["时间"],["方向"],["股票"],["股数",1],["价格",1],["状态"],["手续费",1]],
     (ord.data||[]).map(r=>{const d=new Date(r.created_at);const buy=r.direction==1;
     const fee=(Number(r.commission)+Number(r.stamp_duty)+Number(r.transfer_fee));
@@ -430,12 +435,31 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "data": {r["symbol"]: r["name"] for r in rows}})
                 finally:
                     conn.close()
+            elif u.path == "/api/quotes":
+                # 盘中实时行情（60s 服务端缓存；非交易时段回空）
+                from paper_trading.data import realtime as _rt
+
+                q = parse_qs(u.query)
+                syms = [s for s in (q.get("symbols") or [""])[0].split(",") if s.strip()]
+                if not syms:
+                    try:
+                        b0 = self._bridge()
+                        syms = [p.symbol for p in b0.broker.get_all_positions()]
+                        syms += [s for s in b0.data_db.get_pool_symbols()
+                                 if s not in syms]
+                    except Exception:
+                        syms = []
+                try:
+                    self._json({"ok": True, "data": _rt.get_quotes(syms[:20]),
+                                "live": _rt.is_trading_session()})
+                except Exception as e:
+                    self._json({"ok": True, "data": {}, "live": False,
+                                "error": str(e)[:120]})
             elif u.path == "/api/llm/status":
                 self._json({"ok": True, "data": self._bridge().llm_status()})
             elif u.path == "/api/llm/models":
                 # GET 携带口令：/api/llm/models?token=xxx（仅本机局域网使用，勿外网暴露）
-                q = parse_qs(u.query)
-                tok = (q.get("token") or [""])[0]
+                q = parse_qs(u.query)                tok = (q.get("token") or [""])[0]
                 if not self._admin_ok({"admin_token": tok}):
                     self._json({"ok": False, "error": "口令错误或未设置（先保存一次配置生成口令）"},
                                code=403)

@@ -566,6 +566,21 @@ class HermesBridge:
                 out["value_view"] = {"stock_cards": cards, "market_regime": regime}
         except Exception:
             pass
+        try:
+            from paper_trading.data import realtime as _rt
+
+            if _rt.is_trading_session():
+                quotes = _rt.get_quotes(symbols[:20])
+                if quotes:
+                    out["intraday"] = {
+                        "note": "盘中快照（腾讯实时，仅供参考；决策与结算仍以收盘定稿为准）",
+                        "quotes": {s: {"price": q["price"], "change_pct": q["change_pct"],
+                                       "high": q["high"], "low": q["low"],
+                                       "turnover": q["turnover"]}
+                                   for s, q in quotes.items()},
+                    }
+        except Exception:
+            pass
         return out
 
     def llm_ask(self, prompt: str, system: str = "") -> dict:
