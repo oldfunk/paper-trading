@@ -1,8 +1,8 @@
 """投资方案：永远只有 3 种。
 
-1. mother   母项目价值投资理念方案（需检测到母项目才可用；
+1. mother   Stock Dashboard 价值投资理念方案（需检测到 Stock Dashboard 才可用；
             宇宙=母筛选，执行沿用通用规则，论点优先）
-2. general  子项目默认通用交易策略（默认选中，开箱即用）
+2. general  Paper Trading 默认通用交易策略（默认选中，开箱即用）
 3. custom   自定义：用户用自然语言写交易指令，直接喂给 AI
 
 用户自选只写 gitignored 的 `strategy.local.yaml`（active + instruction），
@@ -65,7 +65,7 @@ def builtin_schemes() -> dict[str, Scheme]:
     return {
         GENERAL_ID: Scheme(
             name=GENERAL_ID, title="通用交易",
-            desc="子项目默认策略：MA5/20 趋势跟踪，配置池内决策",
+            desc="Paper Trading 默认策略：MA5/20 趋势跟踪，配置池内决策",
             available=True, universe_source="config",
             signal={"short_window": 5, "long_window": 20,
                     "buy_volume": 100, "sell_volume": 100},
@@ -75,12 +75,12 @@ def builtin_schemes() -> dict[str, Scheme]:
 
 
 def mother_scheme() -> Scheme | None:
-    """母价值方案：母项目可读时才存在，否则返回 None。"""
+    """Stock Dashboard 价值方案：Stock Dashboard 可读时才存在，否则返回 None。"""
     if not _mother_ok():
         return None
     return Scheme(
-        name=MOTHER_ID, title="母项目价值",
-        desc="母项目价值投资理念：宇宙取自母项目最新筛选，执行沿用通用规则，论点优先",
+        name=MOTHER_ID, title="Stock Dashboard 价值",
+        desc="Stock Dashboard 价值投资理念：宇宙取自 Stock Dashboard 最新筛选，执行沿用通用规则，论点优先",
         available=True, universe_source="screening", universe_limit=15,
         signal={"short_window": 5, "long_window": 20,
                 "buy_volume": 100, "sell_volume": 100},
@@ -141,7 +141,7 @@ def set_active(root: str | Path, name: str,
     if name not in (MOTHER_ID, GENERAL_ID, CUSTOM_ID):
         return False, f"未知方案（仅支持 {MOTHER_ID}/{GENERAL_ID}/{CUSTOM_ID}）：{name}"
     if name == MOTHER_ID and name not in _all(root_p):
-        return False, "母项目不在同一台机器，母价值方案不可用"
+        return False, "Stock Dashboard 不在同一台机器，母价值方案不可用"
     try:
         import yaml  # type: ignore
     except ImportError:
@@ -164,7 +164,7 @@ def set_active(root: str | Path, name: str,
 
 
 def mother_strategies(mother: str | Path | None = None) -> list[dict]:
-    """母项目 strategies.yaml 只读展示（选股侧语言，供参照）。"""
+    """Stock Dashboard strategies.yaml 只读展示（选股侧语言，供参照）。"""
     from paper_trading.integration.settings import mother_dir
 
     md = mother_dir(str(mother) if mother else None)

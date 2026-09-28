@@ -130,9 +130,9 @@ tbody tr:hover{background:var(--bg-hover)}
 <section>
   <div class="section-header"><h2 class="section-title">投资方案</h2><span class="section-count" id="c-scheme"></span></div>
   <div class="ai-panel">
-    <div class="s">三种方案只选其一。母价值需母项目在同一台机器；自定义在下面用自然语言写交易策略。切换只写本地文件，不进 git。</div>
+    <div class="s">三种方案只选其一。母价值需 Stock Dashboard 在同一台机器；自定义点行内“设置”写自然语言交易策略。切换只写本地文件，不进 git。</div>
     <div class="ai-row" id="schemelist"></div>
-    <div class="ai-row">
+    <div class="ai-row" id="instructionBox" style="display:none">
       <textarea id="instruction" rows="3" placeholder="自定义指令，例如：只做银行股反弹，单只最多买5000元，跌破买入价5%就卖" style="flex:1;min-width:240px"></textarea>
     </div>
     <div class="ai-row">
@@ -373,6 +373,10 @@ document.getElementById("themeBtn").onclick=()=>{
   try{localStorage.setItem("pt_theme",cur)}catch(e){}
 };
 /* ---- 投资方案（单选切换，写本地文件不进 git） ---- */
+let instructionInit="";
+function toggleInstruction(e){e.preventDefault();
+  const box=document.getElementById("instructionBox");
+  box.style.display=(box.style.display==="none")?"":"none";}
 async function schemeStatus(){
   const s=await get("/api/schemes");const d=(s&&s.data)||{};
   document.getElementById("c-scheme").textContent=d.active?`当前：${d.active}（${d.source}）`:"";
@@ -388,20 +392,23 @@ async function schemeStatus(){
     if(gone)radio.disabled=true;
     if(sc.name===d.active)radio.checked=true;
     const tx=document.createElement("span");
-    tx.innerHTML=`<b>${esc(label)} · ${esc(sc.title||sc.name)}</b>${gone?' <span class="mut">（需母项目在同一台机器）</span>':""}<br><span class="mut">${esc(sc.desc||"")}</span><br><span class="mut">宇宙 ${esc(sc.universe||"")}</span>`;
+    tx.innerHTML=`<b>${esc(label)} · ${esc(sc.title||sc.name)}</b>${gone?' <span class="mut">（需 Stock Dashboard 在同一台机器）</span>':""}<br><span class="mut">${esc(sc.desc||"")}</span><br><span class="mut">宇宙 ${esc(sc.universe||"")}</span>${sc.name==="custom"?' <a href="#" onclick="toggleInstruction(event)">设置</a>':""}`;
     lab.appendChild(radio);lab.appendChild(tx);box.appendChild(lab);
   });
-  if(d.instruction!==undefined)document.getElementById("instruction").value=d.instruction||"";
+  if(d.instruction!==undefined){document.getElementById("instruction").value=d.instruction||"";instructionInit=d.instruction||"";}
   const ms=document.getElementById("motherschemes");
-  ms.textContent=(d.mother&&d.mother.length)?"母项目策略（选股侧，供参照）："+d.mother.map(m=>`${m.name}(${m.key},${m.n_rules}条规则)`).join("、"):"母项目未在同一台机器，暂无母策略参照";
+  ms.textContent=(d.mother&&d.mother.length)?"Stock Dashboard 策略（选股侧，供参照）："+d.mother.map(m=>`${m.name}(${m.key},${m.n_rules}条规则)`).join("、"):"Stock Dashboard 未在同一台机器，暂无母策略参照";
 }
 document.getElementById("btn-scheme").onclick=async()=>{
   const sel=document.querySelector('input[name="scheme"]:checked');
   if(!sel){alert("先选一个方案");return}
-  const r=await post("/api/schemes/active",{admin_token:tok(),name:sel.value,
-    instruction:document.getElementById("instruction").value});
+  const iv=document.getElementById("instruction").value;
+  const body={admin_token:tok(),name:sel.value};
+  if(iv!==instructionInit)body.instruction=iv;  // 没改就不发，避免误清空已存指令
+  const r=await post("/api/schemes/active",body);
   if(!r.ok){alert("切换失败："+(r.error||""));return}
   document.getElementById("schemestat").textContent=r.data.message;
+  document.getElementById("instructionBox").style.display="none";
   await schemeStatus();refresh();
 };
 schemeStatus();
@@ -498,8 +505,8 @@ class Handler(BaseHTTPRequestHandler):
                 _ss = all_schemes(_root)
                 _g = _ss.get(GENERAL_ID)
                 _items = [
-                    {"name": MOTHER_ID, "title": "母项目价值",
-                     "desc": "母项目价值投资理念；需母项目在同一台机器",
+                    {"name": MOTHER_ID, "title": "Stock Dashboard 价值",
+                     "desc": "Stock Dashboard 价值投资理念；需在同一台机器",
                      "source": "mother",
                      "available": MOTHER_ID in _ss,
                      "universe": "screening", "exits": "论点卖出条件一票否决"},

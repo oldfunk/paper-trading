@@ -1,4 +1,4 @@
-"""腾讯实时行情（与母项目同一数据源：qt.gtimg.cn，批量一次拉全池）。
+"""腾讯实时行情（与 Stock Dashboard 同一数据源：qt.gtimg.cn，批量一次拉全池）。
 
 - 标准库实现，无额外依赖；失败一律回空，永不阻断主流程
 - 仅交易时段拉取（9:15-15:05，周一至周五，UTC+8），其余时间直接返回空
@@ -26,7 +26,7 @@ def is_trading_session(now: datetime | None = None) -> bool:
 
 
 def tc_symbol(code: str) -> str:
-    """6→sh，8/4开头→bj，其余sz（与母项目 tc_encode 口径一致）。"""
+    """6→sh，8/4开头→bj，其余sz（与 Stock Dashboard tc_encode 口径一致）。"""
     c = str(code).strip()
     if c.startswith("6"):
         return "sh" + c
@@ -44,7 +44,7 @@ def _f(x, default: float = 0.0) -> float:
 
 
 def parse_line(raw: str) -> dict | None:
-    """解析单行 v_sz000858="..." 内串（字段下标与母项目 parse_tc_line 一致）。"""
+    """解析单行 v_sz000858="..." 内串（字段下标与 Stock Dashboard parse_tc_line 一致）。"""
     try:
         q1 = raw.index('"')
         q2 = raw.rindex('"')

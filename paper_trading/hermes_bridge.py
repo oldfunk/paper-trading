@@ -544,7 +544,7 @@ class HermesBridge:
                     symbols: list[str] | None = None) -> dict:
         """组装项目实时快照（给 LLM 当上下文；不含 Key/口令等任何密钥）。
 
-        合并模式下自动附加母项目的价值视角（基本面/AI 分析/论点/大盘），
+        合并模式下自动附加 Stock Dashboard 的价值视角（基本面/AI 分析/论点/大盘），
         母库不可读时该段为空，绝不影响主流程。
         symbols 传入时并入覆盖范围（决策上下文与交易宇宙一致）。
         """
@@ -674,7 +674,7 @@ def main() -> None:
                             help="缺省=config.yaml 股票池")
     run_parser.add_argument("--pool-from", default="config",
                             choices=["config", "watchlist", "screening", "all"],
-                            help="股票池来源（watchlist/screening 需母项目在同一台机器）")
+                            help="股票池来源（watchlist/screening 需 Stock Dashboard 在同一台机器）")
     run_parser.add_argument("--pool-tag", default="",
                             help="screening 按母策略 tag 过滤（如 growth；为空不过滤）")
     run_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
@@ -721,7 +721,7 @@ def main() -> None:
     scheme_parser = subparsers.add_parser("scheme", help="投资方案（打法）查看与切换")
     scheme_parser.add_argument("--json", action="store_true")
     scheme_sub = scheme_parser.add_subparsers(dest="scheme_command")
-    scheme_list_p = scheme_sub.add_parser("list", help="列出内置/自选/母项目策略与当前选中")
+    scheme_list_p = scheme_sub.add_parser("list", help="列出三类方案与当前选中")
     scheme_list_p.add_argument("--json", action="store_true")
     scheme_use = scheme_sub.add_parser("use", help="切换当前方案（写本地文件，不进 git）")
     scheme_use.add_argument("--name", required=True)
@@ -734,8 +734,7 @@ def main() -> None:
     llm_parser.add_argument("--json", action="store_true")
     llm_sub = llm_parser.add_subparsers(dest="llm_command")
 
-    llm_cfg = llm_sub.add_parser("config", help="保存厂商配置（Key 只落本地文件）")
-    llm_cfg.add_argument("--preset", default="custom",
+    llm_cfg = llm_sub.add_parser("config", help="保存厂商配置（Key 只落本地文件）")    llm_cfg.add_argument("--preset", default="custom",
                          help="deepseek/qwen/moonshot/glm/doubao/openai/custom")
     llm_cfg.add_argument("--base-url", default="")
     llm_cfg.add_argument("--model", default="")
@@ -758,7 +757,7 @@ def main() -> None:
     agent_run.add_argument("--symbols", nargs="*", default=None)
     agent_run.add_argument("--pool-from", default="config",
                            choices=["config", "watchlist", "screening", "all"],
-                           help="AI 选股范围（screening=母项目最新候选）")
+                           help="AI 选股范围（screening=Stock Dashboard 最新候选）")
     agent_run.add_argument("--pool-tag", default="",
                            help="screening 按母策略 tag 过滤；空则用当前方案自带 tag")
     agent_run.add_argument("--pool-limit", type=int, default=20)

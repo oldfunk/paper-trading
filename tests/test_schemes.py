@@ -40,7 +40,7 @@ def test_exactly_three_kinds_no_mother(tmp_path, monkeypatch):
     monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(tmp_path / "nothing"))
     ss = all_schemes(str(tmp_path))
     assert set(ss) == {MOTHER_ID, GENERAL_ID, CUSTOM_ID} or set(ss) == {GENERAL_ID, CUSTOM_ID}
-    assert MOTHER_ID not in ss  # 母项目缺席，无母类
+    assert MOTHER_ID not in ss  # Stock Dashboard 缺席，无母类
     assert resolve_scheme("nope", str(tmp_path)).name == GENERAL_ID
     assert resolve_scheme(MOTHER_ID, str(tmp_path)).name == GENERAL_ID  # 缺席回退
     name, src = active_name(str(tmp_path), GENERAL_ID)

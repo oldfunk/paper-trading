@@ -34,5 +34,5 @@ USER_TMPL = """股票池：{pool}
 SCHEME_TMPL = """当前投资方案：{title}（{name}）——{desc}
 离场纪律：{exits}"""
 
-CAND_TMPL = """母项目量化筛选依据（score 越高越优，可重点考虑高分者，但仍须自己判断）：
+CAND_TMPL = """Stock Dashboard 量化筛选依据（score 越高越优，可重点考虑高分者，但仍须自己判断）：
 {cand_lines}"""

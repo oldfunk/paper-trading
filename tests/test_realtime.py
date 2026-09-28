@@ -26,7 +26,7 @@ def test_tc_symbol_mapping():
     assert rt.tc_symbol("600519") == "sh600519"
     assert rt.tc_symbol("000858") == "sz000858"
     assert rt.tc_symbol("430047") == "bj430047"
-    assert rt.tc_symbol("920000") == "sz920000"  # 仅8/4开头判北交所（与母项目一致）
+    assert rt.tc_symbol("920000") == "sz920000"  # 仅8/4开头判北交所（与 Stock Dashboard 一致）
 
 
 def test_trading_session_window():

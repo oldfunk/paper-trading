@@ -1,4 +1,4 @@
-"""股票池来源：config（默认，独立模式）+ 母项目只读（合并模式）。
+"""股票池来源：config（默认，独立模式）+ Stock Dashboard 只读（合并模式）。
 
 --pool-from config      只用 config.yaml（默认；母项目不存在时自动回退到此）
 --pool-from watchlist   母库观察池（ai_watchlist + watchlist 并集）
