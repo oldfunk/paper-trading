@@ -459,7 +459,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "data": self._bridge().llm_status()})
             elif u.path == "/api/llm/models":
                 # GET 携带口令：/api/llm/models?token=xxx（仅本机局域网使用，勿外网暴露）
-                q = parse_qs(u.query)                tok = (q.get("token") or [""])[0]
+                q = parse_qs(u.query)
+                tok = (q.get("token") or [""])[0]
                 if not self._admin_ok({"admin_token": tok}):
                     self._json({"ok": False, "error": "口令错误或未设置（先保存一次配置生成口令）"},
                                code=403)
