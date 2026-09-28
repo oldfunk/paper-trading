@@ -1,9 +1,11 @@
-"""AI 交易员单测（fake LLM，离线可跑，覆盖钳制/幂等/坏输出）。"""
+"""AI 交易员单测（fake LLM + 禁网，离线可跑，覆盖钳制/幂等/坏输出）。"""
 import json
 import sys
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -11,6 +13,16 @@ sys.path.insert(0, str(ROOT))
 from paper_trading.agent import AgentConfig, AgentTrader  # noqa: E402
 from paper_trading.llm.provider import LLMConfig  # noqa: E402
 from paper_trading.models import Bar  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """禁网铁律：单测永不碰真实行情源（有网环境会拉回真数据污染断言）。"""
+    from paper_trading.hermes_bridge import HermesBridge
+
+    monkeypatch.setattr(
+        HermesBridge, "sync_data",
+        lambda self, symbols: {"ok": True, "symbols": symbols, "updated": {}})
 
 
 def mkbar(sym, day, close):
