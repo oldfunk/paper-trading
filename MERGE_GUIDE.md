@@ -36,7 +36,7 @@
 - 端口：面板 8080，母面板 9527，互不冲突；Phase 1 在母导航加一个外链即可，不迁 Jinja2。
 - 定时：母内置 scheduler 不动；本 `agent run` cron 保留（单交易员原则：同一账户同一天只跑一边）。
 
-## 6. 合并执行步骤（Hermes 照做）
+## 6. 合并执行步骤（执行人照做）
 
 1. 母仓库开 `nightly/paper-trading-merge` 分支（遵守母 AGENTS.md 工作流）。
 2. 本仓库整体迁入顶层 `paper_trading/`（`git subtree` 或文件拷贝，保留 `.gitignore` 的 `secrets.local.json` 豁免）。

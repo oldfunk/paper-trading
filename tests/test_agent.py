@@ -256,3 +256,34 @@ def test_agent_volume_aliases_and_token_budget(monkeypatch, tmp_path):
     assert seen["extra_body"] == {"thinking": {"type": "disabled"}}
     assert res["ok"]
     assert all("试运行通过" in d["status"] for d in res["decisions"])
+
+
+def test_agent_prompt_includes_thesis(monkeypatch, tmp_path):
+    """母库论点/卖出条件必须进 prompt（打法对齐的证据）。"""
+    import sqlite3
+
+    from paper_trading.llm import provider as prov
+
+    mdir = tmp_path / "sd"
+    (mdir / "data" / "db").mkdir(parents=True)
+    (mdir / "src").mkdir()
+    c = sqlite3.connect(str(mdir / "data" / "db" / "stock_dashboard.db"))
+    c.execute("CREATE TABLE watchlist_thesis (code TEXT, core_thesis TEXT,"
+              " sell_conditions TEXT)")
+    c.execute("INSERT INTO watchlist_thesis VALUES "
+              "('600519','好公司','跌破MA20卖出')")
+    c.commit()
+    c.close()
+    monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(mdir))
+    seen: dict = {}
+
+    def fake(cfg, messages, system=""):
+        seen["prompt"] = messages[0]["content"]
+        seen["system"] = system
+        return json.dumps({"actions": [], "summary": "x"})
+
+    monkeypatch.setattr(prov, "chat", fake)
+    b = _bridge(str(tmp_path), _fresh_bars())
+    AgentTrader(b, AgentConfig()).run(["600519"], dry_run=True)
+    assert "跌破MA20卖出" in seen["prompt"]
+    assert "基本面一票否决" in seen["system"]

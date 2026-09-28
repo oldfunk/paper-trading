@@ -490,11 +490,13 @@ class HermesBridge:
             return {"ok": False, "error": str(e)}
 
     def llm_context(self, max_ops: int = 10, max_nav: int = 5,
-                    closes_n: int = 5) -> dict:
+                    closes_n: int = 5,
+                    symbols: list[str] | None = None) -> dict:
         """组装项目实时快照（给 LLM 当上下文；不含 Key/口令等任何密钥）。
 
         合并模式下自动附加母项目的价值视角（基本面/AI 分析/论点/大盘），
         母库不可读时该段为空，绝不影响主流程。
+        symbols 传入时并入覆盖范围（决策上下文与交易宇宙一致）。
         """
         st = self.get_status()
         names = self.data_db.get_stock_names()
@@ -505,7 +507,8 @@ class HermesBridge:
         symbols = sorted(
             {p["symbol"] for p in st["positions"]}
             | set(self.data_db.get_pool_symbols())
-            | set(self.stock_pool))
+            | set(self.stock_pool)
+            | set(symbols or []))
         closes: dict[str, list] = {}
         for sym in symbols:
             bars = self.data_db.get_bars(sym, limit=closes_n)

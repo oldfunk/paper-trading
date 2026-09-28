@@ -133,7 +133,7 @@ class AgentTrader:
         ref_txt = "无" if not ref else "、".join(
             f"{s.symbol}{'买入' if s.direction.value == 1 else '卖出'}{s.volume}股@{s.price:.2f}"
             for s in ref.values())
-        ctx = b.llm_context(max_ops=10, max_nav=3, closes_n=10)
+        ctx = b.llm_context(max_ops=10, max_nav=3, closes_n=10, symbols=symbols)
         prompt = USER_TMPL.format(
             pool="、".join(symbols),
             max_orders=self.cfg.max_orders_per_run,
@@ -256,7 +256,7 @@ class AgentTrader:
         ref_txt = "无" if not ref else "、".join(
             f"{s.symbol}{'买入' if s.direction.value == 1 else '卖出'}{s.volume}股@{s.price:.2f}"
             for s in ref.values())
-        ctx = b.llm_context(max_ops=10, max_nav=3, closes_n=10)
+        ctx = b.llm_context(max_ops=10, max_nav=3, closes_n=10, symbols=symbols)
         prompt = USER_TMPL.format(
             pool="、".join(symbols),
             max_orders=self.cfg.max_orders_per_run,
