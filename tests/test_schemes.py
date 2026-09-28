@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT))
 from paper_trading.strategy.schemes import (  # noqa: E402
     active_name,
     all_schemes,
+    mother_schemes,
     mother_strategies,
     resolve_scheme,
     set_active,
@@ -44,7 +45,7 @@ def test_mother_missing_empty(tmp_path, monkeypatch):
 
 
 def test_mother_strategies_listed(tmp_path, monkeypatch):
-    mdir = tmp_path / "sd"
+    mdir = tmp_path / "sd0"
     (mdir / "config").mkdir(parents=True)
     (mdir / "src").mkdir()
     (mdir / "config" / "strategies.yaml").write_text(
@@ -53,6 +54,30 @@ def test_mother_strategies_listed(tmp_path, monkeypatch):
     monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(mdir))
     ms = mother_strategies()
     assert ms and ms[0]["key"] == "growth" and ms[0]["n_rules"] == 1
+
+
+def test_mother_schemes_gated_by_detection(tmp_path, monkeypatch):
+    """母策略类仅母项目可读时出现；缺席时 resolve 回退默认。"""
+    # 缺席：无 mother 类
+    monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(tmp_path / "nothing"))
+    assert mother_schemes() == {}
+    assert resolve_scheme("mother:growth", str(tmp_path)).name == "ma_trend"
+    # 存在：出现可用 mother 类
+    mdir = tmp_path / "sd"
+    (mdir / "config").mkdir(parents=True)
+    (mdir / "src").mkdir()
+    (mdir / "config" / "strategies.yaml").write_text(
+        "growth:\n  name: 成长型\n  desc: d\n  pe_max: 50\n",
+        encoding="utf-8")
+    monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(mdir))
+    ms = mother_schemes()
+    assert set(ms) == {"mother:growth"}
+    assert ms["mother:growth"].universe_tag == "growth"
+    assert resolve_scheme("mother:growth", str(tmp_path)).name == "mother:growth"
+    # set_active 接受 mother:*（即使校验时母项目不可见，运行时回退兜底）
+    monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(tmp_path / "nothing"))
+    ok, _ = set_active(str(tmp_path), "mother:growth")
+    assert ok
 
 
 def test_defense_blocks_buys(monkeypatch, tmp_path):

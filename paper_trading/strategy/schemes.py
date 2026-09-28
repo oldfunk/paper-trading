@@ -19,7 +19,8 @@ class Scheme:
     name: str
     title: str = ""
     desc: str = ""
-    source: str = "builtin"  # builtin | custom | mother-ref
+    source: str = "builtin"  # builtin | custom | mother
+    available: bool = True  # mother 类需检测到母项目才可用
     universe_source: str = "config"  # config | watchlist | screening | all
     universe_tag: str = ""  # screening 按 strategy_tag 过滤（如 growth）
     universe_limit: int = 20
@@ -105,20 +106,48 @@ def active_name(root: str | Path = ".", default: str = "ma_trend") -> tuple[str,
     return name, src
 
 
+def mother_schemes() -> dict[str, Scheme]:
+    """母策略转为可选方案（mother:growth 这类名），仅母项目可读时存在。
+
+    母策略是选股侧语言：转为方案时宇宙=screening+tag，执行沿用通用规则。
+    检测走环境变量/默认路径，与 repo root 无关。
+    """
+    out: dict[str, Scheme] = {}
+    for m in mother_strategies():
+        key = str(m.get("key", ""))
+        if not key:
+            continue
+        out[f"mother:{key}"] = Scheme(
+            name=f"mother:{key}", title=f"价值·{m.get('name', key)}",
+            desc=str(m.get("desc", "")) or "母项目价值策略",
+            source="mother", available=True,
+            universe_source="screening", universe_tag=key, universe_limit=15,
+            exits_note="遵循价值纪律：论点恶化或卖出条件触发即离场，不过度交易",
+        )
+    return out
+
+
 def all_schemes(root: str | Path = ".") -> dict[str, Scheme]:
     d = builtin_schemes()
     d.update(custom_schemes(root))
+    d.update(mother_schemes())
     return d
 
 
 def resolve_scheme(name: str, root: str | Path = ".") -> Scheme:
-    """按名取方案，未知名回退 ma_trend（fail-safe，不抛错）。"""
+    """按名取方案，未知名/母策略不可用时回退 ma_trend（fail-safe，不抛错）。"""
     schemes = all_schemes(root)
-    return schemes.get(name) or schemes["ma_trend"]
+    hit = schemes.get(name)
+    if hit and hit.available:
+        return hit
+    return schemes["ma_trend"]
 
 
 def set_active(root: str | Path, name: str) -> tuple[bool, str]:
     """设置当前方案（只写 gitignored 的 strategy.local.yaml，保留 custom 块）。
+
+    mother:* 系列即使当下检测不到母项目也允许保存（运行时回退 ma_trend 并注明），
+    避免在开发机上无法预选生产环境方案。
 
     Returns:
         (ok, message)
@@ -127,7 +156,8 @@ def set_active(root: str | Path, name: str) -> tuple[bool, str]:
 
     root_p = Path(root)
     if name not in _all(root_p):
-        return False, f"未知方案：{name}"
+        if not (name.startswith("mother:") and len(name) > len("mother:")):
+            return False, f"未知方案：{name}"
     try:
         import yaml  # type: ignore
     except ImportError:

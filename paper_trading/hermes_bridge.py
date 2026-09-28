@@ -99,6 +99,9 @@ class HermesBridge:
                 _scheme_src = "config"
         self.scheme = _resolve_scheme(_scheme_name, _root)
         self.scheme_source = _scheme_src
+        if self.scheme.name != _scheme_name:
+            # 未知名或母策略不可用时回退默认，如实标记（cron 无人值守时可审计）
+            self.scheme_source = f"{_scheme_src}(回退:{_scheme_name})"
         # 方案参数覆盖同名配置（方案没写的沿用 config；注意 agent 类归 agent_kwargs）
         _sig = self.scheme.signal or {}
         for _k in ("short_window", "long_window", "buy_volume", "sell_volume"):

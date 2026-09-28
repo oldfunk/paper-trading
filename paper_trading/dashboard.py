@@ -374,14 +374,22 @@ async function schemeStatus(){
   const s=await get("/api/schemes");const d=(s&&s.data)||{};
   document.getElementById("c-scheme").textContent=d.active?`当前：${d.active}（${d.source}）`:"";
   const box=document.getElementById("schemelist");box.innerHTML="";
-  (d.schemes||[]).forEach(sc=>{
-    const lab=document.createElement("label");
-    lab.style.cssText="display:flex;gap:6px;align-items:flex-start;font-size:13px;min-width:220px;flex:1";
-    const radio=document.createElement("input");radio.type="radio";radio.name="scheme";radio.value=sc.name;
-    if(sc.name===d.active)radio.checked=true;
-    const tx=document.createElement("span");
-    tx.innerHTML=`<b>${esc(sc.title||sc.name)}</b> <span class="mut">${esc(sc.source)}</span><br><span class="mut">${esc(sc.desc||"")}</span><br><span class="mut">宇宙 ${esc(sc.universe||"")}${sc.allow_buy?"":" · 禁止买入"}</span>`;
-    lab.appendChild(radio);lab.appendChild(tx);box.appendChild(lab);
+  const groups=[["mother","母策略（需母项目在同一台机器）"],["builtin","通用策略"],["custom","自定义"]];
+  groups.forEach(([src,label])=>{
+    const items=(d.schemes||[]).filter(sc=>sc.source===src);
+    if(!items.length)return;
+    const h=document.createElement("div");h.style.cssText="width:100%;font-size:12px;color:var(--text-tertiary);margin:6px 0 2px";
+    h.textContent=label;box.appendChild(h);
+    items.forEach(sc=>{
+      const lab=document.createElement("label");
+      lab.style.cssText="display:flex;gap:6px;align-items:flex-start;font-size:13px;min-width:220px;flex:1";
+      if(sc.available===false){lab.style.opacity="0.45"}
+      const radio=document.createElement("input");radio.type="radio";radio.name="scheme";radio.value=sc.name;
+      if(sc.name===d.active)radio.checked=true;
+      const tx=document.createElement("span");
+      tx.innerHTML=`<b>${esc(sc.title||sc.name)}</b>${sc.available===false?' <span class="mut">（不可用）</span>':""}<br><span class="mut">${esc(sc.desc||"")}</span><br><span class="mut">宇宙 ${esc(sc.universe||"")}${sc.allow_buy?"":" · 禁止买入"}</span>`;
+      lab.appendChild(radio);lab.appendChild(tx);box.appendChild(lab);
+    });
   });
   const ms=document.getElementById("motherschemes");
   ms.textContent=(d.mother&&d.mother.length)?"母项目策略（选股侧，供参照）："+d.mother.map(m=>`${m.name}(${m.key},${m.n_rules}条规则)`).join("、"):"母项目未在同一台机器，暂无母策略参照";
@@ -485,7 +493,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "data": {
                     "active": cur.scheme.name, "source": cur.scheme_source,
                     "schemes": [{"name": s.name, "title": s.title, "desc": s.desc,
-                                 "source": s.source,
+                                 "source": s.source, "available": s.available,
                                  "universe": s.universe_source +
                                  (f":{s.universe_tag}" if s.universe_tag else ""),
                                  "allow_buy": s.allow_buy,
