@@ -24,7 +24,7 @@ paper-trading/
 └── paper_trading/
     ├── __init__.py
     ├── main.py                    # 入口：自动化调度与结算
-    ├── hermes_bridge.py           # Agent 适配层（JSON信封+锁+preview）
+    ├── cli.py                       # 命令行入口（JSON信封+锁+preview）
     ├── models/types.py            # Bar/Order/Fill/Position/Signal...
     ├── data/
     │   ├── akshare_fetcher.py     # 新浪优先+东财fallback+北交所映射
@@ -177,43 +177,43 @@ NAV: total=999628.43, pnl=-371.57 (-0.04%)
 === Run-Daily completed ===
 ```
 
-## Hermes Agent 集成
+## 命令行（CLI）
 
-本项目提供 `hermes_bridge.py` 适配层，让 Hermes Agent 可以通过 CLI、cron 或 agent 调用交易框架。
+本项目提供 `cli.py` 命令行入口（人类与机器通用，`--json` 输出机器可读信封）：
 
 ### CLI 命令
 
 ```bash
 # 查看账户状态（统一信封 {"ok","data","error"}，失败非0退出码）
-python -m paper_trading.hermes_bridge status --json
+python -m paper_trading.cli status --json
 
 # 执行每日结算（缺省=config.yaml 股票池；带文件锁防并发；--dry-run 只预览不下单）
-python -m paper_trading.hermes_bridge run --symbols 600519 000858 --json
+python -m paper_trading.cli run --symbols 600519 000858 --json
 
 # 只同步行情+名称，不交易（日内任意时间可执行）
-python -m paper_trading.hermes_bridge sync --json
+python -m paper_trading.cli sync --json
 
 # LLM 接入（只咨询，不交易；Key 只落本地 secrets.local.json）
-python -m paper_trading.hermes_bridge llm config --preset deepseek --api-key xxx --model deepseek-chat
-python -m paper_trading.hermes_bridge llm models --json
-python -m paper_trading.hermes_bridge llm ask --prompt "评价一下当前持仓" --json
+python -m paper_trading.cli llm config --preset deepseek --api-key xxx --model deepseek-chat
+python -m paper_trading.cli llm models --json
+python -m paper_trading.cli llm ask --prompt "评价一下当前持仓" --json
 
 # AI 交易员（日内一次决策；dry-run 只决策不下单；与 run 二选一，不可同日混跑）
-python -m paper_trading.hermes_bridge agent run --dry-run --json
-python -m paper_trading.hermes_bridge agent run --json
+python -m paper_trading.cli agent run --dry-run --json
+python -m paper_trading.cli agent run --json
 # 休盘做计划（存着，开盘自动执行；不碰账本）
-python -m paper_trading.hermes_bridge agent run --plan-only --json
+python -m paper_trading.cli agent run --plan-only --json
 # 股票池来源（需 Stock Dashboard 在同一台机器，否则自动回退 config）
-python -m paper_trading.hermes_bridge agent run --pool-from screening --pool-limit 20 --json
+python -m paper_trading.cli agent run --pool-from screening --pool-limit 20 --json
 
 ### 投资方案（永远 3 种；合并/独立通用）
 
 ```bash
 # 查看与切换（写 gitignored 的 strategy.local.yaml，git 树保持干净）
-python -m paper_trading.hermes_bridge scheme list --json
-python -m paper_trading.hermes_bridge scheme use --name custom --instruction "只做银行股反弹" --json
+python -m paper_trading.cli scheme list --json
+python -m paper_trading.cli scheme use --name custom --instruction "只做银行股反弹" --json
 # 单次指定
-python -m paper_trading.hermes_bridge agent run --scheme custom --dry-run --json
+python -m paper_trading.cli agent run --scheme custom --dry-run --json
 ```
 
 三类：① 母价值（Stock Dashboard 价值理念，需 Stock Dashboard 在同一台机器，否则不可选；
@@ -221,16 +221,16 @@ python -m paper_trading.hermes_bridge agent run --scheme custom --dry-run --json
 ③ 自定义（面板/CLI 用自然语言写交易指令，AI 照此执行，风控钳制不变）。
 
 # 下单前试算（不落库）
-python -m paper_trading.hermes_bridge preview --symbol 600519 --direction buy --volume 100 --json
+python -m paper_trading.cli preview --symbol 600519 --direction buy --volume 100 --json
 
 # 买入/卖出（强制走风控，100股整数倍；拒单落库）
-python -m paper_trading.hermes_bridge buy --symbol 600519 --volume 100 --json
-python -m paper_trading.hermes_bridge sell --symbol 600519 --volume 100 --price 1500.00 --json
+python -m paper_trading.cli buy --symbol 600519 --volume 100 --json
+python -m paper_trading.cli sell --symbol 600519 --volume 100 --price 1500.00 --json
 
 # 查看历史
-python -m paper_trading.hermes_bridge nav --json
-python -m paper_trading.hermes_bridge history --type orders --json
-python -m paper_trading.hermes_bridge history --type fills --json
+python -m paper_trading.cli nav --json
+python -m paper_trading.cli history --type orders --json
+python -m paper_trading.cli history --type fills --json
 
 # 回归测试
 python -m pytest tests/test_core.py -q
@@ -254,23 +254,22 @@ python -m paper_trading.dashboard --port 8080
 
 ```bash
 # MA 规则交易（工作日 16:05）
-(crontab -l 2>/dev/null; echo "5 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.hermes_bridge cron-run --json >> run.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "5 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli cron-run --json >> run.log 2>&1") | crontab -
 
 # 或 AI 交易员（工作日 16:10，同一账户只留其一）
-(crontab -l 2>/dev/null; echo "10 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.hermes_bridge agent run --json >> agent.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "10 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -
 ```
 
 说明：`run` 内含增量补数（自动从库中断点续拉，失败次日自愈，无需重试 cron）；
 节假日无新 K 线时自动只记 NAV 不交易；日内如需刷新价格只用 `sync`，不要盘中跑 `run`（当日 K 未收盘会产生假信号）。
 
-### Agent 调用
+### 外部调用
 
-Hermes agent 可以通过 `terminal` 工具执行上述 CLI 命令，解析 JSON 输出进行分析和决策。
+任何外部 agent/脚本可通过 `terminal` 等方式执行上述 CLI 命令（`--json` 信封），解析输出进行分析和决策。
 
 ### 项目规则
 
-- 详见 `AGENTS.md` — 定义 agent 交互规则、硬约束、验证清单
-- 详见 `skills/paper-trading/SKILL.md` — Hermes skill 定义，包含完整 CLI 参考和数据库 Schema
+- 详见 `AGENTS.md` — 定义交互规则、硬约束、验证清单
 
 ## 技术栈
 
