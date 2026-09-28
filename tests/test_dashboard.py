@@ -11,3 +11,13 @@ def test_dashboard_imports():
 
     assert hasattr(d, "Handler") and hasattr(d, "main")
     assert "market-row" in d.PAGE and "/api/quotes" in d.PAGE
+
+
+def test_entry_modules_import():
+    """所有入口模块必须可导入（曾带着语法错误发版过）。"""
+    import paper_trading.agent.loop
+    import paper_trading.hermes_bridge
+    import paper_trading.main
+
+    assert hasattr(paper_trading.hermes_bridge, "main")
+    assert hasattr(paper_trading.agent.loop, "AgentTrader")

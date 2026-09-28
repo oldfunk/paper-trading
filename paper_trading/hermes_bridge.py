@@ -734,7 +734,8 @@ def main() -> None:
     llm_parser.add_argument("--json", action="store_true")
     llm_sub = llm_parser.add_subparsers(dest="llm_command")
 
-    llm_cfg = llm_sub.add_parser("config", help="保存厂商配置（Key 只落本地文件）")    llm_cfg.add_argument("--preset", default="custom",
+    llm_cfg = llm_sub.add_parser("config", help="保存厂商配置（Key 只落本地文件）")
+    llm_cfg.add_argument("--preset", default="custom",
                          help="deepseek/qwen/moonshot/glm/doubao/openai/custom")
     llm_cfg.add_argument("--base-url", default="")
     llm_cfg.add_argument("--model", default="")
