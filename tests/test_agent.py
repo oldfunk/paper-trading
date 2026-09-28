@@ -190,6 +190,25 @@ def test_agent_plan_then_execute(monkeypatch, tmp_path):
     assert pend2["plan"]["summary"] == "更新计划"
 
 
+def test_agent_executes_plan_on_stale_bars(monkeypatch, tmp_path):
+    """计划执行不受新鲜守卫限制（休盘计划开盘执行正是为此设计）。"""
+    import json as _json
+    from paper_trading.llm import provider as prov
+
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": _json.dumps(
+        {"actions": [], "summary": "不应被调用"}))
+    b = _bridge(str(tmp_path), [mkbar("600519", i, 10 + i) for i in range(30)])
+    # 手工存一条今日计划（绕过 LLM），bars 是 2024 年旧数据
+    b.broker.save_plan(__import__("datetime").date.today().isoformat(), ["600519"],
+                       {"actions": [{"action": "buy", "symbol": "600519",
+                                     "volume": 100, "reason": "旧计划"}],
+                        "summary": "旧", "asof": "2024-01-30"})
+    t = AgentTrader(b, AgentConfig())
+    res = t.run(["600519"])
+    assert res["ok"] and res.get("from_plan") is True
+    assert res["decisions"][0]["status"].startswith("已成交")
+
+
 def test_stock_pool_yaml_octal_guard(tmp_path):
     """000333 这类全小数字 YAML 会吞成八进制 int；引号+归一化必须保住原码。"""
     from paper_trading.utils.config import load_config

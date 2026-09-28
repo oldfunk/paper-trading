@@ -201,7 +201,7 @@ class AgentTrader:
         # 1. 同步行情（与 run 同一口径）
         b.sync_data(symbols)
 
-        # 2. 取数 + 无新鲜数据守卫
+        # 2. 取数（执行计划不需要新鲜 K 线：计划本就是基于定稿数据做的）
         all_bars: dict[str, list] = {}
         latest: dict[str, float] = {}
         for sym in symbols:
@@ -209,13 +209,6 @@ class AgentTrader:
             if bars:
                 all_bars[sym] = bars
                 latest[sym] = bars[-1].close
-        today = datetime.now().date()
-        if not any(bars and bars[-1].timestamp.date() >= today for bars in all_bars.values()):
-            logger.warning("No fresh bars, AI skips")
-            b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
-                                   True, {"skipped": "no-fresh-bars"}, None, None)
-            return {"ok": True, "skipped": "no-fresh-bars", "timestamp": now,
-                    "symbols": symbols}
 
         # 3. T+1 解冻（dry-run 不碰账本）
         if not dry_run:
@@ -241,12 +234,22 @@ class AgentTrader:
                                    None, None)
             return {"ok": False, "error": f"日亏熔断 {nav.pnl_pct:.2%}", "timestamp": now}
 
-        # 4.5 待执行计划优先（休盘计划开盘执行；dry-run 不消费计划）
+        # 4.5 待执行计划优先（休盘计划开盘执行；dry-run 不消费计划；
+        #     计划基于定稿数据，不受新鲜守卫限制）
         if not dry_run:
             pending = b.broker.get_pending_plan(today_str())
             if pending:
                 logger.info(f"Executing pending AI plan {pending['id']}")
                 return self._execute_plan(pending, all_bars, latest)
+
+        # 4.6 无新鲜数据守卫（只拦现决现执：节假日/源未更新时不问 LLM）
+        today = datetime.now().date()
+        if not any(bars and bars[-1].timestamp.date() >= today for bars in all_bars.values()):
+            logger.warning("No fresh bars, AI skips")
+            b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
+                                   True, {"skipped": "no-fresh-bars"}, None, None)
+            return {"ok": True, "skipped": "no-fresh-bars", "timestamp": now,
+                    "symbols": symbols}
 
         # 5. 参考信号 + 上下文，问 LLM
         ref = b.strategy.generate_signals(all_bars)
