@@ -83,11 +83,15 @@ class PaperTradingEngine:
 
         # 2. 获取最新K线并生成信号
         all_bars: Dict[str, list] = {}
-        latest_prices: Dict[str, float] = {}
         for sym in symbols:
             bars = self.data_db.get_bars(sym, limit=30)
             if bars:
                 all_bars[sym] = bars
+        # 计价用全口径（run 标的 ∪ 持仓），持仓按 0 算会误触发熔断
+        latest_prices: Dict[str, float] = {}
+        for sym in list(all_bars) + [p.symbol for p in self.broker.get_all_positions()]:
+            bars = self.data_db.get_bars(sym, limit=1)
+            if bars:
                 latest_prices[sym] = bars[-1].close
 
         # 3. T+1 结算（先解冻昨日买入，再交易，避免 T+2）

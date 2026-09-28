@@ -203,12 +203,12 @@ class AgentTrader:
 
         # 2. 取数（执行计划不需要新鲜 K 线：计划本就是基于定稿数据做的）
         all_bars: dict[str, list] = {}
-        latest: dict[str, float] = {}
         for sym in symbols:
             bars = b.data_db.get_bars(sym, limit=30)
             if bars:
                 all_bars[sym] = bars
-                latest[sym] = bars[-1].close
+        # 计价用全口径（run 标的 ∪ 持仓），持仓按 0 算会误触发熔断
+        latest = b.price_map(symbols)
 
         # 3. T+1 解冻（dry-run 不碰账本）
         if not dry_run:

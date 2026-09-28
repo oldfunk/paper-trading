@@ -287,3 +287,23 @@ def test_agent_prompt_includes_thesis(monkeypatch, tmp_path):
     AgentTrader(b, AgentConfig()).run(["600519"], dry_run=True)
     assert "跌破MA20卖出" in seen["prompt"]
     assert "基本面一票否决" in seen["system"]
+
+
+def test_price_map_covers_positions_outside_pool(monkeypatch, tmp_path):
+    """持仓不在 run 池里也要按现价计入 NAV（否则持仓归零误触发熔断）。"""
+    import paper_trading.hermes_bridge as hb
+    from paper_trading.models import Order, OrderType
+
+    f1 = tempfile.mktemp(suffix=".db", dir=str(tmp_path))
+    f2 = tempfile.mktemp(suffix=".db", dir=str(tmp_path))
+    b = hb.HermesBridge(data_db=f1, account_db=f2, config_path="/nonexistent.yaml",
+                        secrets_path=str(tmp_path / "s.json"))
+    b.data_db.upsert_bars([mkbar("600519", i, 10.0) for i in range(5)])
+    b.data_db.upsert_bars([mkbar("000001", i, 20.0) for i in range(5)])
+    # 持仓 600519，但 run 池里只有 000001
+    b.broker.submit_order(Order(symbol="600519", direction=1, volume=100,
+                                order_type=OrderType.LIMIT, limit_price=10.0))
+    m = b.price_map(["000001"])
+    assert m["000001"] == 20.0 and m["600519"] == 10.0  # 持仓按现价，不归零
+    nav = b.broker.get_nav(m)
+    assert nav.market_value == 1000.0

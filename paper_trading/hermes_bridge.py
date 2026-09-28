@@ -142,6 +142,21 @@ class HermesBridge:
         ok = all(v >= 0 for v in updated.values())
         return {"ok": ok, "symbols": symbols, "updated": updated}
 
+    def price_map(self, symbols: list[str]) -> dict[str, float]:
+        """最新价表：run 标的 ∪ 全部持仓（持仓不在池中时也必须计价，
+        否则 NAV 把持仓算成 0 并误触发熔断）。"""
+        out: dict[str, float] = {}
+        for sym in symbols:
+            bars = self.data_db.get_bars(sym, limit=1)
+            if bars:
+                out[sym] = bars[-1].close
+        for p in self.broker.get_all_positions():
+            if p.symbol not in out:
+                bars = self.data_db.get_bars(p.symbol, limit=1)
+                if bars:
+                    out[p.symbol] = bars[-1].close
+        return out
+
     def run_daily(self, symbols: list[str]) -> dict:
         """
         执行每日结算流程（Run-Daily）。
@@ -159,12 +174,12 @@ class HermesBridge:
 
         # 2. 获取最新K线并生成信号
         all_bars: dict[str, list] = {}
-        latest_prices: dict[str, float] = {}
         for sym in symbols:
             bars = self.data_db.get_bars(sym, limit=30)
             if bars:
                 all_bars[sym] = bars
-                latest_prices[sym] = bars[-1].close
+        # 计价用全口径（run 标的 ∪ 持仓），持仓按 0 算会误触发熔断
+        latest_prices = self.price_map(symbols)
 
         # 2.5 无新鲜数据守卫：节假日/拉取失败时不交易只记 NAV，
         #     避免用停滞的末根 K 线重复触发历史交叉信号
@@ -749,12 +764,11 @@ def main() -> None:
             if getattr(args, "dry_run", False):
                 # dry-run：信号+风控预览，不下单不记NAV
                 all_bars = {}
-                latest = {}
                 for sym in syms:
                     bars = bridge.data_db.get_bars(sym, limit=30)
                     if bars:
                         all_bars[sym] = bars
-                        latest[sym] = bars[-1].close
+                latest = bridge.price_map(syms)
                 signals = bridge.strategy.generate_signals(all_bars)
                 positions = {p.symbol: p for p in bridge.broker.get_all_positions()}
                 nav = bridge.broker.get_nav(latest)
