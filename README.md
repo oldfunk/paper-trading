@@ -1,5 +1,10 @@
 # Paper Trading Framework
 
+[![tests](https://github.com/oldfunk/paper-trading/actions/workflows/test.yml/badge.svg)](https://github.com/oldfunk/paper-trading/actions/workflows/test.yml)
+[![release](https://img.shields.io/github/v/release/oldfunk/paper-trading)](https://github.com/oldfunk/paper-trading/releases/tag/v0.1.0)
+[![license](https://img.shields.io/github/license/oldfunk/paper-trading)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.13-blue)](requirements.txt)
+
 本地事件驱动型模拟交易框架（Paper Trading Framework），针对 A 股市场，纯本地运行，不依赖任何第三方券商在线 API。
 
 ## 特性
@@ -270,8 +275,8 @@ python -m paper_trading.cli nav --json
 python -m paper_trading.cli history --type orders --json
 python -m paper_trading.cli history --type fills --json
 
-# 回归测试
-python -m pytest tests/test_core.py -q
+# 回归测试（全量 44 单测，离线可跑）
+python -m pytest tests/ -q
 
 # 打开仪表盘（只读网页，浏览器访问 http://<ip>:8080）
 python -m paper_trading.dashboard --port 8080
@@ -332,6 +337,12 @@ python -m paper_trading.dashboard --port 8080
 - 本项目为**模拟盘工具**，所有成交均为本地模拟，不连接任何券商，不构成投资建议。
 - 费率与交易规则按文档标注时点（2026-09）建模，规则可能调整，实盘前请与券商确认。
 - 作者不对任何依据本项目产生的交易盈亏负责。
+
+## 反馈与协作
+
+- 缺陷/建议直接提 GitHub Issue；安全问题标题前缀 `[security]`（详见 `SECURITY.md`），请勿粘贴真实 Key。
+- 下游集成方（Stock Dashboard）报子项目 bug 请用 `[upstream-bug]` 前缀并附复现步骤，由本仓库修复后发版号取用。
+- 正式版本见 [Releases](https://github.com/oldfunk/paper-trading/releases)，下游请按 tag 取用，勿跟 main。
 
 ## License
 
