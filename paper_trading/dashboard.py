@@ -599,10 +599,11 @@ class Handler(BaseHTTPRequestHandler):
                 cur = self._bridge()
                 sc = _sched.load_schedule(_root)
                 try:
-                    runs = _AT(cur)._live_runs_today()
+                    _tr = _AT(cur)
+                    runs = _tr._live_runs_today()
+                    fired = sorted(_tr._fired_slots_today(sc["slots"]))
                 except Exception:
-                    runs = []
-                fired = sorted(_sched.consumed_slots(sc["slots"], runs))
+                    runs, fired = [], []
                 self._json({"ok": True, "data": {
                     "slots": sc["slots"],
                     "source": sc["source"],

@@ -65,20 +65,16 @@ def test_due_and_consumed():
 def test_check_gate():
     at = lambda hm: datetime(2026, 9, 29, int(hm[:2]), int(hm[3:]))
     # 时段未到
-    ok, reason, slot = sch.check(["16:45"], [], at("16:00"))
-    assert (ok, reason, slot) == (False, "not-in-schedule", None)
-    # 时段到且队列空：放行并消费该时段
-    ok, reason, slot = sch.check(["16:45"], [], at("17:00"))
-    assert (ok, reason, slot) == (True, "ok", "16:45")
-    # 单时段已消费：队列跑完
-    ok, reason, _ = sch.check(["16:45"], ["16:50"], at("18:00"))
-    assert (ok, reason) == (False, "not-in-schedule")
-    # 双时段：首段消费完，次段到点仍放行
-    ok, reason, slot = sch.check(["16:45", "17:30"], ["16:50"], at("17:35"))
-    assert (ok, reason, slot) == (True, "ok", "17:30")
-    # 双时段全消费：队列跑完
-    ok, reason, _ = sch.check(["16:45", "17:30"], ["16:50", "17:35"], at("18:00"))
-    assert (ok, reason) == (False, "not-in-schedule")
+    assert sch.check(["16:45"], set(), at("16:00")) == (False, "not-in-schedule", None)
+    # 时段到且队列空：放行最早一个（保序）
+    assert sch.check(["16:45"], set(), at("17:00")) == (True, "ok", "16:45")
+    assert sch.check(["16:45", "17:30"], set(), at("17:35")) == (True, "ok", "16:45")
+    # 消费凭标记：16:45 已跑，次段到点放行 17:30
+    assert sch.check(["16:45", "17:30"], {"16:45"}, at("17:35")) == (True, "ok", "17:30")
+    # 队列跑完
+    assert sch.check(["16:45"], {"16:45"}, at("18:00")) == (False, "not-in-schedule", None)
+    assert sch.check(["16:45", "17:30"], {"16:45", "17:30"}, at("18:00")) == (
+        False, "not-in-schedule", None)
 
 
 def _bridge(tmp, bars):
@@ -140,12 +136,38 @@ def test_run_second_slot_after_first(monkeypatch, tmp_path):
     t = AgentTrader(b)
     monkeypatch.setattr(sch, "_now", lambda: datetime(2026, 9, 29, 16, 50))
     assert t.run(["600519"], sched_root=str(tmp_path))["ok"]
+    assert t._fired_slots_today(["16:45", "17:30"]) == {"16:45"}
     monkeypatch.setattr(sch, "_now", lambda: datetime(2026, 9, 29, 17, 35))
     r2 = t.run(["600519"], sched_root=str(tmp_path))
     assert r2["ok"] and "skipped" not in r2
+    assert t._fired_slots_today(["16:45", "17:30"]) == {"16:45", "17:30"}
     assert len(t._live_runs_today()) == 2
+    # 队列跑完：再 tick 即跳过（与真实时钟无关——消费凭标记不凭时间推断）
     monkeypatch.setattr(sch, "_now", lambda: datetime(2026, 9, 29, 17, 40))
     assert t.run(["600519"], sched_root=str(tmp_path))["skipped"] == "not-in-schedule"
+
+
+def test_fired_slots_ignores_wall_clock(monkeypatch, tmp_path):
+    """回归：CI 曾挂——mock 时间与真实落库时间不一致时，消费判定不能错位。"""
+    import json
+
+    from paper_trading.agent import AgentTrader
+    from paper_trading.cli import TradingBridge
+    from paper_trading.llm import provider as prov
+
+    monkeypatch.setattr(TradingBridge, "sync_data",
+                        lambda self, symbols: {"ok": True, "symbols": symbols,
+                                               "updated": {}})
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(
+        {"actions": [], "summary": "不动"}))
+    assert sch.save_schedule(tmp_path, "16:45")[0]
+    b = _bridge(str(tmp_path), _fresh())
+    t = AgentTrader(b)
+    # 门判定时钟拨到傍晚，但落库时间戳是真实现在：标记制下依然正确消费一次
+    monkeypatch.setattr(sch, "_now", lambda: datetime(2026, 9, 29, 23, 59))
+    assert t.run(["600519"], sched_root=str(tmp_path))["ok"]
+    assert t._fired_slots_today(["16:45"]) == {"16:45"}
+    assert t.run(["600519"], sched_root=str(tmp_path))["skipped"] == "already-decided"
 
 
 def test_cli_schedule_list_set(tmp_path, monkeypatch):

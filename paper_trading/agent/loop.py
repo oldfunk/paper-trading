@@ -98,6 +98,35 @@ class AgentTrader:
             out.append(str(o["timestamp"])[11:16])
         return sorted(out)
 
+    def _fired_slots_today(self, slots: list[str]) -> set[str]:
+        """今日已消费时段：优先取流水里的 slot 标记（与时钟无关）；无标记的
+        老流水回退为时间推断（最新时段前最近一个），保证升级不断档。"""
+        from paper_trading.agent import schedule as _sched
+
+        today = datetime.now().date().isoformat()
+        done: set[str] = set()
+        legacy_times: list[str] = []
+        for o in self.bridge.broker.get_op_log(200):
+            if o["action"] != "ai:decide" or not o["ok"]:
+                continue
+            if str(o["timestamp"])[:10] != today:
+                continue
+            try:
+                import json as _json
+
+                res = _json.loads(o["result"] or "{}")
+                prm = _json.loads(o["params"] or "{}")
+            except Exception:
+                res, prm = {}, {}
+            if "skipped" in res or prm.get("mode", "live") == "dry":
+                continue
+            mk = str(prm.get("slot") or "")
+            if mk and mk in slots:
+                done.add(mk)
+            else:
+                legacy_times.append(str(o["timestamp"])[11:16])
+        return done | _sched.consumed_slots(slots, legacy_times)
+
     def _decided_today(self) -> bool:
         """今日是否已有实质决策（跳过类流水不算，避免早盘空跑锁死午后真跑）。"""
         return len(self._live_runs_today()) > 0
@@ -219,6 +248,8 @@ class AgentTrader:
 
         # 0. 定时闸（实盘 tick 入口：队列时段没到/跑完直接跳过，省一次同步+LLM）
         #    单时段沿用历史 already-decided 语义；多时段按队列消费。
+        #    放行后记住本次消费时段，落子时写入流水（消费凭标记，不凭时间推断）。
+        _slot_s: Optional[str] = None
         if not dry_run and not force and not plan_only:
             from paper_trading.agent import schedule as _sched
 
@@ -231,8 +262,8 @@ class AgentTrader:
                 return {"ok": True, "skipped": "already-decided", "timestamp": now,
                         "symbols": symbols}
             if not ignore_schedule:
-                _ok_s, _reason_s, _slot_s = _sched.check(
-                    _sc["slots"], _live)
+                _fired = self._fired_slots_today(_sc["slots"])
+                _ok_s, _reason_s, _slot_s = _sched.check(_sc["slots"], _fired)
                 if not _ok_s:
                     logger.warning(f"Schedule gate ({_reason_s}), AI skips")
                     b.broker.log_operation(
@@ -284,7 +315,7 @@ class AgentTrader:
             pending = b.broker.get_pending_plan(today_str())
             if pending:
                 logger.info(f"Executing pending AI plan {pending['id']}")
-                return self._execute_plan(pending, all_bars, latest)
+                return self._execute_plan(pending, all_bars, latest, slot=_slot_s)
 
         # 4.6 无新鲜数据守卫（只拦现决现执：节假日/源未更新时不问 LLM）
         today = datetime.now().date()
@@ -345,10 +376,10 @@ class AgentTrader:
             all_bars=all_bars, latest_prices=latest, cash=cash,
             positions=positions, nav_total=nav.total_value,
             dry_run=dry_run, mode=mode, now=now, from_plan=False,
-            pool_source=pool_source)
+            pool_source=pool_source, slot=_slot_s)
 
     def _execute_plan(self, pending: dict, all_bars: dict,
-                      latest: dict) -> dict:
+                      latest: dict, slot: Optional[str] = None) -> dict:
         """执行今日待执行计划（开盘执行休盘计划；价格沿用计划基准防盘中污染）。"""
         from paper_trading.utils import get_logger
 
@@ -368,7 +399,8 @@ class AgentTrader:
             all_bars=all_bars, latest_prices=latest, cash=cash,
             positions=positions, nav_total=nav.total_value,
             dry_run=False, mode="live", now=datetime.now().isoformat(),
-            from_plan=True, pool_source=str(plan.get("pool_source", "config")))
+            from_plan=True, pool_source=str(plan.get("pool_source", "config")),
+            slot=slot)
         b.broker.mark_plan_done(int(pending["id"]))
         logger.info(f"AI plan {pending['id']} executed")
         return res
@@ -377,7 +409,8 @@ class AgentTrader:
                          all_bars: dict, latest_prices: dict, cash: float,
                          positions: dict, nav_total: float, dry_run: bool,
                          mode: str, now: str, from_plan: bool,
-                         pool_source: str = "config") -> dict:
+                         pool_source: str = "config",
+                         slot: Optional[str] = None) -> dict:
         """逐条钳制执行（dry_run 不碰账本；from_plan 仅标记来源）。"""
         from paper_trading.models import Order, OrderType, Signal, SignalType
         from paper_trading.utils import get_logger
@@ -454,7 +487,8 @@ class AgentTrader:
         nav2 = b.broker.get_nav(latest)
         b.broker.log_operation(
             "ai:decide", {"symbols": symbols, "mode": mode, "from_plan": from_plan,
-                          "pool_source": pool_source, "summary": summary}, True,
+                          "pool_source": pool_source, "summary": summary,
+                          **({"slot": slot} if slot else {})}, True,
             {"decisions": decided}, nav2.cash, nav2.total_value)
         logger.info(f"AI decide done: {len(decided)} actions, mode={mode}, from_plan={from_plan}")
         return {"ok": True, "timestamp": now, "symbols": symbols, "mode": mode,

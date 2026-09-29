@@ -108,7 +108,11 @@ def due_slots(slots: list[str], now: Optional[datetime] = None) -> list[str]:
 
 
 def consumed_slots(slots: list[str], live_times: list[str]) -> set[str]:
-    """已被消费的时段：每次实盘实质决策消费其时刻前最近一个时段。"""
+    """已被消费的时段（兼容口径）：每次实盘实质决策消费其时刻前最近一个时段。
+
+    仅用于无 slot 标记的老流水回退；新流水直接记 slot（见 AgentTrader），
+    不走时间推断，避免双时钟（mock 时间 vs 真实落库时间）错位。
+    """
     done: set[str] = set()
     for t in live_times:
         past = [s for s in slots if s <= t and s not in done]
@@ -117,16 +121,16 @@ def consumed_slots(slots: list[str], live_times: list[str]) -> set[str]:
     return done
 
 
-def check(slots: list[str], live_times: list[str],
+def check(slots: list[str], fired: set[str] | list[str],
           now: Optional[datetime] = None) -> tuple[bool, str, Optional[str]]:
     """定时闸：返回 (放行, 原因, 本次消费时段)。
 
-    队列式：已到且未被消费的时段存在即放行（消费其中最晚一个）；
-    否则 not-in-schedule（时段未到，或全天队列已跑完）。
+    队列式：放行最早一个已到未消费的时段（保序）；无可跑时
+    返回 not-in-schedule（时段未到，或全天队列已跑完）。
+    fired 为今日已消费时段集合（由流水中的 slot 标记得出，与时钟无关）。
     """
-    live_times = live_times or []
-    due = [s for s in due_slots(slots, now)
-           if s not in consumed_slots(slots, live_times)]
+    done = set(fired or [])
+    due = [s for s in due_slots(slots, now) if s not in done]
     if not due:
         return False, "not-in-schedule", None
-    return True, "ok", due[-1]
+    return True, "ok", due[0]
