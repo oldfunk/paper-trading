@@ -255,6 +255,7 @@ python -m paper_trading.cli agent run --json
 python -m paper_trading.cli agent run --plan-only --json
 # 股票池来源（需 Stock Dashboard 在同一台机器，否则自动回退 config）
 python -m paper_trading.cli agent run --pool-from screening --pool-limit 20 --json
+```
 
 ### 投资方案（永远 3 种；合并/独立通用）
 
@@ -267,9 +268,12 @@ python -m paper_trading.cli agent run --scheme custom --dry-run --json
 ```
 
 三类：① 母价值（Stock Dashboard 价值理念，需 Stock Dashboard 在同一台机器，否则不可选；
-合并后宇宙取母筛选）；② 通用交易（默认，MA5/20）；
+合并后选股范围取母筛选）；② 通用交易（默认，MA5/20）；
 ③ 自定义（面板/CLI 用自然语言写交易指令，AI 照此执行，风控钳制不变）。
 
+### 下单、历史与面板
+
+```bash
 # 下单前试算（不落库）
 python -m paper_trading.cli preview --symbol 600519 --direction buy --volume 100 --json
 

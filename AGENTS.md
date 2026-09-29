@@ -110,7 +110,7 @@ python -m paper_trading.cli history --type fills --limit 20 --json
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| max_single_order_value | 200,000 CNY | Max value per single order |
+| max_single_order_value | 30,000 CNY | Max value per single order（以 `config.yaml` 为准，代码缺省 200,000 仅兜底） |
 | max_position_pct | 30% | Max single-stock position |
 | max_total_position_pct | 95% | Max total portfolio exposure |
 | max_drawdown_pct | 20% | Max drawdown before halt |

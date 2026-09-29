@@ -543,7 +543,7 @@ class TradingBridge:
 
         合并模式下自动附加 Stock Dashboard 的价值视角（基本面/AI 分析/论点/大盘），
         母库不可读时该段为空，绝不影响主流程。
-        symbols 传入时并入覆盖范围（决策上下文与交易宇宙一致）。
+        symbols 传入时并入覆盖范围（决策上下文与选股范围一致）。
         """
         st = self.get_status()
         names = self.data_db.get_stock_names()
