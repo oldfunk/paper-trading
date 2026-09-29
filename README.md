@@ -18,7 +18,7 @@
 - **本地 SQLite 持久化**：行情数据（`data.db`）与账户账本（`paper_account.db`）分离
 - **双数据源**：优先新浪财经（稳定），自动重试机制
 - **风控管理**：单笔限额、仓位上限、最大回撤止损
-- **AI 交易员**：日内一次 LLM 决策（JSON 钳制执行+幂等闸+日亏熔断），休盘做计划、开盘执行
+- **AI 交易员**：面板/CLI 自定时触发（默认 16:45 每天一次，保守时间），日内一次 LLM 决策（JSON 钳制执行+幂等闸+日亏熔断），休盘做计划、开盘执行
 - **投资方案三选一**：[Stock Dashboard](https://github.com/oldfunk/stock-dashboard) 价值 / 通用交易（默认）/ 自定义自然语言指令
 - **LLM 万能接入**：OpenAI 兼容接口 + 主流厂商预设 + 手填模型名，只咨询不交易
 - **盘中实时**：腾讯行情同源，面板现价盘中实时展示（NAV/结算永远收盘口径）
@@ -33,7 +33,7 @@ paper-trading/
 ├── secrets.local.json         # 本机密钥（0600，gitignored，不提交）
 ├── requirements.txt
 ├── MERGE_GUIDE.md             # 与 Stock Dashboard 合并契约
-├── tests/                     # 离线回归单测（core/agent/llm/schemes/integration/realtime/dashboard）
+├── tests/                     # 离线回归单测（core/agent/llm/schemes/schedule/integration/realtime/dashboard）
 └── paper_trading/
     ├── __init__.py
     ├── main.py                    # 独立入口：自动化调度与结算
@@ -48,7 +48,7 @@ paper-trading/
     │   ├── base_strategy.py       # BaseStrategy 抽象基类
     │   ├── ma_cross_strategy.py   # 仅最后一根交叉才发信号（防重复）
     │   └── schemes.py             # 投资方案三选一（母价值/通用/自定义）
-    ├── agent/                     # AI 交易员（决策环+计划表+钳制执行）
+    ├── agent/                     # AI 交易员（决策环+计划表+定时闸+钳制执行）
     ├── broker/paper_broker.py     # T+1交易日历/100股/涨跌停/拒单落库/含费成本
     ├── portfolio/portfolio.py
     ├── risk/risk_manager.py       # 多标的价格表+回撤熔断
@@ -248,9 +248,14 @@ python -m paper_trading.cli llm config --preset deepseek --api-key xxx --model d
 python -m paper_trading.cli llm models --json
 python -m paper_trading.cli llm ask --prompt "评价一下当前持仓" --json
 
-# AI 交易员（日内一次决策；dry-run 只决策不下单；与 run 二选一，不可同日混跑）
+# AI 交易员（日内按定时触发决策；定时闸未到/次数用完直接跳过，不问 LLM）
 python -m paper_trading.cli agent run --dry-run --json
 python -m paper_trading.cli agent run --json
+# 定时查看与设置（写 gitignored 的 strategy.local.yaml；时刻逗号分隔，每日 1-5 次）
+python -m paper_trading.cli agent schedule list --json
+python -m paper_trading.cli agent schedule set --slots 16:45,17:30 --max-runs 2 --json
+# 忽略定时闸立即执行一次（手动补跑用）
+python -m paper_trading.cli agent run --ignore-schedule --json
 # 休盘做计划（存着，开盘自动执行；不碰账本）
 python -m paper_trading.cli agent run --plan-only --json
 # 股票池来源（需 Stock Dashboard 在同一台机器，否则自动回退 config）
@@ -303,6 +308,7 @@ python -m paper_trading.dashboard --port 8080
 - **AI 问答**：提问自动附带账户快照，回答记流水
 - **AI 操作流水**：每次操作的时间、动作、参数、结果（成交价/拒单原因）、操作后资产，详情列自动换行
 - **投资方案**：母价值 / 通用 / 自定义三选一（自定义指令折叠填写）
+- **AI 定时**：触发时刻（默认 16:45）+ 每日次数（默认 1 次），面板直接改，cron 侧用 15 分钟 tick 配合
 - **模型设置**：厂商预设 + 拉取模型列表 + 手填模型名（Key 掩码显示）
 
 流水写入 `paper_account.db` 的 `op_log` 表（`broker.log_operation`），仪表盘纯只读，可与交易进程并存。
@@ -310,11 +316,16 @@ python -m paper_trading.dashboard --port 8080
 ### Cron 定时任务（二选一，不可同日混跑）
 
 ```bash
-# MA 规则交易（工作日 16:05）
-(crontab -l 2>/dev/null; echo "5 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli cron-run --json >> run.log 2>&1") | crontab -
+# MA 规则交易（工作日 16:45；等数据源今日线落定后再结算，保守时间）
+(crontab -l 2>/dev/null; echo "45 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli cron-run --json >> run.log 2>&1") | crontab -
 
-# 或 AI 交易员（工作日 16:10，同一账户只留其一）
-(crontab -l 2>/dev/null; echo "10 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -
+# AI 交易员（工作日 16:00-18:00 每 15 分钟 tick 一次；进程内定时闸只在
+# 配置时段到达且次数未用完时真跑，其余 tick 空转记流水。默认 16:45 每天一次，
+# 收盘 15:00 + 数据源落定余量，保守时间；时段/次数在面板“AI 定时”或 CLI 改）
+(crontab -l 2>/dev/null; echo "*/15 16-18 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -
+
+# 或单次版（只要默认 16:45 一次，不用 tick；改时段后 cron 时间要跟着改）
+# (crontab -l 2>/dev/null; echo "45 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -
 ```
 
 说明：`run` 内含增量补数（自动从库中断点续拉，失败次日自愈，无需重试 cron）；

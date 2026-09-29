@@ -37,8 +37,8 @@ python -m paper_trading.cli history --type fills --limit 20 --json
 ### Cron Integration
 
 ```bash
-# 工作日 16:10 AI 结算（二选一，见 README Cron 章节）
-(crontab -l 2>/dev/null; echo "10 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -
+# AI 定时 tick（工作日 16:00-18:00 每 15 分钟；定时闸未到时空转，默认 16:45 跑一次）
+(crontab -l 2>/dev/null; echo "*/15 16-18 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -
 ```
 
 ## Database
@@ -96,9 +96,10 @@ python -m paper_trading.cli history --type fills --limit 20 --json
 3. **LLM 不碰下单链**：`llm:ask` 只问答记流水；任何决策环（P2）必须走 fail-closed 钳制（schema/白名单/100 股倍数/金额上限），再经 `RiskManager`，缺一不可。
 4. 命令行传 Key 会留 shell 历史，敏感环境一律用面板设置页。
 
-## AI 交易员自治规则（P2，日内一次决策）
+## AI 交易员自治规则（P2，定时触发决策）
 
-1. **单交易员原则**：同一账户同一天只跑 `run`（MA）或 `agent run`（AI）其一，cron 二选一；`ai:decide` 当日已落子则拒绝再跑（`--force` 除外）。
+1. **定时闸**：cron 高频 tick（推荐 `*/15 16-18`），进程内按 `strategy.local.yaml` 的 `agent_schedule`（slots 时刻表 + max_runs 每日次数，缺省 16:45/1 次）判定；时段未到记 `not-in-schedule`、次数用完记 `max-runs-reached`，均跳过不问 LLM。`--ignore-schedule` 仅手动补跑用。
+2. **单交易员原则**：同一账户同一天只跑 `run`（MA）或 `agent run`（AI）其一，cron 二选一；默认每日 1 次时沿用 `already-decided` 幂等（`--force` 除外）。
 2. **三道闸**：单子数上限（`agent.max_orders_per_run`，默认 3）+ 单笔金额上限（默认 2 万）+ 日亏熔断（默认 -5%，另有回撤熔断 20% 兜底）。
 3. **fail-closed**：LLM 输出非严格 JSON / 标的不在池 / 非 100 倍数 / 超限 / 风控拒绝 → 整单作废，只记 `ai:decide` 流水，不下单。坏输出永不重试下单。
 4. **可审计**：每次决策记原文摘要 + 逐条处置（已成交/拒绝原因）+ 决策后资产；面板“AI 决策”中文渲染。

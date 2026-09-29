@@ -77,10 +77,11 @@ class AgentTrader:
         self.bridge = bridge
         self.cfg = cfg or AgentConfig()
 
-    def _decided_today(self) -> bool:
-        """今日是否已有实质决策（跳过类流水不算，避免早盘空跑锁死午后真跑）。"""
+    def _live_runs_today(self) -> list[str]:
+        """今日实盘实质决策时刻表（HH:MM；试运行/dry 不计入，不消耗定时次数）。"""
         today = datetime.now().date().isoformat()
-        for o in self.bridge.broker.get_op_log(50):
+        out: list[str] = []
+        for o in self.bridge.broker.get_op_log(200):
             if o["action"] != "ai:decide" or not o["ok"]:
                 continue
             if str(o["timestamp"])[:10] != today:
@@ -89,11 +90,17 @@ class AgentTrader:
                 import json as _json
 
                 res = _json.loads(o["result"] or "{}")
+                prm = _json.loads(o["params"] or "{}")
             except Exception:
-                res = {}
-            if "skipped" not in res:
-                return True
-        return False
+                res, prm = {}, {}
+            if "skipped" in res or prm.get("mode", "live") == "dry":
+                continue
+            out.append(str(o["timestamp"])[11:16])
+        return sorted(out)
+
+    def _decided_today(self) -> bool:
+        """今日是否已有实质决策（跳过类流水不算，避免早盘空跑锁死午后真跑）。"""
+        return len(self._live_runs_today()) > 0
 
     def _scheme_txt(self) -> str:
         from paper_trading.agent.prompts import SCHEME_TMPL
@@ -192,8 +199,14 @@ class AgentTrader:
     def run(self, symbols: list[str], dry_run: bool = False,
             force: bool = False, plan_only: bool = False,
             candidates: Optional[list] = None,
-            pool_source: str = "config") -> dict:
-        """三态：plan_only 只做计划存着；默认先执行今日待执行计划，无则现决现执。"""
+            pool_source: str = "config",
+            ignore_schedule: bool = False,
+            sched_root=None) -> dict:
+        """三态：plan_only 只做计划存着；默认先执行今日待执行计划，无则现决现执。
+
+        定时闸（实盘非 force 才走）：时段未到/次数用完直接跳过，不问 LLM。
+        dry-run 与 plan_only 不受定时闸限制（手动试探随时可跑）。
+        """
         from paper_trading.utils import get_logger
 
         logger = get_logger(__name__)
@@ -204,12 +217,31 @@ class AgentTrader:
         if plan_only:
             return self._plan(symbols, candidates=candidates, pool_source=pool_source)
 
-        if not dry_run and not force and self._decided_today():
-            logger.warning("AI already decided today, skip (idempotency)")
-            b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
-                                   True, {"skipped": "already-decided"}, None, None)
-            return {"ok": True, "skipped": "already-decided", "timestamp": now,
-                    "symbols": symbols}
+        # 0. 定时闸（实盘 tick 入口：时段未到/次数用完直接跳过，省一次同步+LLM）
+        #    默认配置（每日 1 次）沿用历史 already-decided 语义；多次时按次数闸。
+        if not dry_run and not force and not plan_only:
+            from paper_trading.agent import schedule as _sched
+
+            _sc = _sched.load_schedule(sched_root if sched_root is not None else ".")
+            _live = self._live_runs_today()
+            if _live and _sc["max_runs"] <= 1:
+                logger.warning("AI already decided today, skip (idempotency)")
+                b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
+                                       True, {"skipped": "already-decided"}, None, None)
+                return {"ok": True, "skipped": "already-decided", "timestamp": now,
+                        "symbols": symbols}
+            if not ignore_schedule:
+                _ok_s, _reason_s, _slot_s = _sched.check(
+                    _sc["slots"], _sc["max_runs"], _live)
+                if not _ok_s:
+                    logger.warning(f"Schedule gate ({_reason_s}), AI skips")
+                    b.broker.log_operation(
+                        "ai:decide", {"symbols": symbols, "mode": mode},
+                        True, {"skipped": _reason_s, "slots": _sc["slots"],
+                               "max_runs": _sc["max_runs"]}, None, None)
+                    return {"ok": True, "skipped": _reason_s, "slots": _sc["slots"],
+                            "max_runs": _sc["max_runs"], "timestamp": now,
+                            "symbols": symbols}
 
         # 1. 同步行情（与 run 同一口径）
         b.sync_data(symbols)
@@ -258,11 +290,18 @@ class AgentTrader:
         # 4.6 无新鲜数据守卫（只拦现决现执：节假日/源未更新时不问 LLM）
         today = datetime.now().date()
         if not any(bars and bars[-1].timestamp.date() >= today for bars in all_bars.values()):
-            logger.warning("No fresh bars, AI skips")
+            _asof = ""
+            try:
+                _asof = max(bars[-1].timestamp for bars in all_bars.values()
+                            if bars).date().isoformat()
+            except Exception:
+                _asof = ""
+            logger.warning(f"No fresh bars (latest {_asof or 'none'}), AI skips")
             b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
-                                   True, {"skipped": "no-fresh-bars"}, None, None)
-            return {"ok": True, "skipped": "no-fresh-bars", "timestamp": now,
-                    "symbols": symbols}
+                                   True, {"skipped": "no-fresh-bars",
+                                          "latest": _asof}, None, None)
+            return {"ok": True, "skipped": "no-fresh-bars", "latest": _asof,
+                    "timestamp": now, "symbols": symbols}
 
         # 5. 参考信号 + 上下文，问 LLM
         ref = b.strategy.generate_signals(all_bars)
