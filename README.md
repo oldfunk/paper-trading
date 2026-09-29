@@ -137,7 +137,6 @@ agent:
 同一 Wi-Fi 下的其他设备用 `http://<运行机器的局域网IP>:8080`（例如树莓派是 `http://192.168.1.50:8080`，IP 以你家路由器分配为准）：
 
 ![面板桌面端](docs/screenshot-desktop.png)
-![面板手机端](docs/screenshot-mobile.png)
 
 ## 核心模块
 
