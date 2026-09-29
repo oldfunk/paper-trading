@@ -766,13 +766,22 @@ def main() -> None:
                            help="忽略定时闸（时段/次数限制），立即执行")
     agent_run.add_argument("--plan-only", action="store_true",
                            help="休盘做计划存着，开盘执行（不碰账本）")
+    agent_tick = agent_sub.add_parser("tick", help="队列 tick：消费最早已到未跑的条目并执行")
+    agent_tick.add_argument("--symbols", nargs="*", default=None)
+    agent_tick.add_argument("--pool-from", default="config",
+                            choices=["config", "watchlist", "screening", "all"])
+    agent_tick.add_argument("--pool-tag", default="")
+    agent_tick.add_argument("--pool-limit", type=int, default=20)
+    agent_tick.add_argument("--json", action="store_true")
+    agent_tick.add_argument("--force", action="store_true",
+                            help="忽略已消费标记，执行最早已到条目")
     agent_sched = agent_sub.add_parser("schedule", help="AI 定时队列查看与设置")
     agent_sched_sub = agent_sched.add_subparsers(dest="agent_sched_command")
     agent_sched_list = agent_sched_sub.add_parser("list", help="查看当前定时队列与今日执行情况")
     agent_sched_list.add_argument("--json", action="store_true")
     agent_sched_set = agent_sched_sub.add_parser("set", help="设置定时队列（写本地文件，不进 git）")
-    agent_sched_set.add_argument("--slots", default=None,
-                                 help="触发时刻队列，逗号分隔，如 16:45,17:30")
+    agent_sched_set.add_argument("--entry", action="append", default=None,
+                                 help="队列条目，可重复：TIME=ACTION，如 --entry 09:00=sync --entry 16:45=trade；动作仅 sync/analyze/plan/trade")
     agent_sched_set.add_argument("--json", action="store_true")
 
     # nav
@@ -983,21 +992,32 @@ def main() -> None:
                 from paper_trading.agent import schedule as _sched
 
                 if getattr(args, "agent_sched_command", None) == "set":
-                    if args.slots is None:
-                        emit(None, ok=False, error="须指定 --slots（示例：16:45,17:30）")
+                    if not getattr(args, "entry", None):
+                        emit(None, ok=False,
+                             error="须指定至少一个 --entry（示例：--entry 09:00=sync --entry 16:45=trade）")
                         sys.exit(2)
-                    ok, msg = _sched.save_schedule(".", args.slots)
+                    ok, msg = _sched.save_schedule(".", args.entry)
                     emit({"message": msg} if ok else None, ok=ok,
                          error=None if ok else msg)
                     if not ok:
                         sys.exit(3)
                 else:
-                    from paper_trading.agent.schedule import due_slots as _due
+                    from paper_trading.agent.schedule import due_entries as _due
 
                     cur = _sched.load_schedule(".")
-                    emit({"slots": cur["slots"], "source": cur["source"],
+                    emit({"entries": cur["entries"], "source": cur["source"],
                           "now": _sched._now().strftime("%H:%M"),
-                          "due": _due(cur["slots"])})
+                          "due": _due(cur["entries"])})
+                return
+            if args.agent_command == "tick":
+                syms, note, cands = _resolve_syms(bridge, args)
+                with run_lock(args.lock_file):
+                    trader = AgentTrader(bridge, bridge.agent_cfg)
+                    res = trader.tick(syms, candidates=cands, pool_source=note,
+                                      force=args.force)
+                emit(res, ok=res.get("ok", False), error=res.get("error"))
+                if not res.get("ok"):
+                    sys.exit(3)
                 return
             if args.agent_command != "run":
                 parser.print_help()

@@ -98,16 +98,20 @@ class AgentTrader:
             out.append(str(o["timestamp"])[11:16])
         return sorted(out)
 
-    def _fired_slots_today(self, slots: list[str]) -> set[str]:
-        """今日已消费时段：优先取流水里的 slot 标记（与时钟无关）；无标记的
-        老流水回退为时间推断（最新时段前最近一个），保证升级不断档。"""
+    def _fired_entries_today(self, entries: list[dict]) -> set[str]:
+        """今日已消费时刻：凭各动作流水里的 slot 标记（与时钟无关）。
+
+        - trade/analyze：ai:decide 实质流水的 slot（dry 照样消费自己的那条）
+        - plan：ai:plan 成功流水的 slot；sync：sync 成功流水的 slot
+        - 无标记的手动跑/老流水不消费队列；升级前的无标记实盘用时间回退推断
+        """
         from paper_trading.agent import schedule as _sched
 
         today = datetime.now().date().isoformat()
         done: set[str] = set()
         legacy_times: list[str] = []
         for o in self.bridge.broker.get_op_log(200):
-            if o["action"] != "ai:decide" or not o["ok"]:
+            if not o["ok"]:
                 continue
             if str(o["timestamp"])[:10] != today:
                 continue
@@ -118,14 +122,22 @@ class AgentTrader:
                 prm = _json.loads(o["params"] or "{}")
             except Exception:
                 res, prm = {}, {}
-            if "skipped" in res or prm.get("mode", "live") == "dry":
-                continue
-            mk = str(prm.get("slot") or "")
-            if mk and mk in slots:
-                done.add(mk)
-            else:
-                legacy_times.append(str(o["timestamp"])[11:16])
-        return done | _sched.consumed_slots(slots, legacy_times)
+            act = o["action"]
+            if act == "ai:decide":
+                if "skipped" in res:
+                    continue
+                mk = str(prm.get("slot") or "")
+                if mk:
+                    done.add(mk)
+                elif prm.get("mode", "live") != "dry":
+                    legacy_times.append(str(o["timestamp"])[11:16])
+            elif act in ("ai:plan", "sync"):
+                if res.get("plan_id") is not None or act == "sync":
+                    mk = str(prm.get("slot") or "")
+                    if mk:
+                        done.add(mk)
+        times = [e["time"] for e in entries]
+        return {t for t in done if t in times} | _sched.consumed_slots(times, legacy_times)
 
     def _decided_today(self) -> bool:
         """今日是否已有实质决策（跳过类流水不算，避免早盘空跑锁死午后真跑）。"""
@@ -159,7 +171,8 @@ class AgentTrader:
         return CAND_TMPL.format(cand_lines="\n".join(lines)) if lines else ""
 
     def _plan(self, symbols: list[str], candidates: Optional[list] = None,
-              pool_source: str = "config") -> dict:
+              pool_source: str = "config",
+              slot: Optional[str] = None) -> dict:
         """休盘做计划：基于最新已收盘定稿数据问 LLM，存待执行，不碰账本。"""
         from paper_trading.utils import get_logger
 
@@ -216,7 +229,8 @@ class AgentTrader:
                                  {"actions": actions, "summary": summary, "asof": asof,
                                   "pool_source": pool_source})
         b.broker.log_operation("ai:plan", {"symbols": symbols, "asof": asof,
-                                           "pool_source": pool_source}, True,
+                                           "pool_source": pool_source,
+                                           **({"slot": slot} if slot else {})}, True,
                                {"plan_id": pid, "summary": summary,
                                 "n_actions": len(actions),
                                 "raw": str(raw or "")[:1500]}, None, None)
@@ -225,16 +239,77 @@ class AgentTrader:
                 "timestamp": now, "symbols": symbols, "pool_source": pool_source,
                 "actions": actions, "summary": summary}
 
+    def tick(self, symbols: list[str], candidates: Optional[list] = None,
+             pool_source: str = "config", force: bool = False,
+             sched_root=None) -> dict:
+        """队列 tick（供 cron 高频调用）：消费最早已到未跑的条目并按动作执行。
+
+        - sync：只同步行情+名称，记 sync 流水（含 slot 标记）
+        - analyze：完整决策链试运行，不下单（ai:decide mode=dry，含 slot 标记）
+        - plan：休盘做计划存着（ai:plan 成功流水含 slot 标记）
+        - trade：实盘决策（走 run，含 slot 标记）
+        无事可做记 not-in-schedule 跳过。手动跑（无 slot 标记）不消费队列。
+        """
+        from paper_trading.agent import schedule as _sched
+        from paper_trading.utils import get_logger
+
+        logger = get_logger(__name__)
+        b = self.bridge
+        now = datetime.now().isoformat()
+        root = sched_root if sched_root is not None else "."
+        sc = _sched.load_schedule(root)
+        entries = sc["entries"]
+        fired = self._fired_entries_today(entries)
+        entry = None
+        if force:
+            due = _sched.due_entries(entries)
+            entry = due[0] if due else None
+        else:
+            _ok, entry, _reason = _sched.check(entries, fired)
+        if entry is None:
+            logger.warning("Schedule queue empty, tick skips")
+            b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": "live"},
+                                   True, {"skipped": "not-in-schedule",
+                                          "queue": [(e["time"], e["action"])
+                                                    for e in entries]}, None, None)
+            return {"ok": True, "skipped": "not-in-schedule",
+                    "queue": entries, "timestamp": now, "symbols": symbols}
+        tm, act = entry["time"], entry["action"]
+        logger.info(f"Schedule tick fires {tm}={act}")
+        if act == "sync":
+            res = b.sync_data(symbols)
+            b.broker.log_operation("sync", {"symbols": symbols, "slot": tm},
+                                   res.get("ok", False),
+                                   {"updated": res.get("updated")}, None, None)
+            res["slot"] = tm
+            return res
+        if act == "plan":
+            res = self._plan(symbols, candidates=candidates,
+                             pool_source=pool_source, slot=tm)
+            res["slot"] = tm
+            return res
+        if act == "analyze":
+            res = self.run(symbols, dry_run=True, candidates=candidates,
+                           pool_source=pool_source, ignore_schedule=True,
+                           sched_root=root, slot=tm)
+            res["slot"] = tm
+            return res
+        res = self.run(symbols, candidates=candidates, pool_source=pool_source,
+                       ignore_schedule=True, sched_root=root, slot=tm)
+        res["slot"] = tm
+        return res
+
     def run(self, symbols: list[str], dry_run: bool = False,
             force: bool = False, plan_only: bool = False,
             candidates: Optional[list] = None,
             pool_source: str = "config",
             ignore_schedule: bool = False,
-            sched_root=None) -> dict:
+            sched_root=None,
+            slot: Optional[str] = None) -> dict:
         """三态：plan_only 只做计划存着；默认先执行今日待执行计划，无则现决现执。
 
-        定时闸（实盘非 force 才走）：时段未到/次数用完直接跳过，不问 LLM。
-        dry-run 与 plan_only 不受定时闸限制（手动试探随时可跑）。
+        直接调用 = 跑一次 trade，按 trade 队列过闸；tick() 按动作分发，
+        传入 slot 表示已过闸。dry-run 与 plan_only 不受定时闸限制。
         """
         from paper_trading.utils import get_logger
 
@@ -246,32 +321,37 @@ class AgentTrader:
         if plan_only:
             return self._plan(symbols, candidates=candidates, pool_source=pool_source)
 
-        # 0. 定时闸（实盘 tick 入口：队列时段没到/跑完直接跳过，省一次同步+LLM）
-        #    单时段沿用历史 already-decided 语义；多时段按队列消费。
-        #    放行后记住本次消费时段，落子时写入流水（消费凭标记，不凭时间推断）。
-        _slot_s: Optional[str] = None
-        if not dry_run and not force and not plan_only:
+        # 0. 定时闸（直接 run = 跑一次 trade：只看 trade 条目队列）。
+        #    单 trade 条目沿用历史 already-decided 语义。
+        #    放行后记住本次消费时刻，落子时写入流水（消费凭标记，不凭时间推断）。
+        #    tick() 传入 slot 表示已过闸，不重复判定。
+        _slot_s: Optional[str] = slot
+        if _slot_s is None and not dry_run and not force and not plan_only:
             from paper_trading.agent import schedule as _sched
 
             _sc = _sched.load_schedule(sched_root if sched_root is not None else ".")
+            _trades = [e for e in _sc["entries"] if e["action"] == "trade"]
             _live = self._live_runs_today()
-            if _live and len(_sc["slots"]) <= 1:
+            _fired = self._fired_entries_today(_sc["entries"])
+            if _live and len(_trades) <= 1:
                 logger.warning("AI already decided today, skip (idempotency)")
                 b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
                                        True, {"skipped": "already-decided"}, None, None)
                 return {"ok": True, "skipped": "already-decided", "timestamp": now,
                         "symbols": symbols}
             if not ignore_schedule:
-                _fired = self._fired_slots_today(_sc["slots"])
-                _ok_s, _reason_s, _slot_s = _sched.check(_sc["slots"], _fired)
+                _ok_s, _entry_s, _reason_s = _sched.check(_trades, _fired)
                 if not _ok_s:
                     logger.warning(f"Schedule gate ({_reason_s}), AI skips")
                     b.broker.log_operation(
                         "ai:decide", {"symbols": symbols, "mode": mode},
-                        True, {"skipped": _reason_s, "slots": _sc["slots"]},
+                        True, {"skipped": _reason_s,
+                               "queue": _sc["entries"]},
                         None, None)
-                    return {"ok": True, "skipped": _reason_s, "slots": _sc["slots"],
+                    return {"ok": True, "skipped": _reason_s,
+                            "queue": _sc["entries"],
                             "timestamp": now, "symbols": symbols}
+                _slot_s = _entry_s["time"]
 
         # 1. 同步行情（与 run 同一口径）
         b.sync_data(symbols)
