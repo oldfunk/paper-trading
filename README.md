@@ -131,6 +131,13 @@ agent:
   llm_thinking: disabled      # 格式受限决策默认关 thinking
 ```
 
+## 界面预览
+
+浏览器/手机打开 `http://<pi-ip>:8080`（局域网，浅色主题，手机自适应）：
+
+![面板桌面端](docs/screenshot-desktop.png)
+![面板手机端](docs/screenshot-mobile.png)
+
 ## 核心模块
 
 ### 数据采集（Data Module）
