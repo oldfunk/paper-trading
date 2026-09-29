@@ -146,10 +146,9 @@ tbody tr:hover{background:var(--bg-hover)}
 <section>
   <div class="section-header"><h2 class="section-title">AI 定时</h2><span class="section-count" id="c-sched"></span></div>
   <div class="ai-panel">
-    <div class="s">定时 tick（cron 每 15 分钟叫一次 agent run）只在此时段到达、且今日次数未用完时才真正决策，其余 tick 空转记流水。默认 16:45 每天一次（收盘数据落定后的保守时间）。多个时刻用英文逗号分隔，如 16:45,17:30。</div>
+    <div class="s">定时 tick（cron 每 15 分钟叫一次 agent run）按队列顺序消费：每个时刻每天最多跑一次，队列跑完/时刻未到就空转记流水。默认 16:45 每天一次（收盘数据落定后的保守时间）。想一天跑多次就加时刻，用英文逗号分隔，如 16:45,17:30。</div>
     <div class="ai-row">
       <input id="sched-slots" placeholder="16:45" style="flex:2;min-width:200px">
-      <input id="sched-max" type="number" min="1" max="5" step="1" title="每日最多实质决策次数" style="width:80px">
       <button id="btn-sched" class="primary">保存定时</button>
       <span id="schedstat" class="mut" style="align-self:center"></span>
     </div>
@@ -268,8 +267,7 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="ai:decide"){const sk=r.skipped||"";
     if(sk==="no-fresh-bars")return `无今日新行情（最新 ${r.latest||"未知"}），跳过（节假日或源未更新）`;
     if(sk==="already-decided")return "今日已决策，跳过";
-    if(sk==="not-in-schedule")return `定时未到（时刻 ${(r.slots||[]).join("、")||"未设"}），跳过`;
-    if(sk==="max-runs-reached")return `今日次数已用完（${r.max_runs||"?"} 次），跳过`;
+    if(sk==="not-in-schedule")return `定时未到或今日队列已跑完（队列 ${(r.slots||[]).join("、")||"未设"}），跳过`;
     if(sk==="drawdown-halt")return `回撤熔断（${(r.drawdown*100).toFixed(2)}%），停手`;
     if(sk==="daily-loss-halt")return `日亏熔断（${(r.pnl_pct*100).toFixed(2)}%），停手`;
     const ds=r.decisions||[];
@@ -441,20 +439,19 @@ schemeStatus();
 async function schedStatus(){
   try{
     const s=await get("/api/agent/schedule");const d=(s&&s.data)||{};
-    document.getElementById("c-sched").textContent="每日 "+(d.max_runs??"?")+" 次";
+    const n=(d.slots||[]).length;
+    document.getElementById("c-sched").textContent="每日 "+n+" 次";
     if(document.getElementById("sched-slots").value==="")document.getElementById("sched-slots").value=(d.slots||[]).join(",");
-    document.getElementById("sched-max").value=d.max_runs??1;
     const t=d.today||{};
     document.getElementById("schedtoday").textContent=
-      `当前：${(d.slots||[]).join("、")}，每日 ${d.max_runs} 次（${d.source==="local"?"已自定义":"默认"}）——今日已决策 ${t.runs??0} 次`+
-      ((t.fired||[]).length?`（已用时段 ${t.fired.join("、")}）`:"");
+      `队列：${(d.slots||[]).join("、")}（${d.source==="local"?"已自定义":"默认"}）——今日已跑 ${t.runs??0}/${t.total??n} 次`+
+      ((t.fired||[]).length?`（已用 ${t.fired.join("、")}）`:"");
   }catch(e){}
 }
 document.getElementById("btn-sched").onclick=async()=>{
   const slots=document.getElementById("sched-slots").value;
-  const max_runs=parseInt(document.getElementById("sched-max").value||"1",10);
   const send=async(extra)=>await post("/api/agent/schedule",
-    Object.assign({admin_token:tok(),slots:slots,max_runs:max_runs},extra||{}));
+    Object.assign({admin_token:tok(),slots:slots},extra||{}));
   let r=await send();
   if(!r.ok&&r.error&&r.error.indexOf("口令")>=0){
     const k=prompt("口令失效，输入 API Key 接管（仅本机使用）：");
@@ -607,10 +604,10 @@ class Handler(BaseHTTPRequestHandler):
                     runs = []
                 fired = sorted(_sched.consumed_slots(sc["slots"], runs))
                 self._json({"ok": True, "data": {
-                    "slots": sc["slots"], "max_runs": sc["max_runs"],
+                    "slots": sc["slots"],
                     "source": sc["source"],
                     "now": _sched._now().strftime("%H:%M"),
-                    "today": {"runs": len(runs), "max_runs": sc["max_runs"],
+                    "today": {"runs": len(runs), "total": len(sc["slots"]),
                               "fired": fired}}})
             elif u.path == "/api/quotes":                # 盘中实时行情（60s 服务端缓存；非交易时段回空）
                 from paper_trading.data import realtime as _rt
@@ -722,8 +719,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 from pathlib import Path as _P
                 ok, msg = _sched.save_schedule(
-                    _P(__file__).resolve().parents[1],
-                    body.get("slots", ""), body.get("max_runs", ""))
+                    _P(__file__).resolve().parents[1], body.get("slots", ""))
                 _data = {"message": msg} if ok else None
                 if ok and _tok_out:
                     _data["admin_token"] = _tok_out

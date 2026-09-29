@@ -217,14 +217,14 @@ class AgentTrader:
         if plan_only:
             return self._plan(symbols, candidates=candidates, pool_source=pool_source)
 
-        # 0. 定时闸（实盘 tick 入口：时段未到/次数用完直接跳过，省一次同步+LLM）
-        #    默认配置（每日 1 次）沿用历史 already-decided 语义；多次时按次数闸。
+        # 0. 定时闸（实盘 tick 入口：队列时段没到/跑完直接跳过，省一次同步+LLM）
+        #    单时段沿用历史 already-decided 语义；多时段按队列消费。
         if not dry_run and not force and not plan_only:
             from paper_trading.agent import schedule as _sched
 
             _sc = _sched.load_schedule(sched_root if sched_root is not None else ".")
             _live = self._live_runs_today()
-            if _live and _sc["max_runs"] <= 1:
+            if _live and len(_sc["slots"]) <= 1:
                 logger.warning("AI already decided today, skip (idempotency)")
                 b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
                                        True, {"skipped": "already-decided"}, None, None)
@@ -232,16 +232,15 @@ class AgentTrader:
                         "symbols": symbols}
             if not ignore_schedule:
                 _ok_s, _reason_s, _slot_s = _sched.check(
-                    _sc["slots"], _sc["max_runs"], _live)
+                    _sc["slots"], _live)
                 if not _ok_s:
                     logger.warning(f"Schedule gate ({_reason_s}), AI skips")
                     b.broker.log_operation(
                         "ai:decide", {"symbols": symbols, "mode": mode},
-                        True, {"skipped": _reason_s, "slots": _sc["slots"],
-                               "max_runs": _sc["max_runs"]}, None, None)
+                        True, {"skipped": _reason_s, "slots": _sc["slots"]},
+                        None, None)
                     return {"ok": True, "skipped": _reason_s, "slots": _sc["slots"],
-                            "max_runs": _sc["max_runs"], "timestamp": now,
-                            "symbols": symbols}
+                            "timestamp": now, "symbols": symbols}
 
         # 1. 同步行情（与 run 同一口径）
         b.sync_data(symbols)

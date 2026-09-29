@@ -251,9 +251,9 @@ python -m paper_trading.cli llm ask --prompt "评价一下当前持仓" --json
 # AI 交易员（日内按定时触发决策；定时闸未到/次数用完直接跳过，不问 LLM）
 python -m paper_trading.cli agent run --dry-run --json
 python -m paper_trading.cli agent run --json
-# 定时查看与设置（写 gitignored 的 strategy.local.yaml；时刻逗号分隔，每日 1-5 次）
+# 定时队列查看与设置（写 gitignored 的 strategy.local.yaml；时刻逗号分隔，跑几次=配几个时刻）
 python -m paper_trading.cli agent schedule list --json
-python -m paper_trading.cli agent schedule set --slots 16:45,17:30 --max-runs 2 --json
+python -m paper_trading.cli agent schedule set --slots 16:45,17:30 --json
 # 忽略定时闸立即执行一次（手动补跑用）
 python -m paper_trading.cli agent run --ignore-schedule --json
 # 休盘做计划（存着，开盘自动执行；不碰账本）
@@ -308,7 +308,7 @@ python -m paper_trading.dashboard --port 8080
 - **AI 问答**：提问自动附带账户快照，回答记流水
 - **AI 操作流水**：每次操作的时间、动作、参数、结果（成交价/拒单原因）、操作后资产，详情列自动换行
 - **投资方案**：母价值 / 通用 / 自定义三选一（自定义指令折叠填写）
-- **AI 定时**：触发时刻（默认 16:45）+ 每日次数（默认 1 次），面板直接改，cron 侧用 15 分钟 tick 配合
+- **AI 定时**：触发时刻队列（默认 16:45；想一天跑多次就加时刻），面板直接改，cron 侧用 15 分钟 tick 配合
 - **模型设置**：厂商预设 + 拉取模型列表 + 手填模型名（Key 掩码显示）
 
 流水写入 `paper_account.db` 的 `op_log` 表（`broker.log_operation`），仪表盘纯只读，可与交易进程并存。
@@ -319,9 +319,9 @@ python -m paper_trading.dashboard --port 8080
 # MA 规则交易（工作日 16:45；等数据源今日线落定后再结算，保守时间）
 (crontab -l 2>/dev/null; echo "45 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli cron-run --json >> run.log 2>&1") | crontab -
 
-# AI 交易员（工作日 16:00-18:00 每 15 分钟 tick 一次；进程内定时闸只在
-# 配置时段到达且次数未用完时真跑，其余 tick 空转记流水。默认 16:45 每天一次，
-# 收盘 15:00 + 数据源落定余量，保守时间；时段/次数在面板“AI 定时”或 CLI 改）
+# AI 交易员（工作日 16:00-18:00 每 15 分钟 tick 一次；进程内定时闸按队列消费，
+# 时刻未到/队列跑完就空转记流水。默认 16:45 每天一次，
+# 收盘 15:00 + 数据源落定余量，保守时间；队列在面板“AI 定时”或 CLI 改）
 (crontab -l 2>/dev/null; echo "*/15 16-18 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -
 
 # 或单次版（只要默认 16:45 一次，不用 tick；改时段后 cron 时间要跟着改）

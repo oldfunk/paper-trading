@@ -26,31 +26,28 @@ def test_parse_slots_bad():
         sch.parse_slots(",".join(f"{10+i:02d}:00" for i in range(6)))
 
 
-def test_parse_max_runs():
-    assert sch.parse_max_runs(1) == 1
-    assert sch.parse_max_runs("3") == 3
-    for bad in [0, 6, -1, "x", None, 2.5]:
-        with pytest.raises(ValueError):
-            sch.parse_max_runs(bad)
-
-
 def test_save_load_roundtrip(tmp_path):
-    ok, msg = sch.save_schedule(tmp_path, "16:45,17:30", 2)
+    ok, msg = sch.save_schedule(tmp_path, "16:45,17:30")
     assert ok, msg
     cur = sch.load_schedule(tmp_path)
-    assert cur == {"slots": ["16:45", "17:30"], "max_runs": 2, "source": "local"}
+    assert cur == {"slots": ["16:45", "17:30"], "source": "local"}
 
 
 def test_load_defaults_when_absent(tmp_path):
     cur = sch.load_schedule(tmp_path)
-    assert cur["slots"] == ["16:45"] and cur["max_runs"] == 1
+    assert cur["slots"] == ["16:45"]
     assert cur["source"] == "default"
 
 
+def test_load_ignores_legacy_max_runs(tmp_path):
+    (tmp_path / "strategy.local.yaml").write_text(
+        "agent_schedule:\n  slots: ['16:45']\n  max_runs: 3\n", encoding="utf-8")
+    assert sch.load_schedule(tmp_path)["slots"] == ["16:45"]
+
+
 def test_save_rejects_bad_and_keeps_old(tmp_path):
-    assert sch.save_schedule(tmp_path, "16:45", 1)[0]
-    assert not sch.save_schedule(tmp_path, "99:99", 1)[0]
-    assert not sch.save_schedule(tmp_path, "16:45", 9)[0]
+    assert sch.save_schedule(tmp_path, "16:45")[0]
+    assert not sch.save_schedule(tmp_path, "99:99")[0]
     assert sch.load_schedule(tmp_path)["slots"] == ["16:45"]
 
 
@@ -67,17 +64,20 @@ def test_due_and_consumed():
 
 def test_check_gate():
     at = lambda hm: datetime(2026, 9, 29, int(hm[:2]), int(hm[3:]))
-    ok, reason, slot = sch.check(["16:45"], 1, [], at("16:00"))
-    assert (ok, reason) == (False, "not-in-schedule")
-    ok, reason, slot = sch.check(["16:45"], 1, [], at("17:00"))
+    # 时段未到
+    ok, reason, slot = sch.check(["16:45"], [], at("16:00"))
+    assert (ok, reason, slot) == (False, "not-in-schedule", None)
+    # 时段到且队列空：放行并消费该时段
+    ok, reason, slot = sch.check(["16:45"], [], at("17:00"))
     assert (ok, reason, slot) == (True, "ok", "16:45")
-    ok, reason, _ = sch.check(["16:45"], 1, ["16:50"], at("18:00"))
-    assert (ok, reason) == (False, "max-runs-reached")
-    # 两次机会：第一时段消费完，第二时段到点仍放行
-    ok, reason, slot = sch.check(["16:45", "17:30"], 2, ["16:50"], at("17:35"))
+    # 单时段已消费：队列跑完
+    ok, reason, _ = sch.check(["16:45"], ["16:50"], at("18:00"))
+    assert (ok, reason) == (False, "not-in-schedule")
+    # 双时段：首段消费完，次段到点仍放行
+    ok, reason, slot = sch.check(["16:45", "17:30"], ["16:50"], at("17:35"))
     assert (ok, reason, slot) == (True, "ok", "17:30")
-    # 两次机会但时段只有一个：消费完即无可跑时段
-    ok, reason, _ = sch.check(["16:45"], 2, ["16:50"], at("18:00"))
+    # 双时段全消费：队列跑完
+    ok, reason, _ = sch.check(["16:45", "17:30"], ["16:50", "17:35"], at("18:00"))
     assert (ok, reason) == (False, "not-in-schedule")
 
 
@@ -123,7 +123,7 @@ def test_run_skips_before_slot(monkeypatch, tmp_path):
 
 
 def test_run_second_slot_after_first(monkeypatch, tmp_path):
-    """两次机会：首跑消费 16:45，次跑在 17:30 放行并记入流水。"""
+    """队列式：首跑消费 16:45，次跑在 17:30 放行；跑完队列再 tick 即跳过。"""
     import json
 
     from paper_trading.agent import AgentTrader
@@ -135,7 +135,7 @@ def test_run_second_slot_after_first(monkeypatch, tmp_path):
                                                "updated": {}})
     monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(
         {"actions": [], "summary": "不动"}))
-    assert sch.save_schedule(tmp_path, "16:45,17:30", 2)[0]
+    assert sch.save_schedule(tmp_path, "16:45,17:30")[0]
     b = _bridge(str(tmp_path), _fresh())
     t = AgentTrader(b)
     monkeypatch.setattr(sch, "_now", lambda: datetime(2026, 9, 29, 16, 50))
@@ -145,7 +145,7 @@ def test_run_second_slot_after_first(monkeypatch, tmp_path):
     assert r2["ok"] and "skipped" not in r2
     assert len(t._live_runs_today()) == 2
     monkeypatch.setattr(sch, "_now", lambda: datetime(2026, 9, 29, 17, 40))
-    assert t.run(["600519"], sched_root=str(tmp_path))["skipped"] == "max-runs-reached"
+    assert t.run(["600519"], sched_root=str(tmp_path))["skipped"] == "not-in-schedule"
 
 
 def test_cli_schedule_list_set(tmp_path, monkeypatch):
@@ -166,10 +166,10 @@ def test_cli_schedule_list_set(tmp_path, monkeypatch):
     r, d = _run("list", "--json")
     assert r.returncode == 0, r.stderr
     assert d["data"]["slots"] == ["16:45"]
-    r, _ = _run("set", "--slots", "16:45,17:30", "--max-runs", "2")
+    r, _ = _run("set", "--slots", "16:45,17:30")
     assert r.returncode == 0, r.stderr
     r, d = _run("list", "--json")
-    assert d["data"]["slots"] == ["16:45", "17:30"] and d["data"]["max_runs"] == 2
+    assert d["data"]["slots"] == ["16:45", "17:30"]
     r = subprocess.run(base + ["set", "--slots", "99:99"], capture_output=True,
                        text=True, cwd=str(tmp_path), env=env)
     assert r.returncode != 0

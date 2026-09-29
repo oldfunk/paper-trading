@@ -766,15 +766,13 @@ def main() -> None:
                            help="忽略定时闸（时段/次数限制），立即执行")
     agent_run.add_argument("--plan-only", action="store_true",
                            help="休盘做计划存着，开盘执行（不碰账本）")
-    agent_sched = agent_sub.add_parser("schedule", help="AI 定时查看与设置")
+    agent_sched = agent_sub.add_parser("schedule", help="AI 定时队列查看与设置")
     agent_sched_sub = agent_sched.add_subparsers(dest="agent_sched_command")
-    agent_sched_list = agent_sched_sub.add_parser("list", help="查看当前定时配置与今日执行情况")
+    agent_sched_list = agent_sched_sub.add_parser("list", help="查看当前定时队列与今日执行情况")
     agent_sched_list.add_argument("--json", action="store_true")
-    agent_sched_set = agent_sched_sub.add_parser("set", help="设置定时（写本地文件，不进 git）")
+    agent_sched_set = agent_sched_sub.add_parser("set", help="设置定时队列（写本地文件，不进 git）")
     agent_sched_set.add_argument("--slots", default=None,
-                                 help="触发时刻，逗号分隔，如 16:45,17:30")
-    agent_sched_set.add_argument("--max-runs", type=int, default=None,
-                                 help="每日最多实质决策次数（1-5）")
+                                 help="触发时刻队列，逗号分隔，如 16:45,17:30")
     agent_sched_set.add_argument("--json", action="store_true")
 
     # nav
@@ -985,13 +983,10 @@ def main() -> None:
                 from paper_trading.agent import schedule as _sched
 
                 if getattr(args, "agent_sched_command", None) == "set":
-                    if args.slots is None and args.max_runs is None:
-                        emit(None, ok=False, error="至少指定 --slots 或 --max-runs 其一")
+                    if args.slots is None:
+                        emit(None, ok=False, error="须指定 --slots（示例：16:45,17:30）")
                         sys.exit(2)
-                    cur = _sched.load_schedule(".")
-                    slots = args.slots if args.slots is not None else ",".join(cur["slots"])
-                    runs = args.max_runs if args.max_runs is not None else cur["max_runs"]
-                    ok, msg = _sched.save_schedule(".", slots, runs)
+                    ok, msg = _sched.save_schedule(".", args.slots)
                     emit({"message": msg} if ok else None, ok=ok,
                          error=None if ok else msg)
                     if not ok:
@@ -1000,8 +995,7 @@ def main() -> None:
                     from paper_trading.agent.schedule import due_slots as _due
 
                     cur = _sched.load_schedule(".")
-                    emit({"slots": cur["slots"], "max_runs": cur["max_runs"],
-                          "source": cur["source"],
+                    emit({"slots": cur["slots"], "source": cur["source"],
                           "now": _sched._now().strftime("%H:%M"),
                           "due": _due(cur["slots"])})
                 return
