@@ -198,3 +198,25 @@ def test_cli_schedule_list_set(tmp_path, monkeypatch):
     r = subprocess.run(base + ["set", "--entry", "16:45=bomb"], capture_output=True,
                        text=True, cwd=str(tmp_path), env=env)
     assert r.returncode != 0
+
+
+def test_fired_survives_noisy_log(monkeypatch, tmp_path):
+    """回归：面板高频问答把决策挤出最近 N 条窗口时，定时闸不能失忆重跑。"""
+    import json
+
+    from paper_trading.agent import AgentTrader
+    from paper_trading.llm import provider as prov
+
+    _mock_net(monkeypatch)
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(
+        {"actions": [], "summary": "不动"}))
+    assert sch.save_schedule(tmp_path, ["16:45=trade"])[0]
+    b = _bridge(str(tmp_path), _fresh())
+    t = AgentTrader(b)
+    monkeypatch.setattr(sch, "_now", lambda: datetime(2026, 9, 29, 17, 0))
+    assert t.run(["600519"], sched_root=str(tmp_path))["ok"]
+    for i in range(300):  # 300 轮问答噪音，埋掉决策记录
+        b.broker.log_operation("llm:ask", {"prompt": f"q{i}"}, True,
+                               {"answer": "a"}, None, None)
+    assert t._fired_entries_today([{"time": "16:45", "action": "trade"}]) == {"16:45"}
+    assert t.run(["600519"], sched_root=str(tmp_path))["skipped"] == "already-decided"

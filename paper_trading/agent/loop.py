@@ -77,11 +77,15 @@ class AgentTrader:
         self.bridge = bridge
         self.cfg = cfg or AgentConfig()
 
+    def _today_ops(self) -> list[dict]:
+        """今日全量流水（按日期查，不用最近 N 条窗口——窗口会被面板问答挤爆）。"""
+        return self.bridge.broker.get_op_log_day(datetime.now().date().isoformat())
+
     def _live_runs_today(self) -> list[str]:
         """今日实盘实质决策时刻表（HH:MM；试运行/dry 不计入，不消耗定时次数）。"""
         today = datetime.now().date().isoformat()
         out: list[str] = []
-        for o in self.bridge.broker.get_op_log(200):
+        for o in self._today_ops():
             if o["action"] != "ai:decide" or not o["ok"]:
                 continue
             if str(o["timestamp"])[:10] != today:
@@ -110,7 +114,7 @@ class AgentTrader:
         today = datetime.now().date().isoformat()
         done: set[str] = set()
         legacy_times: list[str] = []
-        for o in self.bridge.broker.get_op_log(200):
+        for o in self._today_ops():
             if not o["ok"]:
                 continue
             if str(o["timestamp"])[:10] != today:
