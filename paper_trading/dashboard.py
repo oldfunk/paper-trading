@@ -154,6 +154,17 @@ tbody tr:hover{background:var(--bg-hover)}
       <span id="schedstat" class="mut" style="align-self:center"></span>
     </div>
     <div class="s" id="schedtoday"></div>
+    <div class="ai-row">
+      <select id="fire-act" title="手动触发动作">
+        <option value="sync">同步</option>
+        <option value="analyze">分析</option>
+        <option value="plan">计划</option>
+        <option value="trade" selected>交易</option>
+      </select>
+      <button id="btn-fire" class="primary">立即执行</button>
+      <span id="firestat" class="mut" style="align-self:center"></span>
+    </div>
+    <div class="s">手动触发立即跑，不占队列名额（交易会无视今日已决策闸，但风控钳制不变；完整决策+LLM 可能要等 1-3 分钟；有定时任务在跑时会拒绝并提示稍后再试）。</div>
   </div>
 </section>
 
@@ -477,6 +488,27 @@ document.getElementById("btn-sched").onclick=async()=>{
   document.getElementById("schedstat").textContent=r.data.message;
   await schedStatus();refresh();
 };
+document.getElementById("btn-fire").onclick=async()=>{
+  const btn=document.getElementById("btn-fire");
+  const act=document.getElementById("fire-act").value;
+  const st=document.getElementById("firestat");
+  const send=async(extra)=>await post("/api/agent/fire",
+    Object.assign({admin_token:tok(),action:act},extra||{}));
+  btn.disabled=true;st.textContent="执行中（完整决策可能要 1-3 分钟）…";
+  try{
+    let r=await send();
+    if(!r.ok&&r.error&&r.error.indexOf("口令")>=0){
+      const k=prompt("口令失效，输入 API Key 接管（仅本机使用）：");
+      if(k){r=await send({api_key:k});}
+    }
+    if(!r.ok){st.textContent="失败："+(r.error||"");return}
+    if(r.data&&r.data.admin_token)localStorage.setItem("pt_adm",r.data.admin_token);
+    const d=r.data||{};
+    st.textContent=d.message||"完成";
+  }catch(e){st.textContent="请求失败："+e}
+  btn.disabled=false;
+  await schedStatus();refresh();
+};
 schedStatus();
 llmStatus();
 </script>
@@ -716,6 +748,67 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("preset", "custom"), body.get("base_url", ""),
                     body.get("model", ""), body.get("api_key", ""))
                 self._json(r, code=200 if r.get("ok") else 400)
+            elif u.path == "/api/agent/fire":
+                # 手动触发：立即跑指定动作，不占队列名额（交易用 force，无视已决策闸；
+                # 风控/钳制不变；与 cron/CLI 共用运行锁防并发下单）
+                if not self._admin_ok(body):
+                    _tok_out = _takeover_token(body, self.secrets_path)
+                    if not _tok_out:
+                        self._json({"ok": False, "error": "口令错误（换了浏览器？先在模型设置里保存一次即接管）"}, code=403)
+                        return
+                else:
+                    _tok_out = ""
+                from paper_trading.agent import schedule as _sched
+
+                act = str(body.get("action") or "").strip().lower()
+                if act not in _sched.ACTIONS:
+                    self._json({"ok": False,
+                                "error": f"未知动作（仅支持 {','.join(_sched.ACTIONS)}）"},
+                               code=400)
+                    return
+                from paper_trading.agent import AgentTrader
+                from paper_trading.utils.run_lock import run_lock
+
+                from pathlib import Path as _P
+                try:
+                    with run_lock(_P(__file__).resolve().parents[1] / "paper_trading.lock",
+                                  timeout=30):
+                        b = self._bridge()
+                        syms = list(b.stock_pool)
+                        t = AgentTrader(b, b.agent_cfg)
+                        if act == "sync":
+                            res = b.sync_data(syms)
+                            b.broker.log_operation(
+                                "sync", {"symbols": syms}, res.get("ok", False),
+                                {"updated": res.get("updated")}, None, None)
+                            n = sum(v for v in (res.get("updated") or {}).values()
+                                    if isinstance(v, int) and v > 0)
+                            msg = f"同步完成：新增 {n} 根K线"
+                        elif act == "plan":
+                            res = t.run(syms, plan_only=True)
+                            msg = (f"计划#{res.get('plan_id')}已存（{res.get('asof')}定稿），开盘执行"
+                                   if res.get("ok") else f"做计划失败：{res.get('error')}")
+                        else:
+                            res = t.run(syms, dry_run=(act == "analyze"), force=True)
+                            ds = res.get("decisions", []) if res.get("ok") else []
+                            fills = sum(1 for d in ds
+                                        if str(d.get("status", "")).startswith("已成交"))
+                            holds = sum(1 for d in ds if d.get("action") == "hold")
+                            rej = len(ds) - fills - holds
+                            head = "试运行完成" if act == "analyze" else "实盘决策完成"
+                            msg = (f"{head}：成交{fills}笔，持有{holds}条，拒绝{rej}条"
+                                   f"（详见操作流水）" if res.get("ok")
+                                   else f"执行失败：{res.get('error')}")
+                except RuntimeError:
+                    self._json({"ok": False, "error": "有定时/手动任务正在跑，稍后再试"},
+                               code=409)
+                    return
+                _data = {"message": msg, "result": res}
+                if _tok_out:
+                    _data["admin_token"] = _tok_out
+                self._json({"ok": res.get("ok", False), "data": _data,
+                            "error": None if res.get("ok") else msg},
+                           code=200 if res.get("ok") else 502)
             elif u.path == "/api/llm/ask":
                 if not self._admin_ok(body):
                     self._json({"ok": False, "error": "口令错误或未设置"}, code=403)
