@@ -154,17 +154,7 @@ tbody tr:hover{background:var(--bg-hover)}
       <span id="schedstat" class="mut" style="align-self:center"></span>
     </div>
     <div class="s" id="schedtoday"></div>
-    <div class="ai-row">
-      <select id="fire-act" title="手动触发动作">
-        <option value="sync">同步</option>
-        <option value="analyze">分析</option>
-        <option value="plan">计划</option>
-        <option value="trade" selected>交易</option>
-      </select>
-      <button id="btn-fire" class="primary">立即执行</button>
-      <span id="firestat" class="mut" style="align-self:center"></span>
-    </div>
-    <div class="s">手动触发立即跑，不占队列名额（交易会无视今日已决策闸，但风控钳制不变；完整决策+LLM 可能要等 1-3 分钟；有定时任务在跑时会拒绝并提示稍后再试）。</div>
+    <div class="s">每行末尾的“执行”立即跑该行（不占队列名额；交易会无视今日已决策闸，但风控钳制不变；完整决策+LLM 可能要等 1-3 分钟；有定时任务在跑时会拒绝并提示稍后再试）。</div>
   </div>
 </section>
 
@@ -454,9 +444,31 @@ function schedRow(t,a){
   w.style.cssText="display:inline-flex;gap:4px;align-items:center;margin:2px 8px 2px 0";
   w.innerHTML=`<input class="st" value="${esc(t||"")}" placeholder="16:45" style="width:70px">`+
     `<select class="sa">${SCHED_ACTS.map(([v,l])=>`<option value="${v}"${v===(a||"trade")?" selected":""}>${l}</option>`).join("")}</select>`+
-    `<button class="sdel">删</button>`;
+    `<button class="sdel">删</button><button class="srun primary">执行</button>`;
   w.querySelector(".sdel").onclick=()=>w.remove();
+  w.querySelector(".srun").onclick=()=>fireRow(w);
   return w;
+}
+async function fireRow(w){
+  const btn=w.querySelector(".srun");
+  const tm=w.querySelector(".st").value.trim()||"(未设时刻)";
+  const act=w.querySelector(".sa").value;
+  const st=document.getElementById("schedstat");
+  const send=async(extra)=>await post("/api/agent/fire",
+    Object.assign({admin_token:tok(),action:act},extra||{}));
+  btn.disabled=true;st.textContent=`手动执行 ${tm}${act} 中（完整决策可能要 1-3 分钟）…`;
+  try{
+    let r=await send();
+    if(!r.ok&&r.error&&r.error.indexOf("口令")>=0){
+      const k=prompt("口令失效，输入 API Key 接管（仅本机使用）：");
+      if(k){r=await send({api_key:k});}
+    }
+    if(!r.ok){st.textContent="失败："+(r.error||"");btn.disabled=false;return}
+    if(r.data&&r.data.admin_token)localStorage.setItem("pt_adm",r.data.admin_token);
+    st.textContent=(r.data&&r.data.message)||"完成";
+  }catch(e){st.textContent="请求失败："+e}
+  btn.disabled=false;
+  await schedStatus();refresh();
 }
 async function schedStatus(){
   try{
@@ -486,27 +498,6 @@ document.getElementById("btn-sched").onclick=async()=>{
   if(!r.ok){alert("保存失败："+(r.error||""));return}
   if(r.data&&r.data.admin_token)localStorage.setItem("pt_adm",r.data.admin_token);
   document.getElementById("schedstat").textContent=r.data.message;
-  await schedStatus();refresh();
-};
-document.getElementById("btn-fire").onclick=async()=>{
-  const btn=document.getElementById("btn-fire");
-  const act=document.getElementById("fire-act").value;
-  const st=document.getElementById("firestat");
-  const send=async(extra)=>await post("/api/agent/fire",
-    Object.assign({admin_token:tok(),action:act},extra||{}));
-  btn.disabled=true;st.textContent="执行中（完整决策可能要 1-3 分钟）…";
-  try{
-    let r=await send();
-    if(!r.ok&&r.error&&r.error.indexOf("口令")>=0){
-      const k=prompt("口令失效，输入 API Key 接管（仅本机使用）：");
-      if(k){r=await send({api_key:k});}
-    }
-    if(!r.ok){st.textContent="失败："+(r.error||"");return}
-    if(r.data&&r.data.admin_token)localStorage.setItem("pt_adm",r.data.admin_token);
-    const d=r.data||{};
-    st.textContent=d.message||"完成";
-  }catch(e){st.textContent="请求失败："+e}
-  btn.disabled=false;
   await schedStatus();refresh();
 };
 schedStatus();
