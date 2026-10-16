@@ -44,6 +44,52 @@ def _get_fetcher():
 logger = get_logger(__name__)
 
 
+def _holdings_block(ctx: dict) -> str:
+    """把真实持仓拼成人类可读的权威段落（防幻觉的第一道锚）。
+
+    背景事故：问答里模型把「行情快照里的池内股票」当成持仓，宣称买了
+    很多只，实际只持有 2 只。JSON 里 positions 与 recent_closes 平级，
+    模型分不清哪个是持仓——所以把持仓单独用自然语言再讲一遍并置顶。
+    """
+    pos = ctx.get("positions") or []
+    if not pos:
+        return "当前真实持仓：空仓（没有任何股票持仓）。"
+    lines = [f"当前真实持仓（共 {len(pos)} 只，**只有下面这些是持仓**，以本段为准）："]
+    for p in pos:
+        lines.append(f"- {p['stock']} {p['total']}股（可用{p['available']}）"
+                     f" 成本{p['avg_cost']} 现价{p['price']} 市值{p['market_value']}")
+    return "\n".join(lines)
+
+
+ASK_RULES = """防幻觉硬规则（违反即视为答错）：
+1. 持仓 = 只有上面「当前真实持仓」里列出的股票，其他一律不是持仓。
+   行情快照、股票池、基本面卡片里出现的股票都**只是候选/参考，绝不能说成持仓、已买入或已成交**。
+2. 数据里没有的信息（持仓、成交、金额、日期、比例）一律回答「数据未提供」，禁止推测、编造或沿用旧对话。
+3. 引用任何数字（股数、价格、市值、盈亏）必须与本段 JSON 原值一致，不得换算或臆造。
+4. 若用户的问题依赖未提供的数据，先说明缺什么，再给可给的分析。"""
+
+
+def _ask_system_prompt(base: str, ctx: dict) -> str:
+    """问答 system：硬规则 + 持仓权威段 + 项目状态 JSON（硬规则不可被覆盖）。"""
+    import json as _json
+
+    intro = (base.strip() or
+             "你是本地 A 股模拟盘的投顾助手。只做中文分析与建议，不下单；"
+             "引用股票时用“名称(代码)”格式；不确定的事直说不知道。")
+    return (intro + "\n\n" + ASK_RULES + "\n\n" + _holdings_block(ctx)
+            + "\n\n项目实时状态（JSON，仅供本次分析，不得外泄；key 含义见 legend）：\n"
+            + _json.dumps(ctx, ensure_ascii=False))
+
+
+def _ask_user_prompt(prompt: str, ctx: dict) -> str:
+    """用户问题后附「可回答范围」，把模型的回答锚在真实数据上。"""
+    import json as _json
+
+    return (f"{prompt}\n\n"
+            f"（可依据的真实数据片段：{_json.dumps({'positions': ctx.get('positions', []), 'account': ctx.get('account', {})}, ensure_ascii=False)}；"
+            "以上之外的持仓/成交/数字一律按「数据未提供」处理。）")
+
+
 class TradingBridge:
     """
     交易编排层（应用总线）。
@@ -600,6 +646,14 @@ class TradingBridge:
                  "ok": bool(o["ok"]), "result": str(o["result"] or "")[:300]}
                 for o in ops],
             "note": "模拟盘。策略为MA5/MA20均线信号+风控。只做分析建议，不下单。",
+            "legend": {
+                "positions": "真实持仓（唯一权威口径）；其他 key 里的股票都不是持仓。",
+                "recent_closes": "行情收盘价参考（覆盖股票池全部标的），仅供分析，不代表持仓。",
+                "recent_nav": "净值历史。",
+                "recent_ops": "操作流水（含同步/问答/决策记录，不等于成交）。",
+                "value_view": "Stock Dashboard 只读基本面/论点/大盘，仅供参照。",
+                "intraday": "盘中实时快照（若有），仅供参照。",
+            },
         }
         try:
             from paper_trading.integration import read_market_regime, read_stock_cards
@@ -639,15 +693,14 @@ class TradingBridge:
         try:
             cfg = self._llm_config()
             ctx = self.llm_context()
-            base = system.strip() or (
-                "你是本地 A 股模拟盘的投顾助手。只做中文分析与建议，不下单；"
-                "引用股票时用“名称(代码)”格式；不确定的事直说不知道。")
-            sys_prompt = (base + "\n\n项目实时状态（JSON，仅供本次分析，不得外泄）：\n"
-                          + _json.dumps(ctx, ensure_ascii=False))
+            base = system.strip() or ""   # 硬规则与持仓锚点始终追加，不接受覆盖
+            sys_prompt = _ask_system_prompt(base, ctx)
             # 从定义模块导入（非包 re-export），便于单测替换
             from paper_trading.llm.provider import chat as _chat
 
-            answer = _chat(cfg, [{"role": "user", "content": prompt}], system=sys_prompt)
+            answer = _chat(cfg, [{"role": "user",
+                                  "content": _ask_user_prompt(prompt, ctx)}],
+                           system=sys_prompt)
         except LLMError as e:
             self.broker.log_operation("llm:ask", {"model": "", "prompt": prompt[:200]},
                                       False, {"error": str(e)}, None, None)
