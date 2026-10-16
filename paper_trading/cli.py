@@ -185,6 +185,8 @@ class TradingBridge:
             llm_retries=int(agent_kwargs.get("llm_retries", 1)),
             llm_max_tokens=int(agent_kwargs.get("llm_max_tokens", 8192)),
             llm_thinking=str(agent_kwargs.get("llm_thinking", "disabled")),
+            picks_enabled=bool(agent_kwargs.get("picks_enabled", True)),
+            picks_max=max(1, min(10, int(agent_kwargs.get("picks_max", 5)))),
         )
 
     def sync_data(self, symbols: list[str]) -> dict:
@@ -734,9 +736,9 @@ def main() -> None:
     run_parser = subparsers.add_parser("run", help="执行每日结算流程")
     run_parser.add_argument("--symbols", nargs="*", default=None,
                             help="缺省=config.yaml 股票池")
-    run_parser.add_argument("--pool-from", default="config",
-                            choices=["config", "watchlist", "screening", "all"],
-                            help="股票池来源（watchlist/screening 需 Stock Dashboard 在同一台机器）")
+    run_parser.add_argument("--pool-from", default="auto",
+                            choices=["auto", "config", "watchlist", "screening", "all"],
+                            help="股票池来源（auto/screening/watchlist 需 Stock Dashboard 在同一台机器）")
     run_parser.add_argument("--pool-tag", default="",
                             help="screening 按母策略 tag 过滤（如 growth；为空不过滤）")
     run_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
@@ -746,8 +748,8 @@ def main() -> None:
     sync_parser = subparsers.add_parser("sync", help="只同步行情+名称，不交易（可日内执行）")
     sync_parser.add_argument("--symbols", nargs="*", default=None,
                              help="缺省=config.yaml 股票池")
-    sync_parser.add_argument("--pool-from", default="config",
-                             choices=["config", "watchlist", "screening", "all"])
+    sync_parser.add_argument("--pool-from", default="auto",
+                             choices=["auto", "config", "watchlist", "screening", "all"])
     sync_parser.add_argument("--pool-tag", default="")
     sync_parser.add_argument("--json", action="store_true")
 
@@ -818,26 +820,30 @@ def main() -> None:
     agent_sub = agent_parser.add_subparsers(dest="agent_command")
     agent_run = agent_sub.add_parser("run", help="执行一次 AI 决策（默认走配置池）")
     agent_run.add_argument("--symbols", nargs="*", default=None)
-    agent_run.add_argument("--pool-from", default="config",
-                           choices=["config", "watchlist", "screening", "all"],
-                           help="AI 选股范围（screening=Stock Dashboard 最新候选）")
+    agent_run.add_argument("--pool-from", default="auto",
+                           choices=["auto", "config", "watchlist", "screening", "all"],
+                           help="AI 选股范围（auto=全市场筛选优先，手填池只兜底）")
     agent_run.add_argument("--pool-tag", default="",
                            help="screening 按母策略 tag 过滤；空则用当前方案自带 tag")
     agent_run.add_argument("--pool-limit", type=int, default=20)
     agent_run.add_argument("--json", action="store_true")
     agent_run.add_argument("--dry-run", action="store_true", help="只决策不下单")
     agent_run.add_argument("--force", action="store_true", help="忽略今日已决策闸")
+    agent_run.add_argument("--no-picks", action="store_true",
+                           help="关闭 AI 自主提名（只用程序候选池决策）")
     agent_run.add_argument("--ignore-schedule", action="store_true",
                            help="忽略定时闸（时段/次数限制），立即执行")
     agent_run.add_argument("--plan-only", action="store_true",
                            help="休盘做计划存着，开盘执行（不碰账本）")
     agent_tick = agent_sub.add_parser("tick", help="队列 tick：消费最早已到未跑的条目并执行")
     agent_tick.add_argument("--symbols", nargs="*", default=None)
-    agent_tick.add_argument("--pool-from", default="config",
-                            choices=["config", "watchlist", "screening", "all"])
+    agent_tick.add_argument("--pool-from", default="auto",
+                            choices=["auto", "config", "watchlist", "screening", "all"])
     agent_tick.add_argument("--pool-tag", default="")
     agent_tick.add_argument("--pool-limit", type=int, default=20)
     agent_tick.add_argument("--json", action="store_true")
+    agent_tick.add_argument("--no-picks", action="store_true",
+                            help="关闭 AI 自主提名（只用程序候选池决策）")
     agent_tick.add_argument("--force", action="store_true",
                             help="忽略已消费标记，执行最早已到条目")
     agent_sched = agent_sub.add_parser("schedule", help="AI 定时队列查看与设置")
@@ -879,8 +885,11 @@ def main() -> None:
         tag = getattr(a, "pool_tag", "") or ""
         if not tag and pf == "screening":
             tag = (b.scheme.universe_tag or "")  # 方案自带母策略 tag
-        return resolve_pool(getattr(a, "symbols", None), b.stock_pool, pf,
-                            getattr(a, "pool_limit", 20) or 20, None, tag)
+        syms, note, cands = resolve_pool(getattr(a, "symbols", None), b.stock_pool,
+                                         pf, getattr(a, "pool_limit", 20) or 20,
+                                         None, tag)
+        picks_on = not getattr(a, "no_picks", False)
+        return syms, note, cands, picks_on
 
     if not args.command:
         parser.print_help()
@@ -901,7 +910,7 @@ def main() -> None:
             emit(bridge.get_status())
 
         elif args.command == "sync":
-            syms, note, _ = _resolve_syms(bridge, args)
+            syms, note, _, _ = _resolve_syms(bridge, args)
             with run_lock(args.lock_file):
                 res = bridge.sync_data(syms)
             res["pool_source"] = note
@@ -913,7 +922,7 @@ def main() -> None:
                 sys.exit(3)
 
         elif args.command in ("run", "cron-run"):
-            syms, note, _ = _resolve_syms(bridge, args)
+            syms, note, _, _ = _resolve_syms(bridge, args)
             if getattr(args, "dry_run", False):
                 # dry-run：信号+风控预览，不下单不记NAV
                 all_bars = {}
@@ -1075,9 +1084,11 @@ def main() -> None:
                           "due": _due(cur["entries"])})
                 return
             if args.agent_command == "tick":
-                syms, note, cands = _resolve_syms(bridge, args)
+                syms, note, cands, picks_on = _resolve_syms(bridge, args)
                 with run_lock(args.lock_file):
                     trader = AgentTrader(bridge, bridge.agent_cfg)
+                    if not picks_on:
+                        trader.cfg.picks_enabled = False
                     res = trader.tick(syms, candidates=cands, pool_source=note,
                                       force=args.force)
                 emit(res, ok=res.get("ok", False), error=res.get("error"))
@@ -1087,12 +1098,14 @@ def main() -> None:
             if args.agent_command != "run":
                 parser.print_help()
                 sys.exit(2)
-            syms, note, cands = _resolve_syms(bridge, args)
+            syms, note, cands, picks_on = _resolve_syms(bridge, args)
             if not bridge.agent_cfg.enabled and not args.force:
                 emit(None, ok=False, error="agent 未启用（config.yaml agent.enabled）")
                 sys.exit(3)
             with run_lock(args.lock_file):
                 trader = AgentTrader(bridge, bridge.agent_cfg)
+                if not picks_on:
+                    trader.cfg.picks_enabled = False
                 res = trader.run(syms, dry_run=args.dry_run, force=args.force,
                                  plan_only=args.plan_only, candidates=cands,
                                  pool_source=note,

@@ -20,6 +20,7 @@
 - **风控管理**：单笔限额、仓位上限、最大回撤止损
 - **AI 交易员**：面板/CLI 自定时队列触发（默认 16:45 跑一次交易，保守时间），日内 LLM 决策（JSON 钳制执行+幂等闸+日亏熔断），休盘做计划、开盘执行
 - **投资方案三选一**：[Stock Dashboard](https://github.com/oldfunk/stock-dashboard) 价值 / 通用交易（默认）/ 自定义自然语言指令
+- **全市场选股漏斗**：母项目夜间扫全市场 → 候选池；AI 还可在候选之外**自主提名任意 A 股**（程序校验代码+补数据后才进决策），手填池只作兜底
 - **LLM 万能接入**：OpenAI 兼容接口 + 主流厂商预设 + 手填模型名，只咨询不交易
 - **盘中实时**：腾讯行情同源，面板现价盘中实时展示（NAV/结算永远收盘口径）
 - **只读集成**：[Stock Dashboard](https://github.com/oldfunk/stock-dashboard) 在同一台机器时，选股池/基本面/论点自动可用，缺席静默回退
@@ -129,7 +130,13 @@ agent:
   llm_retries: 1              # 仅超时重试
   llm_max_tokens: 8192
   llm_thinking: disabled      # 格式受限决策默认关 thinking
+  picks_enabled: true         # AI 自主提名（候选之外点名全市场个股）
+  picks_max: 5                # 单轮最多提名几只（1-10）
 ```
+
+> `stock_pool` 只是兜底（母项目缺席且无观察池时才用）。默认 `--pool-from auto`：
+> 全市场量化筛选 → 观察池 → 手填池逐级降级；AI 另可在候选之外自主提名个股
+> （`--no-picks` 关闭）。
 
 ## 界面预览
 
@@ -260,8 +267,10 @@ python -m paper_trading.cli agent schedule set --entry 09:00=sync --entry 13:00=
 python -m paper_trading.cli agent run --ignore-schedule --json
 # 休盘做计划（存着，开盘自动执行；不碰账本）
 python -m paper_trading.cli agent run --plan-only --json
-# 股票池来源（需 Stock Dashboard 在同一台机器，否则自动回退 config）
+# 股票池来源（auto=全市场筛选优先→观察池→手填池兜底；需 Stock Dashboard 在同一台机器）
 python -m paper_trading.cli agent run --pool-from screening --pool-limit 20 --json
+# 关闭 AI 自主提名（只用程序候选池）
+python -m paper_trading.cli agent run --no-picks --json
 ```
 
 ### 投资方案（永远 3 种；合并/独立通用）
