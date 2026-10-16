@@ -562,10 +562,18 @@ class Handler(BaseHTTPRequestHandler):
             n = 0
         if n <= 0:
             return {}
-        try:
-            return json.loads(self.rfile.read(n).decode("utf-8") or "{}")
-        except Exception:
+        raw = self.rfile.read(n).decode("utf-8", "ignore")
+        if not raw.strip():
             return {}
+        try:
+            data = json.loads(raw)
+        except ValueError as e:
+            # 坏 JSON 以前静默变空 body，用户看到的是误导性报错（如"未知厂商"）。
+            # 这里直接报出真实原因：请求体不是合法 JSON。
+            raise ValueError(f"请求体不是合法 JSON：{e}") from None
+        if not isinstance(data, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        return data
 
     def _admin_ok(self, body: dict) -> bool:
         """写操作口令校验（头 X-Admin-Token 或 body.admin_token）。"""
@@ -827,6 +835,8 @@ class Handler(BaseHTTPRequestHandler):
                            code=200 if ok else 400)
             else:
                 self._send(404, b"not found", "text/plain")
+        except ValueError as e:            # 请求体不合法：400 + 真实原因（不是 500）
+            self._json({"ok": False, "error": str(e)}, code=400)
         except Exception as e:
             self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, code=500)
 
