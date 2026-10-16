@@ -130,6 +130,63 @@ def test_llm_save_merge_keeps_key(tmp_path):
     assert load_secrets(sec)["provider"]["api_key"] == "sk-new-2"
 
 
+def test_llm_models_open_and_explains(tmp_path):
+    """拉模型不被门禁拦，且失败必须给可执行原因（不配置/缺Key/Key被拒）。"""
+    import paper_trading.cli as hb
+    from paper_trading.llm import load_secrets, save_secrets
+
+    sec = str(tmp_path / "s.json")
+    b = hb.TradingBridge(data_db=str(tmp_path / "d.db"),
+                         account_db=str(tmp_path / "a.db"),
+                         config_path="/nonexistent.yaml", secrets_path=sec)
+    # 1) 完全没配：给"去保存"的提示，不是"你没权限"
+    r = b.llm_models()
+    assert not r["ok"] and r["hint"] == "save" and "API Key" in r["error"]
+    # 2) 有地址没 Key：提示补 Key
+    save_secrets({"provider": {"preset": "custom", "base_url": "http://x/v1",
+                               "model": "m", "api_key": ""}}, sec)
+    r = b.llm_models()
+    assert not r["ok"] and r["hint"] == "save" and "缺 API Key" in r["error"]
+    # 3) 配全但 Key 被远端拒：回真实原因（HTTP 401），无 hint
+    srv = _srv()
+    try:
+        save_secrets({"provider": {"preset": "custom",
+                                   "base_url": f"http://127.0.0.1:{srv.server_port}/v1",
+                                   "model": "m", "api_key": "wrong-key"}}, sec)
+        r = b.llm_models()
+        assert not r["ok"] and "401" in r["error"] and "hint" not in r
+        # 4) 配全且 Key 正确：拉到列表
+        save_secrets({"provider": {"preset": "custom",
+                                   "base_url": f"http://127.0.0.1:{srv.server_port}/v1",
+                                   "model": "m", "api_key": "good-key"}}, sec)
+        r = b.llm_models()
+        assert r["ok"] and r["models"] == ["m-a", "m-b"]
+    finally:
+        srv.shutdown()
+
+
+def test_llm_save_survives_restart(tmp_path, monkeypatch):
+    """长效保存：保存后用全新进程式读取（重新 load 文件）仍在；换模型不洗掉 Key。"""
+    import paper_trading.cli as hb
+
+    sec = str(tmp_path / "s.json")
+    b = hb.TradingBridge(data_db=str(tmp_path / "d.db"),
+                         account_db=str(tmp_path / "a.db"),
+                         config_path="/nonexistent.yaml", secrets_path=sec)
+    assert b.llm_save("glm", "", "glm-4.5-flash", "sk-persist-9")["ok"]
+    # 模拟重启：全新 Bridge 实例（只读同一文件，不带任何内存态）
+    b2 = hb.TradingBridge(data_db=str(tmp_path / "d2.db"),
+                          account_db=str(tmp_path / "a2.db"),
+                          config_path="/nonexistent.yaml", secrets_path=sec)
+    st = b2.llm_status()
+    assert st["configured"] and st["has_key"] and st["model"] == "glm-4.5-flash"
+    assert st["key_masked"] == "****st-9"
+    assert b2.llm_save("glm", "", "glm-4-flash", "")["ok"]  # 只换模型
+    assert b2.llm_status()["model"] == "glm-4-flash"
+    from paper_trading.llm import load_secrets
+    assert load_secrets(sec)["provider"]["api_key"] == "sk-persist-9"
+
+
 def test_llm_ask_injects_project_context(monkeypatch, tmp_path):
     """ask 必须把项目快照塞进 system，且不泄露 Key。"""
     import paper_trading.cli as hb

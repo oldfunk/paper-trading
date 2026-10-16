@@ -35,6 +35,24 @@ def test_schemes_have_source():
         assert isinstance(s.allow_buy, bool), name
 
 
+def test_models_endpoint_has_no_token_gate():
+    """拉模型不得被口令门禁拦（用户抱怨点：重启后提示"必须保存 Key 才能拉"）。
+    源码级锁定：/api/llm/models 分支内不得出现 _admin_ok / 403。"""
+    import inspect
+
+    import paper_trading.dashboard as d
+
+    src = inspect.getsource(d.Handler.do_GET)
+    start = src.index('u.path == "/api/llm/models"')
+    seg = src[start:start + 700]
+    seg = seg.split("elif u.path", 1)[0]
+    assert "_admin_ok" not in seg
+    assert "403" not in seg
+    # 前端不得再有"先保存配置才能拉"的拦截
+    assert "请先保存一次配置" not in d.PAGE
+    assert '/api/llm/models"' in d.PAGE  # 直接拉，不带 token
+
+
 def test_takeover_token(tmp_path):
     """凭 Key 接管：对 Key 放行并返回可存口令；错 Key/空配置拒绝。"""
     from paper_trading.llm.secrets import save_provider

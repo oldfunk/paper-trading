@@ -527,9 +527,21 @@ class TradingBridge:
                          model=p.get("model", ""))
 
     def llm_models(self) -> dict:
-        """拉取远端模型列表（Key 不出本机，只返回 id）。"""
-        from paper_trading.llm import LLMError, list_models
+        """拉取远端模型列表（Key 不出本机，只返回 id）。
 
+        不设口令门禁（面板只读、局域网使用）：拉不到就如实回失败原因，
+        让用户看到是"没配 Key/地址"还是"Key 被拒/超时/地址非法"。
+        """
+        from paper_trading.llm import LLMError, list_models, load_secrets
+
+        p = load_secrets(self.secrets_path).get("provider") or {}
+        if not p.get("base_url"):
+            return {"ok": False, "hint": "save",
+                    "error": "尚未保存接口地址与 API Key：在面板「模型设置」填一次并"
+                             "保存即可长期有效（换模型不用再填 Key，重启也不丢）"}
+        if not p.get("api_key"):
+            return {"ok": False, "hint": "save",
+                    "error": "已保存接口地址但缺 API Key：补填 Key 保存一次，之后长期有效"}
         try:
             models = list_models(self._llm_config())
             return {"ok": True, "models": models}
