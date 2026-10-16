@@ -468,14 +468,6 @@ class AgentTrader:
         # 1. 同步行情（与 run 同一口径）
         b.sync_data(symbols)
 
-        # 1.5 AI 自主提名（pass1）：候选之外允许它点名全市场任意 A 股；
-        #     程序校验代码合法性并补数据后并入本轮决策范围（后续白名单同源）。
-        #     有待执行计划时不提名（按计划原样执行，不临时扩池）。
-        if not plan_only and not self.bridge.broker.get_pending_plan(today_str()):
-            symbols, picks = self._enrich(symbols, candidates)
-        else:
-            picks = []
-
         # 2. 取数（执行计划不需要新鲜 K 线：计划本就是基于定稿数据做的）
         all_bars: dict[str, list] = {}
         for sym in symbols:
@@ -532,6 +524,19 @@ class AgentTrader:
                                           "latest": _asof}, None, None)
             return {"ok": True, "skipped": "no-fresh-bars", "latest": _asof,
                     "timestamp": now, "symbols": symbols}
+
+        # 4.7 AI 自主提名（pass1）：候选之外允许它点名全市场任意 A 股。
+        #     放在新鲜守卫之后——没新行情就不必白花一次 LLM 与补数。
+        #     有待执行计划时不提名（按计划原样执行，不临时扩池）。
+        picks: list[dict] = []
+        if not plan_only and not b.broker.get_pending_plan(today_str()):
+            symbols, picks = self._enrich(symbols, candidates)
+            if picks:
+                for sym in (p["symbol"] for p in picks):
+                    bars = b.data_db.get_bars(sym, limit=30)
+                    if bars:
+                        all_bars[sym] = bars
+                latest = b.price_map(symbols)
 
         # 5. 参考信号 + 上下文，问 LLM
         ref = b.strategy.generate_signals(all_bars)

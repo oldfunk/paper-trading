@@ -25,7 +25,7 @@ def _no_net(monkeypatch):
 NAMES = {"600519": "贵州茅台", "000858": "五粮液"}
 
 
-def _bridge(tmp, syms=("600519",)):
+def _bridge(tmp, syms=("600519",), fresh=True):
     import tempfile
 
     import paper_trading.cli as hb
@@ -35,10 +35,11 @@ def _bridge(tmp, syms=("600519",)):
     b = hb.TradingBridge(data_db=f1, account_db=f2, config_path="/nonexistent.yaml",
                          secrets_path=str(Path(tmp) / "s.json"))
     day = datetime.now()
-    for s in syms:
-        b.data_db.upsert_bars([
-            Bar(symbol=s, timestamp=day + timedelta(days=10000 + i), open=10.0,
-                high=11.0, low=9.0, close=10.0, volume=100) for i in range(30)])
+    if fresh:
+        for s in syms:
+            b.data_db.upsert_bars([
+                Bar(symbol=s, timestamp=day + timedelta(days=10000 + i), open=10.0,
+                    high=11.0, low=9.0, close=10.0, volume=100) for i in range(30)])
     b.data_db.upsert_stock_names({s: NAMES[s] for s in syms if s in NAMES})
     b.llm_save("custom", "https://x/v1", "m", "k")
     return b
@@ -133,5 +134,23 @@ def test_run_decides_on_picked_universe(monkeypatch, tmp_path):
     d = res["decisions"][0]
     assert "试运行通过" in d["status"]                # 提名股未被"不在池"拒绝
     ops = b.broker.get_op_log(5)
-    assert any(o["action"] == "ai:decide" and "000858" in (o["params"] or "")
-               for o in ops)
+    ai = next(o for o in ops if o["action"] == "ai:decide" and "decisions" in (o["result"] or ""))
+    assert '"picks"' in ai["result"] and "000858" in ai["result"]   # 提名入流水可审计
+    assert ai["params"] and '"n_picks": 1' in ai["params"]
+
+
+def test_no_picks_call_when_stale_bars(monkeypatch, tmp_path):
+    """新鲜守卫拦下时不做提名（省一次 LLM 与补数）。"""
+    from paper_trading.agent.loop import AgentTrader as _AT
+    from paper_trading.llm import provider as prov
+    from paper_trading.models import Bar as _Bar
+
+    b = _bridge(str(tmp_path), fresh=False)
+    # 只放过期 bars（2024 年），触发 no-fresh-bars
+    b.data_db.upsert_bars([_Bar(symbol="600519", timestamp=datetime(2024, 1, 1),
+                                open=10.0, high=11.0, low=9.0, close=10.0,
+                                volume=100)])
+    monkeypatch.setattr(prov, "chat",
+                        lambda *a, **k: pytest.fail("守卫拦下时不应调 LLM"))
+    res = _AT(b, AgentConfig()).run(["600519"], dry_run=True, ignore_schedule=True)
+    assert res["skipped"] == "no-fresh-bars"

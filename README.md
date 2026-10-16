@@ -23,7 +23,7 @@
 - **全市场选股漏斗**：母项目夜间扫全市场 → 候选池；AI 还可在候选之外**自主提名任意 A 股**（程序校验代码+补数据后才进决策），手填池只作兜底
 - **LLM 万能接入**：OpenAI 兼容接口 + 主流厂商预设 + 手填模型名，只咨询不交易
 - **盘中实时**：腾讯行情同源，面板现价盘中实时展示（NAV/结算永远收盘口径）
-- **只读集成**：[Stock Dashboard](https://github.com/oldfunk/stock-dashboard) 在同一台机器时，选股池/基本面/论点自动可用，缺席静默回退
+- **只读集成**：[Stock Dashboard](https://github.com/oldfunk/stock-dashboard) 在同一台机器时，全市场候选池/代码表/基本面/论点自动可用，缺席静默回退
 
 ## 目录结构
 
@@ -54,7 +54,7 @@ paper-trading/
     ├── portfolio/portfolio.py
     ├── risk/risk_manager.py       # 多标的价格表+回撤熔断
     ├── llm/                       # OpenAI兼容调用+密钥管理（只咨询）
-    ├── integration/               # Stock Dashboard 只读连接（池/基本面/论点）
+    ├── integration/               # Stock Dashboard 只读连接（全市场代码表/池/基本面/论点）
     └── utils/                     # logger/trading_calendar/config/run_lock
 ```
 
