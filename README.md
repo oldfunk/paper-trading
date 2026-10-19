@@ -288,8 +288,8 @@ python -m paper_trading.cli agent run --pool-from screening --pool-limit 20 --js
 # 关闭 AI 自主提名（只用程序候选池）
 python -m paper_trading.cli agent run --no-picks --json
 
-# 1 分钟 K 线（日内规则与条件单的分钟级判定需要）
-python -m paper_trading.cli minute pull --symbols 000001 --days 5 --json
+# 1 分钟 K 线（日内规则与条件单的分钟级判定需要；默认 5 分钟粒度）
+python -m paper_trading.cli minute pull --symbols 000001 --days 30 --json
 python -m paper_trading.cli minute stat --json
 ```
 
@@ -343,8 +343,8 @@ python -m paper_trading.cli engine backtest --days 250 --curve --json
 
 # 参数网格搜索：按超额收益排序（ma_cross / rsi_zone / trailing_stop）
 python -m paper_trading.cli engine optimize --grid ma_cross --symbols 000001 --days 250 --json
-# 日内网格需要分钟线（分钟线只存最近几日，样本极小，结论仅供参考）
-python -m paper_trading.cli minute pull --symbols 000001 --days 5
+# 日内网格需要分钟线（分钟线只存最近一段，样本极小，结论仅供参考）
+python -m paper_trading.cli minute pull --symbols 000001 --days 30
 python -m paper_trading.cli engine optimize --grid vwap_dev --symbols 000001 --json
 
 # 跑一轮（守护进程入口在 python -m paper_trading.engine）
@@ -366,6 +366,13 @@ python -m paper_trading.cli engine run --dry-run --json
 | `minute_ma_cross` | 分钟均线金叉/死叉 | 日内，需分钟线 |
 
 规则集写在 `config.yaml` 的 `engine.rules`（仓库内是空列表），本机覆盖写 `engine.local.yaml`。
+
+**分钟线从哪来**：默认 5 分钟 K 线（新浪源，实测可取数月历史，48 根/交易日；成交额用典型价×成交量估算），
+`--period 1` 才是 1 分钟（腾讯分时，只有当日）。刻意不混用不同粒度——同一张表里混着 1 分钟和 5 分钟，
+均线类规则前后就没法比。`min_bars` 数的是**库里存的 K 线根数**，5 分钟线下 48 根约等于一整天。
+
+**回测口径**（两条不变量，单测锁死）：① 资金守恒——卖出回款必须回到现金，权益 = 现金 + 市值；
+② 缺当日日线的票沿用最近一次收盘计价（不当 0），但当天没数据也**不成交**（不拿旧价假装成交）。
 
 ### 条件单（AI 出条件，盘中触发）
 
