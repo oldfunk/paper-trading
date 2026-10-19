@@ -1203,6 +1203,11 @@ def main() -> None:
             m["trades_detail"] = res.trades[-50:]
             m["per_rule"] = res.per_rule
             m["skipped_sample"] = res.skipped[:20]
+            bench = buy_and_hold(bars_by_sym, days, args.cash, fee)
+            if bench:
+                m["benchmark_buy_hold"] = bench
+                m["excess_pct"] = round(m["total_return_pct"] -
+                                        bench["total_return_pct"], 2)
             if args.curve and res.equity_curve:
                 eq = [c["equity"] for c in res.equity_curve]
                 lo, hi = min(eq), max(eq)

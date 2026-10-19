@@ -255,6 +255,48 @@ class Backtester:
 
 # ---------- 指标 ----------
 
+def buy_and_hold(bars_by_sym: dict[str, list], days: list[str],
+                 initial_cash: float = 100000.0,
+                 fee: Optional[FeeModel] = None) -> dict:
+    """基准：等权买入持有（含一次性买入费用），用于对照策略曲线。"""
+    fee = fee or FeeModel()
+    syms = [s for s in bars_by_sym if bars_by_sym[s]]
+    if not syms:
+        return {}
+    px = {s: Backtester._day_px(bars_by_sym[s], days[0]) for s in syms}
+    px = {s: v for s, v in px.items() if v}
+    if not px:
+        return {}
+    per = initial_cash / len(px)
+    cash, mv, fees = 0.0, 0.0, 0.0
+    holdings = {}
+    for s, p in px.items():
+        vol = int(per / p / 100) * 100
+        if vol <= 0:
+            continue
+        amount = p * vol
+        c, t = fee.buy_cost(amount)
+        if amount + c + t > per:
+            continue
+        holdings[s] = vol
+        fees += c + t
+        cash += per - amount - c - t
+    curve = []
+    for d in days:
+        mv = 0.0
+        for s, vol in holdings.items():
+            c = Backtester._day_px(bars_by_sym[s], d)
+            if c:
+                mv += c * vol
+        curve.append({"day": d, "equity": round(cash + mv, 2)})
+    res = BacktestResult(initial_cash=initial_cash, equity_curve=curve,
+                         total_fees=round(fees, 2), start=days[0], end=days[-1])
+    res.final_equity = curve[-1]["equity"] if curve else initial_cash
+    return {"symbols": sorted(holdings), "final_equity": round(res.final_equity, 2),
+            "total_return_pct": round((res.final_equity / initial_cash - 1) * 100, 2),
+            "total_fees": res.total_fees}
+
+
 def metrics(res: BacktestResult, days: int) -> dict:
     curve = res.equity_curve
     if not curve:

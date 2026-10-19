@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from paper_trading.engine.backtest import (Backtester, FeeModel,  # noqa: E402
-                                            metrics)
+                                            buy_and_hold, metrics)
 from paper_trading.engine.config import validate  # noqa: E402
 from paper_trading.engine.rules import (PositionView, RuleContext,  # noqa: E402
                                          evaluate, rsi, size_for_value)
@@ -236,6 +236,17 @@ def test_engine_local_overrides_main(tmp_path):
     assert not save_engine_config(tmp_path, {"interval_sec": 30, "rules": [
         {"id": "x", "type": "nope", "symbol": "1", "action": {"side": "buy"}}]})[0]
     assert load_engine_config(str(main), root=tmp_path)["rules"][0]["id"] == "r1"
+
+
+def test_buy_and_hold_benchmark():
+    days = _days(4, 5)
+    closes = [10, 11, 12, 13, 14]
+    bars = {"600519": _bars(days, closes)}
+    b = buy_and_hold(bars, days, 100000.0, FeeModel())
+    assert b["final_equity"] > 100000 and b["total_return_pct"] > 0
+    assert b["total_fees"] >= 5.0        # 最低佣金已计入
+    flat = buy_and_hold({"600519": _bars(days, [10] * 5)}, days, 100000.0, FeeModel())
+    assert flat["total_return_pct"] < 0    # 只有费用拖累
 
 
 def test_engine_state_persists(tmp_path):
