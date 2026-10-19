@@ -941,10 +941,14 @@ def main() -> None:
     # minute（分钟线采集）
     minute_parser = subparsers.add_parser("minute", help="1 分钟 K 线采集/查询")
     minute_sub = minute_parser.add_subparsers(dest="minute_command")
-    minute_pull = minute_sub.add_parser("pull", help="拉取最近 5 日分钟线入库")
+    minute_pull = minute_sub.add_parser("pull", help="拉取分钟线入库（默认 5 分钟 K 线）")
     minute_pull.add_argument("--symbols", nargs="*", default=None)
     minute_pull.add_argument("--pool-limit", type=int, default=10)
-    minute_pull.add_argument("--days", type=int, default=5)
+    minute_pull.add_argument("--days", type=int, default=30,
+                             help="保留最近多少天的分钟线（新浪可取数月历史）")
+    minute_pull.add_argument("--period", default="5",
+                             choices=["1", "5", "15", "30", "60"],
+                             help="K 线粒度（分钟）；1 只有当日有数据")
     minute_pull.add_argument("--json", action="store_true")
     minute_stat = minute_sub.add_parser("stat", help="查看本地分钟线存量")
     minute_stat.add_argument("--symbols", nargs="*", default=None)
@@ -1436,12 +1440,16 @@ def main() -> None:
                 if not syms:
                     syms = _resolve_syms(bridge, args)[0][:args.pool_limit]
                 got = {}
+                days_seen: set[str] = set()
                 for s in syms:
-                    rows = _min.fetch_minute(s, days=args.days)
+                    rows = _min.fetch_minute(s, period=args.period, days=args.days)
                     if rows:
                         bridge.data_db.upsert_minute_bars(s, rows)
+                        days_seen.update(str(r["ts"])[:10] for r in rows)
                     got[s] = len(rows)
                 emit({"symbols": len(syms), "rows": got,
+                      "period": args.period,
+                      "trading_days": len(days_seen),
                       "total_rows": sum(got.values())})
                 return
             # stat

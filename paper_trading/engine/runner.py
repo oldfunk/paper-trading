@@ -191,7 +191,7 @@ class EngineRunner:
             try:
                 from paper_trading.data.minute import fetch_minute
 
-                fetched = fetch_minute(sym, days=2, now=now)
+                fetched = fetch_minute(sym, period="5", days=30, now=now)
                 if fetched:
                     self.b.data_db.upsert_minute_bars(sym, fetched)
                     rows = self._today_minutes(sym, now, day)

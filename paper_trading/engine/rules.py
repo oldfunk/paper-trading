@@ -198,10 +198,12 @@ def vwap(minutes: list[tuple]) -> Optional[float]:
 def _vwap_dev(ctx: RuleContext, p: dict) -> Optional[Intent]:
     """现价偏离当日 VWAP 达阈值：低于 → 买（均值回归），高于 → 卖。
 
-    只用截至当前分钟的数据，不含未来；开盘头几分钟 VWAP 不稳，min_bars 兜底。
+    只用截至当前分钟的数据，不含未来；开盘头几根 VWAP 不稳，min_bars 兜底。
+    注意 min_bars 数的是**库里存的 K 线根数**，不是分钟数——现在存的是
+    5 分钟 K 线（48 根/日），min_bars=5 约等于开盘后 25 分钟。
     """
     pct = abs(float(p.get("pct", 0) or 0))
-    min_bars = int(p.get("min_bars", 15) or 0)
+    min_bars = int(p.get("min_bars", 5) or 0)
     if pct <= 0 or ctx.price <= 0 or len(ctx.minutes) < max(1, min_bars):
         return None
     vw = vwap(ctx.minutes)
