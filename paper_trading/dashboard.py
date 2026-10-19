@@ -174,6 +174,7 @@ tbody tr:hover{background:var(--bg-hover)}
         <option value="minute_ma">网格：分钟均线（日内）</option>
       </select>
       <button id="btn-engine-optimize">参数网格</button>
+      <button id="btn-engine-wf">样本外检验</button>
       <span id="engine-stat" class="mut" style="align-self:center"></span>
     </div>
     <div id="engine-out" class="s"></div>
@@ -643,6 +644,26 @@ document.getElementById("btn-engine-optimize").onclick=async()=>{
     `</tbody></table></div><div class="s mut">${esc(d.note||"")}</div>`;
   document.getElementById("engine-stat").textContent="已完成";
 };
+document.getElementById("btn-engine-wf").onclick=async()=>{
+  const out=document.getElementById("engine-out");
+  out.textContent="样本外检验中（前 60% 选参数，后 40% 检验）…";
+  const r=await guard((extra)=>post("/api/engine/walkforward",
+    Object.assign({admin_token:tok(),grid:document.getElementById("engine-grid").value,
+                  days:250,split:0.6,top:5},extra||{})));
+  if(!r.ok){out.innerHTML=`<span class="bad">检验失败：${esc(r.error||"")}</span>`;return}
+  const d=r.data, sp=d.split||{};
+  out.innerHTML=`<div class="s">样本内 ${esc((sp.in_sample||[]).join(" → "))}（${sp.in_days} 天）→ `+
+    `样本外 ${esc((sp.out_of_sample||[]).join(" → "))}（${sp.oos_days} 天）；`+
+    `样本内第一名超额 ${fmt(d.sample_in_best_excess)}%，样本外 ${d.n_oos_positive}/${d.n_tested} 组为正</div>`+
+    `<div class="scroll"><table><thead><tr><th>标的</th><th>参数</th><th class="num">样本内超额</th><th class="num">样本外收益</th><th class="num">样本外超额</th><th class="num">笔数</th><th class="num">夏普</th></tr></thead><tbody>`+
+    (d.out_of_sample||[]).map(t=>`<tr><td><b>${esc(sym(t.symbol))}</b></td><td class="mut">${esc(JSON.stringify(t.params))}</td>`+
+      `<td class="num ${cls(t.in_excess_pct)}">${t.in_excess_pct>=0?"+":""}${fmt(t.in_excess_pct)}%</td>`+
+      `<td class="num ${cls(t.oos_ret_pct)}">${fmt(t.oos_ret_pct)}%</td>`+
+      `<td class="num ${cls(t.oos_excess_pct)}">${t.oos_excess_pct>=0?"+":""}${fmt(t.oos_excess_pct)}%</td>`+
+      `<td class="num">${t.oos_trades}</td><td class="num">${fmt(t.oos_sharpe)}</td></tr>`).join("")+
+    `</tbody></table></div><div class="s mut">${esc(d.note||"")}</div>`;
+  document.getElementById("engine-stat").textContent="已完成";
+};
 engineStatus();
 
 /* ---- 条件单：人工挂 / AI 设计 / 手动检查 / 撤销 ---- */
@@ -877,6 +898,37 @@ def _optimize_payload(bridge, grid: str, symbols, days: int, cash: float,
     out = grid_search(cfg, bars_by_sym, day_list, grid, syms, value=float(value),
                       fee=_fee_of(cfg_path), initial_cash=float(cash),
                       top=int(top or 10), minutes_by_day=minutes)
+    return (not out.get("error")), out, str(out.get("error") or "")
+
+
+def _walkforward_payload(bridge, grid: str, symbols, days: int, cash: float,
+                         value: float, top: int,
+                         split: float) -> tuple[bool, dict, str]:
+    """样本内选参数 → 样本外检验（面板与 CLI 共用）。"""
+    from paper_trading.engine.backtest import load_minutes
+    from paper_trading.engine.config import load_engine_config
+    from paper_trading.engine.optimize import GRIDS, INTRADAY_GRIDS, walk_forward
+
+    if grid not in GRIDS:
+        return False, {}, f"未知网格 {grid}（可选：{','.join(GRIDS)}）"
+    cfg_path = getattr(bridge, "config_path", "config.yaml") or "config.yaml"
+    cfg = load_engine_config(cfg_path)
+    syms = set(symbols or [])
+    for r in (cfg.get("rules") or []):
+        syms.update(r.get("symbols") or ([r["symbol"]] if r.get("symbol") else []))
+    syms = sorted(s for s in syms if s)
+    if not syms:
+        return False, {}, "请指定标的或在规则集里配股票"
+    bars_by_sym, day_list = _load_bars(bridge, syms, days)
+    if not bars_by_sym:
+        return False, {}, "本地没有日线数据，请先同步（sync）"
+    minutes = {}
+    if grid in INTRADAY_GRIDS:
+        minutes = load_minutes(bridge.data_db, syms, day_list)
+    out = walk_forward(cfg, bars_by_sym, day_list, grid, syms, value=float(value),
+                       fee=_fee_of(cfg_path), initial_cash=float(cash),
+                       top=int(top or 5), split=float(split or 0.6),
+                       minutes_by_day=minutes)
     return (not out.get("error")), out, str(out.get("error") or "")
 
 
@@ -1170,7 +1222,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": res.get("ok", False), "data": _data,
                             "error": None if res.get("ok") else msg},
                            code=200 if res.get("ok") else 502)
-            elif u.path in ("/api/engine/backtest", "/api/engine/optimize"):
+            elif u.path in ("/api/engine/backtest", "/api/engine/optimize",
+                            "/api/engine/walkforward"):
                 # 写操作同口径：口令（或凭 API Key 接管），与其它写接口一致
                 if not self._admin_ok(body):
                     _tok_out = _takeover_token(body, self.secrets_path)
@@ -1187,9 +1240,16 @@ class Handler(BaseHTTPRequestHandler):
                         b, int(body.get("days") or 120),
                         body.get("symbols") or [], float(body.get("cash") or 100000.0),
                         float(body.get("slippage") or 0.0), True)
-                else:
-                    from paper_trading.engine.optimize import grid_search
+                elif u.path.endswith("walkforward"):
+                    from paper_trading.engine.optimize import walk_forward
 
+                    ok, data, err = _walkforward_payload(
+                        b, str(body.get("grid") or "ma_cross"),
+                        body.get("symbols") or [], int(body.get("days") or 250),
+                        float(body.get("cash") or 100000.0),
+                        float(body.get("value") or 10000.0), int(body.get("top") or 5),
+                        float(body.get("split") or 0.6))
+                else:
                     ok, data, err = _optimize_payload(
                         b, str(body.get("grid") or "ma_cross"),
                         body.get("symbols") or [], int(body.get("days") or 250),

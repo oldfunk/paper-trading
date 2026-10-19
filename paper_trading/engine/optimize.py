@@ -14,7 +14,7 @@ from typing import Iterable, Optional
 
 from paper_trading.engine.backtest import (Backtester, FeeModel,
                                             buy_and_hold, metrics)
-from paper_trading.engine.rules import RULE_TYPES
+from paper_trading.engine.rules import INTRADAY_TYPES, RULE_TYPES
 
 #: 依赖分钟线的网格（需要 minutes_by_day 才有意义）
 INTRADAY_GRIDS = ("vwap_dev", "minute_ma")
@@ -79,6 +79,47 @@ def _variants(grid_name: str, symbols: list[str], value: float,
     return out
 
 
+def _rules_for(grid_name: str, symbol: str, params: dict, value: float) -> list[dict]:
+    """按（网格、标的、参数）重建该组规则（样本外复验要用同一套规则）。"""
+    out = []
+    for r in _variants(grid_name, [symbol], value):
+        if r["symbol"] != symbol:
+            continue
+        if r["params"] == dict(params):
+            out.append(r)
+    return out
+
+
+def _evaluate(cfg: dict, rules: list[dict], bars_by_sym: dict, days: list[str],
+              fee: FeeModel, initial_cash: float, slippage_pct: float,
+              minutes_by_day: Optional[dict]) -> dict:
+    """跑一组规则并返回可比较的指标（样本内/样本外同一口径）。"""
+    trial = dict(cfg)
+    trial["rules"] = rules
+    trial.setdefault("min_ticket_cny", 1000)
+    trial.setdefault("max_orders_per_day", 10 ** 6)
+    trial["max_turnover_per_day"] = 0
+    intraday = any(str(r.get("type") or "") in INTRADAY_TYPES for r in rules)
+    res = Backtester(trial, fee=fee, slippage_pct=slippage_pct).run(
+        bars_by_sym, days, initial_cash=initial_cash,
+        minutes_by_day=minutes_by_day if intraday else None)
+    m = metrics(res, len(days))
+    bench = buy_and_hold(bars_by_sym, days, initial_cash, fee)
+    bench_ret = bench.get("total_return_pct", 0.0)
+    pf = m.get("profit_factor")
+    return {
+        "ret_pct": m.get("total_return_pct", 0.0),
+        "mdd_pct": m.get("max_drawdown_pct", 0.0),
+        "sharpe": m.get("sharpe_annual", 0.0),
+        "trades": m.get("trades", 0),
+        "fees": m.get("total_fees", 0.0),
+        "profit_factor": pf if isinstance(pf, (int, float)) else None,
+        "benchmark_pct": bench_ret,
+        "excess_pct": round(m.get("total_return_pct", 0.0) - bench_ret, 2),
+        "intraday_days": res.intraday_days,
+    }
+
+
 def grid_search(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
                 grid_name: str, symbols: Optional[list[str]] = None,
                 value: float = 10000.0, fee: Optional[FeeModel] = None,
@@ -117,25 +158,19 @@ def grid_search(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
 
     results = []
     dropped: list[dict] = []
+    intraday_days = 0
     for tag, rules in groups.items():
-        trial = dict(cfg)
-        trial["rules"] = rules
-        trial.setdefault("min_ticket_cny", 1000)
-        trial.setdefault("max_orders_per_day", 10 ** 6)
-        trial["max_turnover_per_day"] = 0
-        res = Backtester(trial, fee=fee, slippage_pct=slippage_pct).run(
-            bars_by_sym, days, initial_cash=initial_cash,
-            minutes_by_day=minutes_by_day if intraday else None)
-        m = metrics(res, len(days))
-        pf = m.get("profit_factor")
+        m = _evaluate(cfg, rules, bars_by_sym, days, fee, initial_cash,
+                      slippage_pct, minutes_by_day if intraday else None)
+        intraday_days = max(intraday_days, int(m.get("intraday_days") or 0))
         rec = {
             "tag": tag, "symbol": rules[0]["symbol"], "params": rules[0]["params"],
-            "ret_pct": m["total_return_pct"], "mdd_pct": m["max_drawdown_pct"],
-            "sharpe": m["sharpe_annual"], "trades": m["trades"],
-            "win_pct": m["win_rate_pct"],
-            "profit_factor": pf if isinstance(pf, (int, float)) else None,
-            "fees": m["total_fees"],
-            "excess_pct": round(m["total_return_pct"] - bench_ret, 2),
+            "ret_pct": m["ret_pct"], "mdd_pct": m["mdd_pct"],
+            "sharpe": m["sharpe"], "trades": m["trades"],
+            "win_pct": 0.0,
+            "profit_factor": m["profit_factor"],
+            "fees": m["fees"],
+            "excess_pct": m["excess_pct"],
         }
         if int(m.get("trades") or 0) < _min_trades:
             dropped.append(rec)
@@ -154,12 +189,74 @@ def grid_search(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
     return {"grid": grid_name, "rule_type": _GRID_TYPE.get(grid_name),
             "symbols": symbols, "days": len(days),
             "intraday": intraday,
-            "intraday_days": res.intraday_days if intraday else 0,
+            "intraday_days": intraday_days if intraday else 0,
             "benchmark_pct": bench_ret, "variants": len(results),
             "dropped_no_trade": len(dropped),
             "dropped_top": dropped[:3],
             "best": best, "top": results[:top],
             "note": note}
+
+
+def walk_forward(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
+                 grid_name: str, symbols: Optional[list[str]] = None,
+                 value: float = 10000.0, fee: Optional[FeeModel] = None,
+                 initial_cash: float = 100000.0, slippage_pct: float = 0.0,
+                 top: int = 5, split: float = 0.6,
+                 minutes_by_day: Optional[dict] = None,
+                 min_trades: int = 1) -> dict:
+    """样本内选参数 → 样本外检验（walk-forward）。
+
+    这是"参数网格"能不能用的关键：样本内排第一的参数，换到没见过的数据上
+    往往就不行了（过拟合）。这里把数据按时间切成两段：
+    前 split 比例用来排名，后段用来检验，并给出"事后最优"作对照——
+    **样本内第一名与样本外第一名的差距，就是过拟合的量度**。
+    """
+    fee = fee or FeeModel()
+    days = list(days or [])
+    if len(days) < 20:
+        return {"error": f"样本太短（{len(days)} 天），无法做样本外检验"}
+    cut = max(10, min(len(days) - 5, int(len(days) * float(split))))
+    is_days, oos_days = days[:cut], days[cut:]
+    in_sample = grid_search(cfg, bars_by_sym, is_days, grid_name, symbols,
+                            value=value, fee=fee, initial_cash=initial_cash,
+                            slippage_pct=slippage_pct, top=top,
+                            minutes_by_day=minutes_by_day, min_trades=min_trades)
+    if in_sample.get("error"):
+        return in_sample
+    intraday = grid_name in INTRADAY_GRIDS
+    oos_rows = []
+    for rec in in_sample.get("top") or []:
+        rules = _rules_for(grid_name, rec["symbol"], rec["params"], value)
+        if not rules:
+            continue
+        m = _evaluate(cfg, rules, bars_by_sym, oos_days, fee, initial_cash,
+                      slippage_pct, minutes_by_day if intraday else None)
+        oos_rows.append({
+            "symbol": rec["symbol"], "params": rec["params"],
+            "in_excess_pct": rec["excess_pct"], "in_trades": rec["trades"],
+            "oos_excess_pct": m["excess_pct"], "oos_ret_pct": m["ret_pct"],
+            "oos_trades": m["trades"], "oos_sharpe": m["sharpe"],
+            "oos_mdd_pct": m["mdd_pct"],
+        })
+    oos_rows.sort(key=lambda x: -x["oos_excess_pct"])
+    # 事后最优（用样本外挑出来的第一名）——用来量过拟合差距
+    oracle = oos_rows[0] if oos_rows else None
+    picked = oos_rows[0] if oos_rows else None
+    n_pos = len([r for r in oos_rows if r["oos_excess_pct"] > 0])
+    return {
+        "grid": grid_name,
+        "split": {"in_sample": [is_days[0], is_days[-1]],
+                  "out_of_sample": [oos_days[0], oos_days[-1]],
+                  "in_days": len(is_days), "oos_days": len(oos_days)},
+        "in_sample_top": in_sample.get("top") or [],
+        "out_of_sample": oos_rows,
+        "n_oos_positive": n_pos,
+        "n_tested": len(oos_rows),
+        "sample_in_best_excess": (in_sample.get("top") or [{}])[0].get("excess_pct"),
+        "oracle_oos_excess": oracle.get("oos_excess_pct") if oracle else None,
+        "note": ("样本内排名 → 样本外检验。若样本外明显掉下来（甚至转负），"
+                 "说明参数是过拟合出来的，不能写进生产规则集。"),
+    }
 
 
 def available_grids() -> Iterable[str]:

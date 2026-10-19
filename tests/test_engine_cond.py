@@ -174,6 +174,53 @@ def test_parse_conditions_filters_bad():
     assert parse_conditions('{"conditions":"x"}', ["600519"]) == []
 
 
+def test_walk_forward_splits_and_reports():
+    """样本内选参数 → 样本外检验：两个区间必须不重叠，且都给出结果。"""
+    from datetime import datetime as dt
+
+    from paper_trading.engine.backtest import FeeModel
+    from paper_trading.engine.optimize import walk_forward
+    from paper_trading.models import Bar
+
+    days = ([f"2026-05-{d:02d}" for d in range(1, 32)]
+            + [f"2026-06-{d:02d}" for d in range(1, 29)]
+            + [f"2026-07-{d:02d}" for d in range(1, 29)])
+    # 先平 25 根再涨 20 根再跌 20 根再涨 20 根：制造"前半段好、后半段差"的过拟合场景
+    closes = []
+    for i in range(len(days)):
+        if i < 25:
+            closes.append(10.0)
+        elif i < 45:
+            closes.append(10.0 + (i - 25) * 0.4)
+        elif i < 65:
+            closes.append(18.0 - (i - 45) * 0.4)
+        else:
+            closes.append(10.0 + (i - 65) * 0.3)
+    bars = {"600519": [Bar(symbol="600519", timestamp=dt.fromisoformat(d),
+                           open=c, high=c * 1.01, low=c * 0.99, close=c,
+                           volume=1000) for d, c in zip(days, closes)]}
+    out = walk_forward({"rules": []}, bars, days, "ma_cross", ["600519"],
+                        value=10000, fee=FeeModel(), initial_cash=100000,
+                        split=0.6, top=3)
+    assert not out.get("error"), out
+    sp = out["split"]
+    assert sp["in_days"] + sp["oos_days"] == len(days)
+    assert sp["in_sample"][1] < sp["out_of_sample"][0]     # 严格按时间切开
+    assert out["n_tested"] >= 1
+    for row in out["out_of_sample"]:
+        assert "oos_excess_pct" in row and "in_excess_pct" in row
+    assert "过拟合" in out["note"]
+
+
+def test_walk_forward_too_short():
+    from paper_trading.engine.backtest import FeeModel
+    from paper_trading.engine.optimize import walk_forward
+
+    out = walk_forward({"rules": []}, {}, ["2026-01-0%d" % i for i in range(1, 6)],
+                        "ma_cross", ["600519"], fee=FeeModel())
+    assert "error" in out and "样本太短" in out["error"]
+
+
 def test_intraday_grid_needs_minutes():
     """日内网格没有分钟数据就明说，不静默返回一个"跑过"的结果。"""
     from paper_trading.engine.backtest import FeeModel

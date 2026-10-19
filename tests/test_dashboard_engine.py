@@ -109,6 +109,25 @@ def test_engine_optimize_unknown_grid(panel):
     assert code == 400 and "未知网格" in r["error"]
 
 
+def test_engine_walkforward_endpoint(panel):
+    base, dbs = panel
+    r, code = _post(f"{base}/api/engine/walkforward",
+                    {"admin_token": dbs["token"], "grid": "ma_cross",
+                     "symbols": ["000001"], "days": 90, "split": 0.6, "top": 3})
+    assert code == 200, r
+    d = r["data"]
+    assert "split" in d and "out_of_sample" in d
+    sp = d["split"]
+    assert sp["in_days"] + sp["oos_days"] == 90
+    assert sp["in_sample"][1] < sp["out_of_sample"][0]
+
+
+def test_engine_walkforward_requires_token(panel):
+    base, _ = panel
+    r, code = _post(f"{base}/api/engine/walkforward", {"days": 90})
+    assert code == 403 and r["ok"] is False
+
+
 def test_cond_crud_flow(panel):
     base, dbs = panel
     t = dbs["token"]
@@ -159,8 +178,8 @@ def test_page_has_engine_and_cond_ui(panel):
 
     page = d.PAGE
     for need in ("规则引擎", "条件单", "/api/engine/backtest", "/api/engine/optimize",
-                 "/api/cond/cancel", "/api/cond/design", "btn-cond-add",
-                 "engine-trig", "cond-row" if False else "conds"):
+                 "/api/engine/walkforward", "/api/cond/cancel", "/api/cond/design",
+                 "btn-cond-add", "btn-engine-wf", "engine-trig", "conds"):
         assert need in page, f"面板缺少：{need}"
     # 面板不得出现英文系统词
     for bad in ("Cancel", "Delete", "Submit", "Refresh", "Loading..."):

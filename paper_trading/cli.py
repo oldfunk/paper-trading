@@ -965,6 +965,20 @@ def main() -> None:
                             help="每次买入金额")
     engine_opt.add_argument("--top", type=int, default=10)
     engine_opt.add_argument("--json", action="store_true")
+    # walk-forward：样本内选参数 → 样本外检验（过拟合体检）
+    engine_wf = engine_sub.add_parser(
+        "walkforward", help="样本内选参数、样本外检验（过拟合体检）")
+    engine_wf.add_argument("--grid", default="ma_cross",
+                           choices=["ma_cross", "rsi_zone", "trailing_stop",
+                                    "vwap_dev", "minute_ma"])
+    engine_wf.add_argument("--symbols", nargs="*", default=None)
+    engine_wf.add_argument("--days", type=int, default=250)
+    engine_wf.add_argument("--cash", type=float, default=100000.0)
+    engine_wf.add_argument("--value", type=float, default=10000.0)
+    engine_wf.add_argument("--split", type=float, default=0.6,
+                           help="样本内占比（其余为样本外）")
+    engine_wf.add_argument("--top", type=int, default=5)
+    engine_wf.add_argument("--json", action="store_true")
 
     # cond（条件单：AI/人工下达，引擎盯盘触发）
     cond_parser = subparsers.add_parser("cond", help="条件单（触发式委托）")
@@ -1272,7 +1286,8 @@ def main() -> None:
                                                       buy_and_hold, load_minutes,
                                                       metrics)
             from paper_trading.engine.config import load_engine_config, validate
-            from paper_trading.engine.optimize import INTRADAY_GRIDS, grid_search
+            from paper_trading.engine.optimize import (INTRADAY_GRIDS, grid_search,
+                                                       walk_forward)
             from paper_trading.engine.rules import INTRADAY_TYPES
             from paper_trading.utils.config import load_config
 
@@ -1294,7 +1309,7 @@ def main() -> None:
                                  dry_run=args.dry_run).tick()
                 emit(r, ok=not r.get("error"), error=r.get("error"))
                 return
-            if args.engine_command == "optimize":
+            if args.engine_command in ("optimize", "walkforward"):
                 days_n = int(args.days)
                 syms = list(args.symbols or [])
                 for r0 in (cfg.get("rules") or []):
@@ -1324,10 +1339,17 @@ def main() -> None:
                 grid_minutes = {}
                 if args.grid in INTRADAY_GRIDS:
                     grid_minutes = load_minutes(bridge.data_db, syms, grid_days)
-                out = grid_search(cfg, bars_by_sym, grid_days,
-                                  args.grid, syms, value=args.value, fee=fee,
-                                  initial_cash=args.cash, top=args.top,
-                                  minutes_by_day=grid_minutes)
+                if args.engine_command == "walkforward":
+                    out = walk_forward(cfg, bars_by_sym, grid_days, args.grid,
+                                       syms, value=args.value, fee=fee,
+                                       initial_cash=args.cash, top=args.top,
+                                       split=args.split,
+                                       minutes_by_day=grid_minutes)
+                else:
+                    out = grid_search(cfg, bars_by_sym, grid_days,
+                                      args.grid, syms, value=args.value, fee=fee,
+                                      initial_cash=args.cash, top=args.top,
+                                      minutes_by_day=grid_minutes)
                 emit(out, ok=not out.get("error"), error=out.get("error"))
                 return
             # backtest
