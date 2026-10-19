@@ -379,6 +379,9 @@ python -m paper_trading.cli engine run --dry-run --json
 条件单**现在不成交**，只挂一个可验证的触发条件（触发价或涨跌幅）；盘中引擎每分钟核对实时价，
 触发才过风控下单。不触发就是 0 成本，每条都留痕（待触发/已成交/已撤销/已过期/被拒），可复盘 AI 准不准。
 
+`engine.enabled: false`（默认）时，规则与条件单都**只判定不成交**——开关关着时触发的条件单保持"待触发"，
+不会被误标成"已拒绝"，等人开了开关再说。
+
 ```bash
 # 人工挂一条：跌破 9.5 买 2 万，2 天内有效
 python -m paper_trading.cli cond add --symbol 000001 --side buy \

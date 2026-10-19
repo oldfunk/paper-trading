@@ -1243,8 +1243,12 @@ class Handler(BaseHTTPRequestHandler):
                                code=200 if ok else 400)
                     return
                 if u.path == "/api/cond/tick":
+                    from paper_trading.engine.config import load_engine_config
+
+                    eng = load_engine_config("config.yaml")
                     r = ConditionRunner(b, orders,
                                         dry_run=bool(body.get("dry_run")),
+                                        enabled=bool(eng.get("enabled")),
                                         min_ticket_cny=engine_min_ticket(),
                                         max_per_day=8).tick()
                     r["orders"] = orders.list_all(60)

@@ -1417,7 +1417,11 @@ def main() -> None:
                     sys.exit(3)
                 return
             if cmd == "tick":
+                from paper_trading.engine.config import load_engine_config
+
+                eng = load_engine_config(args.config)
                 r = ConditionRunner(bridge, orders, dry_run=args.dry_run,
+                                    enabled=bool(eng.get("enabled")),
                                     min_ticket_cny=engine_min_ticket(args.config),
                                     max_per_day=8).tick()
                 emit(r, ok=True)

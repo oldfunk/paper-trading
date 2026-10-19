@@ -277,6 +277,10 @@ class EngineRunner:
             self.state.log_trigger(now.isoformat(), day, rid, sym, side,
                                    "dry_run", {**detail, "volume": volume})
             return {"ok": True, "why": "试运行", "volume": volume}
+        if not self.cfg.get("enabled"):
+            # enabled=false 的语义是"不开盘中自动交易"——cron 单轮（--once）也必须守
+            # （原来只在守护入口查这个开关，cron 走单轮时绕过了它，会照常下单）
+            return {"ok": False, "why": "引擎未启用（engine.enabled=false），不下单"}
         order = Order(symbol=sym, direction=sig.direction.value, volume=volume,
                       order_type=OrderType.LIMIT, limit_price=price,
                       prev_close=float(q.get("prev_close") or 0.0),
@@ -315,6 +319,7 @@ def run_loop(bridge, interval_sec: int = 60, dry_run: bool = False,
     runner = EngineRunner(bridge, cfg=cfg, dry_run=dry_run)
     cond = ConditionRunner(bridge, ConditionalOrders(bridge.account_db_path),
                            dry_run=dry_run,
+                           enabled=bool(cfg.get("enabled")),
                            min_ticket_cny=float(cfg.get("min_ticket_cny") or 0))
     out: list[dict] = []
     n = 0
@@ -346,12 +351,15 @@ class ConditionRunner:
     """条件单执行器：每轮用实时价检查 armed 条件单，触发即过风控下单。"""
 
     def __init__(self, bridge, orders, dry_run: bool = False,
-                 min_ticket_cny: float = 0.0, max_per_day: int = 8):
+                 min_ticket_cny: float = 0.0, max_per_day: int = 8,
+                 enabled: bool = True):
         self.b = bridge
         self.orders = orders
         self.dry_run = dry_run
         self.min_ticket = float(min_ticket_cny or 0.0)
         self.max_per_day = int(max_per_day or 8)
+        # 与规则引擎同一个总开关：engine.enabled=false 时条件单也不自动成交
+        self.enabled = bool(enabled)
 
     def tick(self, quotes: Optional[dict] = None) -> dict:
         from paper_trading.data import realtime as rt
@@ -362,7 +370,7 @@ class ConditionRunner:
         expired = self.orders.expire_due(now)
         pend = self.orders.pending(now)
         out = {"ts": now.isoformat(), "expired": expired, "armed": len(pend),
-               "filled": [], "rejected": [], "n_quotes": 0}
+               "filled": [], "rejected": [], "held": [], "n_quotes": 0}
         if not pend:
             return out
         syms = sorted({d["symbol"] for d in pend})
@@ -392,6 +400,9 @@ class ConditionRunner:
             if res.get("ok"):
                 out["filled"].append(rec)
                 done_today += 1
+            elif res.get("keep_armed"):
+                # 引擎没开：条件本身没问题，只是现在不该成交 → 保持待触发
+                out["held"].append(rec)
             else:
                 out["rejected"].append(rec)
                 self.orders.mark(d["id"], "rejected", price,
@@ -436,6 +447,10 @@ class ConditionRunner:
             self.orders.mark(d["id"], "armed", price,
                              {"dry_run": True, "volume": volume}, now)
             return {"ok": True, "why": "试运行", "volume": volume}
+        if not self.enabled:
+            # 总开关关着就不成交（保持 armed，等人再开）
+            return {"ok": False, "keep_armed": True,
+                    "why": "引擎未启用（engine.enabled=false），不成交"}
         order = Order(symbol=sym, direction=sig.direction.value, volume=volume,
                       order_type=OrderType.LIMIT, limit_price=price,
                       prev_close=float(quote.get("prev_close") or 0.0),
