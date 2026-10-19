@@ -663,9 +663,11 @@ function condRow(){
     :`<tr><td colspan="8" class="mut">暂无条件单 —— 条件单现在不成交，盘中触发才下单</td></tr>`);
   box.querySelectorAll(".ccancel").forEach(b=>b.onclick=async()=>{
     b.disabled=true;
+    const st=document.getElementById("condstat");
     const r=await guard((extra)=>post("/api/cond/cancel",
       Object.assign({admin_token:tok(),id:Number(b.dataset.id)},extra||{})));
-    if(!r.ok)alert("撤销失败："+(r.error||""));
+    if(!r.ok){st.textContent="撤销失败："+(r.error||"");b.disabled=false;return}
+    st.textContent=`已撤销条件单 #${b.dataset.id}`;
     await condStatus();refresh();
   });
 }
