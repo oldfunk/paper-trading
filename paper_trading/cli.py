@@ -1024,8 +1024,11 @@ def main() -> None:
     args = parser.parse_args()
 
     def emit(data, ok: bool = True, error: str | None = None):
-        print(json.dumps({"ok": ok, "data": data, "error": error},
-                         indent=2, ensure_ascii=False, default=str))
+        from paper_trading.utils.jsonx import safe
+
+        print(json.dumps(safe({"ok": ok, "data": data, "error": error}),
+                         indent=2, ensure_ascii=False, default=str,
+                         allow_nan=False))
 
     def _resolve_syms(b, a):
         """解析股票池：CLI > pool-from > config；返回 (symbols, source_note, candidates)。"""

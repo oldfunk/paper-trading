@@ -536,8 +536,10 @@ def metrics(res: BacktestResult, days: int) -> dict:
         "trades": len(res.trades),
         "closed_trades": len(wins) + len(losses),
         "win_rate_pct": round(len(wins) / max(len(wins) + len(losses), 1) * 100, 1),
-        "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else
-                         (float("inf") if gross_win > 0 else 0.0),
+        # 没有亏损单时 profit_factor 数学上是无穷——但 Infinity 不是合法 JSON，
+        # 会让面板 response.json() 直接炸掉，所以这里用 None 表示"无亏损"
+        "profit_factor": (round(gross_win / gross_loss, 2) if gross_loss > 0
+                          else (None if gross_win > 0 else 0.0)),
         "total_fees": res.total_fees,
         "fee_drag_pct": round(res.total_fees / res.initial_cash * 100, 2)
         if res.initial_cash else 0.0,

@@ -892,7 +892,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _json(self, data, code: int = 200) -> None:
-        body = json.dumps(data, ensure_ascii=False, default=str).encode()
+        from paper_trading.utils.jsonx import safe
+
+        body = json.dumps(safe(data), ensure_ascii=False, default=str,
+                          allow_nan=False).encode()
         self._send(code, body, "application/json; charset=utf-8")
 
     def _bridge(self):
