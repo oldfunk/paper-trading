@@ -110,6 +110,7 @@ class Backtester:
                      "commission": round(commission, 4),
                      "stamp_duty": round(stamp, 4),
                      "transfer_fee": round(transfer, 4),
+                     "proceeds": round(proceeds, 2),
                      "pnl": round(pnl, 2), "reason": reason}
 
     # ---------- 主循环 ----------
@@ -202,6 +203,7 @@ class Backtester:
                                                      it.reason)
                     if not tr:
                         continue
+                    cash += float(tr.get("proceeds") or 0.0)   # 卖出回款必须进现金
                 if tr:
                     fees = tr["commission"] + tr["stamp_duty"] + tr["transfer_fee"]
                     fees_total += fees
@@ -368,6 +370,7 @@ class Backtester:
                         pos[sym], tr = self._sell(p, sym, vol, exec_px, day, it.reason)
                         if not tr:
                             continue
+                        cash += float(tr.get("proceeds") or 0.0)   # 卖出回款必须进现金
                     tr["rule"] = rid
                     tr["ts"] = str(m[0])
                     res.trades.append(tr)
