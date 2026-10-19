@@ -1145,7 +1145,8 @@ def main() -> None:
                 sys.exit(3)
 
         elif args.command == "engine":
-            from paper_trading.engine.backtest import Backtester, FeeModel, metrics
+            from paper_trading.engine.backtest import (Backtester, FeeModel,  # noqa: E402
+                                            buy_and_hold, metrics)
             from paper_trading.engine.config import load_engine_config, validate
             from paper_trading.utils.config import load_config
 
