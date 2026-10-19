@@ -141,9 +141,17 @@ class Backtester:
         day_orders = 0
         day_turnover = 0.0
         intraday_days: set[str] = set()
+        last_px: dict[str, float] = {}
 
         for day in days:
+            # px：当日真实收盘（没有就不成交）；px_last：沿用最近一次有效收盘（算市值用）
+            # 分开的原因：某只票当天没数据时，市值不能当 0（否则权益曲线凭空塌一块），
+            # 但也不能拿旧价假装成交。
             px = {s: self._day_px(b, day) for s, b in bars_by_sym.items()}
+            for s, v in px.items():
+                if v:
+                    last_px[s] = v
+            px_last = {s: last_px.get(s) for s in bars_by_sym}
             held_days = {s: max(0, days.index(day) - days.index(p.entry_day))
                          for s, p in pos.items() if p.entry_day in days}
             # 当日买入的部分 T+1 冻结：日内规则与实盘一样卖不掉
@@ -215,15 +223,15 @@ class Backtester:
             # 1.5) 日内规则逐分钟重放（只用已走完的分钟，无未来函数）
             if intra_rules:
                 cash, day_orders, day_turnover, replayed = self._replay_intraday(
-                    intra_rules, day, minutes_by_day, px, pos, cash,
+                    intra_rules, day, minutes_by_day, px_last, pos, cash,
                     day_orders, day_turnover, frozen, held_days, res)
                 if replayed:
                     intraday_days.add(day)
 
-            # 2) 收盘盯市 + 峰值更新
+            # 2) 收盘盯市 + 峰值更新（缺失日沿用最近收盘，不当 0）
             mv = 0.0
             for s, p in pos.items():
-                c = px.get(s)
+                c = px_last.get(s)
                 if c:
                     mv += c * p.volume
                     p.peak = max(p.peak, c)
@@ -447,10 +455,14 @@ def buy_and_hold(bars_by_sym: dict[str, list], days: list[str],
         spent += amount + c + t
     leftover = initial_cash - spent          # 未买满整手的余额留在现金
     curve = []
+    last_px: dict[str, float] = {}
     for d in days:
         mv = 0.0
         for s, vol in holdings.items():
             c = Backtester._day_px(bars_by_sym[s], d)
+            if c:                 # 当日有收盘就用它；没有就沿用最近一次有效收盘
+                last_px[s] = c
+            c = last_px.get(s)
             if c:
                 mv += c * vol
         curve.append({"day": d, "equity": round(leftover + mv, 2)})
