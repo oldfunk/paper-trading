@@ -855,6 +855,36 @@ def main() -> None:
                                  help="队列条目，可重复：TIME=ACTION，如 --entry 09:00=sync --entry 16:45=trade；动作仅 sync/analyze/plan/trade")
     agent_sched_set.add_argument("--json", action="store_true")
 
+    # engine（规则引擎：回测 + 盘中守护）
+    engine_parser = subparsers.add_parser("engine", help="规则引擎（量化执行层）")
+    engine_sub = engine_parser.add_subparsers(dest="engine_command")
+    engine_bt = engine_sub.add_parser("backtest", help="用已存日线回测规则集")
+    engine_bt.add_argument("--days", type=int, default=120, help="回测最近多少个交易日")
+    engine_bt.add_argument("--symbols", nargs="*", default=None,
+                           help="缺省取规则集里的标的")
+    engine_bt.add_argument("--cash", type=float, default=100000.0)
+    engine_bt.add_argument("--slippage-pct", type=float, default=0.0)
+    engine_bt.add_argument("--curve", action="store_true", help="打印 ASCII 净值曲线")
+    engine_bt.add_argument("--trades", action="store_true", help="打印逐笔成交")
+    engine_bt.add_argument("--json", action="store_true")
+    engine_cfg = engine_sub.add_parser("config", help="查看/校验引擎配置")
+    engine_cfg.add_argument("--json", action="store_true")
+    engine_run = engine_sub.add_parser("run", help="跑一轮（守护进程入口在 python -m paper_trading.engine）")
+    engine_run.add_argument("--dry-run", action="store_true", help="只判定不下单")
+    engine_run.add_argument("--json", action="store_true")
+
+    # minute（分钟线采集）
+    minute_parser = subparsers.add_parser("minute", help="1 分钟 K 线采集/查询")
+    minute_sub = minute_parser.add_subparsers(dest="minute_command")
+    minute_pull = minute_sub.add_parser("pull", help="拉取最近 5 日分钟线入库")
+    minute_pull.add_argument("--symbols", nargs="*", default=None)
+    minute_pull.add_argument("--pool-limit", type=int, default=10)
+    minute_pull.add_argument("--days", type=int, default=5)
+    minute_pull.add_argument("--json", action="store_true")
+    minute_stat = minute_sub.add_parser("stat", help="查看本地分钟线存量")
+    minute_stat.add_argument("--symbols", nargs="*", default=None)
+    minute_stat.add_argument("--json", action="store_true")
+
     # nav
     nav_parser = subparsers.add_parser("nav", help="查看 NAV 历史")
     nav_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
@@ -1113,6 +1143,96 @@ def main() -> None:
             emit(res, ok=res.get("ok", False), error=res.get("error"))
             if not res.get("ok"):
                 sys.exit(3)
+
+        elif args.command == "engine":
+            from paper_trading.engine.backtest import Backtester, FeeModel, metrics
+            from paper_trading.engine.config import load_engine_config, validate
+            from paper_trading.utils.config import load_config
+
+            cfg = load_engine_config(args.config)
+            ok, msg = validate(cfg)
+            if args.engine_command == "config" or not args.engine_command:
+                emit({"enabled": bool(cfg.get("enabled")),
+                      "interval_sec": cfg.get("interval_sec"),
+                      "min_ticket_cny": cfg.get("min_ticket_cny"),
+                      "max_orders_per_day": cfg.get("max_orders_per_day"),
+                      "rules": cfg.get("rules"), "valid": ok, "message": msg})
+                return
+            if args.engine_command == "run":
+                from paper_trading.engine.runner import EngineRunner
+                from paper_trading.engine.state import EngineState
+
+                r = EngineRunner(bridge, cfg=cfg,
+                                 state=EngineState(bridge.account_db_path),
+                                 dry_run=args.dry_run).tick()
+                emit(r, ok=not r.get("error"), error=r.get("error"))
+                return
+            # backtest
+            if not ok:
+                emit(None, ok=False, error=f"规则配置非法：{msg}")
+                sys.exit(2)
+            rules = cfg.get("rules") or []
+            syms = list(args.symbols or [])
+            for r0 in rules:
+                syms.extend(r0.get("symbols") or ([r0["symbol"]] if r0.get("symbol") else []))
+            syms = sorted({str(s) for s in syms if s})
+            if not syms:
+                emit(None, ok=False, error="规则集为空或未指定 --symbols")
+                sys.exit(2)
+            bars_by_sym, all_days = {}, set()
+            for s in syms:
+                bars = bridge.data_db.get_bars(s, limit=max(args.days, 30) + 5)
+                if bars:
+                    bars_by_sym[s] = bars
+                    all_days.update(b.timestamp.date().isoformat() for b in bars)
+            if not bars_by_sym:
+                emit(None, ok=False, error="本地无日线数据，先跑 sync")
+                sys.exit(3)
+            days = sorted(all_days)[-args.days:]
+            trading_cfg = (load_config(args.config).get("trading") or {})
+            fee = FeeModel(
+                commission_rate=float(trading_cfg.get("commission_rate", 0.00025)),
+                commission_min=float(trading_cfg.get("commission_min", 5.0)),
+                stamp_duty_rate=float(trading_cfg.get("stamp_duty_rate", 0.0005)),
+                transfer_fee_rate=float(trading_cfg.get("transfer_fee_rate", 0.00001)),
+            )
+            res = Backtester(cfg, fee=fee,
+                             slippage_pct=args.slippage_pct).run(
+                                 bars_by_sym, days, initial_cash=args.cash)
+            m = metrics(res, len(days))
+            m["trades_detail"] = res.trades[-50:]
+            m["per_rule"] = res.per_rule
+            m["skipped_sample"] = res.skipped[:20]
+            if args.curve and res.equity_curve:
+                eq = [c["equity"] for c in res.equity_curve]
+                lo, hi = min(eq), max(eq)
+                blocks = "▁▂▃▄▅▆▇█"
+                span = (hi - lo) or 1.0
+                m["ascii_curve"] = "".join(
+                    blocks[min(len(blocks) - 1, int((v - lo) / span * (len(blocks) - 1)))]
+                    for v in eq)
+            emit(m, ok=True)
+
+        elif args.command == "minute":
+            from paper_trading.data import minute as _min
+
+            if args.minute_command == "pull":
+                syms = list(args.symbols or [])
+                if not syms:
+                    syms = _resolve_syms(bridge, args)[0][:args.pool_limit]
+                got = {}
+                for s in syms:
+                    rows = _min.fetch_minute(s, days=args.days)
+                    if rows:
+                        bridge.data_db.upsert_minute_bars(s, rows)
+                    got[s] = len(rows)
+                emit({"symbols": len(syms), "rows": got,
+                      "total_rows": sum(got.values())})
+                return
+            # stat
+            syms = list(args.symbols or bridge.data_db.get_pool_symbols()[:20])
+            emit({s: bridge.data_db.minute_count(s) for s in syms})
+            return
 
         elif args.command == "nav":
             emit(bridge.get_nav_history())

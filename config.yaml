@@ -47,3 +47,13 @@ agent:
   llm_thinking: disabled
   picks_enabled: true     # AI 自主提名：候选之外允许它点名全市场任意 A 股
   picks_max: 5            # 单轮最多提名几只（1-10）
+
+# 规则引擎（盘中量化执行层；与 LLM 分工：引擎负责择时执行，LLM 负责选股与策略）
+engine:
+  enabled: false          # 总开关：false 时守护进程拒绝启动（显式开启才盘中自动交易）
+  interval_sec: 60        # 盘中轮询间隔（秒）
+  min_ticket_cny: 5000    # 低于此金额不下单（手续费地板：2千以下单子费率>50bp）
+  max_orders_per_day: 6   # 日内报单笔数上限
+  max_turnover_per_day: 60000   # 日内成交金额上限（元）
+  per_symbol_cooldown_sec: 900  # 同标的两次报单最小间隔
+  rules: []               # 规则集（示例见 AGENTS.md；本机覆盖写 engine.local.yaml）
