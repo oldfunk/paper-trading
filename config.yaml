@@ -56,4 +56,20 @@ engine:
   max_orders_per_day: 6   # 日内报单笔数上限
   max_turnover_per_day: 60000   # 日内成交金额上限（元）
   per_symbol_cooldown_sec: 900  # 同标的两次报单最小间隔
-  rules: []               # 规则集（示例见 AGENTS.md；本机覆盖写 engine.local.yaml）
+  # 规则集（9 种类型：日线 6 种 + 日内 3 种；示例见 AGENTS.md）
+  # 本机覆盖写 engine.local.yaml（gitignored，不进仓库）
+  rules: []
+  #   - id: trail-002192
+  #     type: trailing_stop          # 日线：移动止损
+  #     symbol: "002192"
+  #     params: {pct: 5}
+  #     action: {side: sell, all: true}
+  #   - id: vwap-000001               # 日内：偏离当日均价（需先 minute pull）
+  #     type: vwap_dev
+  #     symbol: "000001"
+  #     params: {pct: 1.5, min_bars: 15}
+  #     action: {side: buy, value: 10000}
+  #
+  # 条件单（AI 或人工挂"触发条件"，盘中到价自动下单）不写在这里，走
+  #   python -m paper_trading.cli cond add|design|list|cancel
+  # 或面板「条件单」区，状态存在 paper_account.db 的 conditional_orders 表。

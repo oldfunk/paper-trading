@@ -159,6 +159,52 @@ tbody tr:hover{background:var(--bg-hover)}
 </section>
 
 <section>
+  <div class="section-header"><h2 class="section-title">规则引擎</h2><span class="section-count" id="c-engine"></span></div>
+  <div class="ai-panel">
+    <div class="s" id="engine-sum">规则引擎：加载中…</div>
+    <div class="ai-row" id="engine-rules"></div>
+    <div id="engine-trig"></div>
+    <div class="ai-row">
+      <button id="btn-engine-backtest" class="primary">回测规则集</button>
+      <select id="engine-grid" style="width:170px">
+        <option value="ma_cross">网格：均线交叉</option>
+        <option value="rsi_zone">网格：RSI 区间</option>
+        <option value="trailing_stop">网格：移动止损</option>
+        <option value="vwap_dev">网格：偏离均价（日内）</option>
+        <option value="minute_ma">网格：分钟均线（日内）</option>
+      </select>
+      <button id="btn-engine-optimize">参数网格</button>
+      <span id="engine-stat" class="mut" style="align-self:center"></span>
+    </div>
+    <div id="engine-out" class="s"></div>
+  </div>
+</section>
+
+<section>
+  <div class="section-header"><h2 class="section-title">条件单</h2><span class="section-count" id="c-cond"></span></div>
+  <div class="ai-panel">
+    <div class="s">条件单 = 现在不成交、只挂条件。盘中引擎每分钟核对实时价，触发即过风控下单（AI 设计或人工添加均可）。</div>
+    <div class="ai-row">
+      <input id="cond-sym" placeholder="代码 600519" style="width:110px">
+      <select id="cond-side"><option value="buy">买入</option><option value="sell">卖出</option></select>
+      <select id="cond-type">
+        <option value="price_below">价跌破</option>
+        <option value="price_above">价升破</option>
+        <option value="pct_below">日内跌超%</option>
+        <option value="pct_above">日内涨超%</option>
+      </select>
+      <input id="cond-trigger" type="number" step="0.01" placeholder="触发值" style="width:110px">
+      <input id="cond-value" type="number" step="100" placeholder="金额(元)" style="width:110px">
+      <input id="cond-expiry" type="date" style="width:150px">
+      <button id="btn-cond-add" class="primary">挂条件单</button>
+      <button id="btn-cond-design">AI 设计</button>
+      <span id="condstat" class="mut" style="align-self:center"></span>
+    </div>
+    <div class="scroll"><table id="conds"></table></div>
+  </div>
+</section>
+
+<section>
   <div class="section-header"><h2 class="section-title">AI 问答</h2></div>
   <div class="ai-panel">
     <div class="ai-row">
@@ -230,7 +276,9 @@ const ACTION_CN={
   "run":"每日结算","cron-run":"每日结算（定时任务）","run:dry-run":"试运行（仅预览，不下单）",
   "sync":"同步行情","buy":"买入","sell":"卖出","preview":"下单试算","status":"查询账户",
   "nav":"查询净值","history":"查询记录","names":"刷新股票名称",
-  "llm:ask":"AI 问答","llm:config":"保存模型配置","ai:decide":"AI 决策","ai:plan":"AI 计划"};
+  "llm:ask":"AI 问答","llm:config":"保存模型配置","ai:decide":"AI 决策","ai:plan":"AI 计划",
+  "engine:buy":"规则引擎买入","engine:sell":"规则引擎卖出",
+  "cond:design":"AI 设计条件单","cond:buy":"条件单触发买入","cond:sell":"条件单触发卖出"};
 function errCN(e){
   if(!e)return"";
   const M=[[/multiple of 100/i,"数量必须为 100 股的整数倍"],
@@ -257,6 +305,10 @@ function paramCN(a,j){let p={};try{p=JSON.parse(j||"{}")}catch(e){}
   if(a==="llm:ask")return `问 ${p.model||"AI"}：${(p.prompt||"").slice(0,120)}`;
   if(a==="ai:decide")return `${p.mode==="dry"?"试运行":"实盘"}：股票 ${(p.symbols||[]).map(sym).join("、")}${p.summary?"——"+p.summary.slice(0,80):""}`;
   if(a==="llm:config")return `厂商 ${p.preset||""}，模型 ${p.model||"未填"}`;
+  if(a==="cond:design")return `股票池 ${(p.pool||[]).map(sym).join("、")||"空"}，挂上 ${p.n??0} 条`;
+  if(a==="engine:buy"||a==="engine:sell"||a==="cond:buy"||a==="cond:sell"){
+    const c=p.cond?`，触发条件 ${p.cond}`:"";
+    return `${sym(p.symbol)} ${p.volume??""}${p.volume?"股":""} @ ${fmt(p.price)} 元${c}`;}
   if(a==="ai:plan")return `休盘计划（数据截至${p.asof||"未知"}）：股票 ${(p.symbols||[]).map(sym).join("、")}`;
   if(a==="preview")return `${sym(p.symbol)} ${(p.direction==="buy"?"买入":"卖出")} ${p.volume}股`;
   return Object.entries(p).map(([k,v])=>`${k}=${Array.isArray(v)?v.map(sym).join("、"):v}`).join(" ");}
@@ -277,6 +329,11 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
     return ds.map(d=>{const dir=d.action==="buy"?"买入":d.action==="sell"?"卖出":"持有";
       return `${dir}${sym(d.symbol)}${d.volume||""}股(${d.status||""})`}).join("；");}
   if(a==="llm:config")return `已保存（${r.base_url||""}）`;
+  if(a==="cond:design"){const n=(r.created||[]).length,bad=(r.rejected||[]).length;
+    return bad?`挂上 ${n} 条，${bad} 条未通过校验`:(n?`挂上 ${n} 条条件单`:"没有符合条件的条件单");}
+  if(a==="engine:buy"||a==="engine:sell"||a==="cond:buy"||a==="cond:sell"){
+    const fee=(Number(r.commission)||0)+(Number(r.stamp_duty)||0)+(Number(r.transfer_fee)||0);
+    return `成交价 ${fmt(r.filled_price)} 元，手续费 ${fmt(fee)} 元`;}
   if(a==="ai:plan")return `计划#${r.plan_id??""}：${r.summary||""}（${r.n_actions??0}条，开盘执行）`;
   if(a==="sync"){const u=r.updated||{};const ks=Object.keys(u);
     if(!ks.length)return "无更新";
@@ -505,6 +562,150 @@ document.getElementById("btn-sched").onclick=async()=>{
 };
 schedStatus();
 llmStatus();
+
+/* ---- 规则引擎：规则集一览 + 回测（带基准与超额）+ 参数网格 ---- */
+const RULE_CN={ma_cross:"均线金叉/死叉",rsi_zone:"RSI 超买超卖区",price_level:"价格档位",
+  pct_change:"涨跌幅阈值",trailing_stop:"移动止损",time_stop:"持仓时限",
+  vwap_dev:"偏离当日均价",intraday_pullback:"日内冲高回落",minute_ma_cross:"分钟均线交叉"};
+const COND_CN={price_below:"价跌破",price_above:"价升破",pct_below:"日内跌超%",pct_above:"日内涨超%"};
+const COND_ST={armed:["待触发","tag"],filled:["已成交","ok"],cancelled:["已撤销","mut"],
+  expired:["已过期","mut"],rejected:["被拒","bad"]};
+async function engineStatus(){
+  try{
+    const r=await get("/api/engine");const d=(r&&r.data)||{};
+    const n=(d.rules||[]).length;
+    document.getElementById("c-engine").textContent=n?`${n} 条规则`:"未配置";
+    document.getElementById("engine-sum").innerHTML=
+      `规则引擎：${d.enabled?"已开启":"已关闭"} · 每 ${d.interval_sec??60} 秒检查一次 · 单笔下限 ${fmt(d.min_ticket_cny,0)} 元 · 日内上限 ${d.max_orders_per_day??"-"} 笔`+
+      (d.valid?`<span class="ok"> 配置校验通过</span>`:`<span class="bad"> 配置有问题：${esc(d.message||"")}</span>`);
+    document.getElementById("engine-rules").innerHTML=(d.rules||[]).map(r=>{
+      const a=r.action||{};
+      const amt=a.all?"全部持仓":(a.value?fmt(a.value,0)+" 元":(a.volume?a.volume+" 股":""));
+      return `<span class="tag">${esc(RULE_CN[r.type]||r.type)} · ${esc((r.symbols||[]).map(sym).join("、")||"未指定")} · ${esc(JSON.stringify(r.params||{}))} · ${a.side==="sell"?"卖出":"买入"} ${amt}</span>`;
+    }).join("")
+      ||`<span class="mut">还没有规则：在 config.yaml 的 engine.rules 里加，或让 AI 设计条件单</span>`;
+    const tr=(d.triggers||[]);
+    if(tr.length){
+      const box=document.getElementById("engine-trig");
+      box.innerHTML=`<div class="s mut">最近触发（最多 20 条）</div>`+
+        tr.map(t=>`<div class="mut">${esc(String(t.fired_at||"").replace("T"," ").slice(5,16))} · ${esc(sym(t.rule_id||""))} · ${esc(t.reason||"")}${t.price!=null?` @ ${fmt(t.price)}`:""}</div>`).join("");
+    }
+  }catch(e){document.getElementById("engine-sum").textContent="规则引擎状态读取失败："+e}
+}
+function btCN(m){
+  if(!m)return"";
+  const b=m.benchmark_buy_hold||{};
+  const line=`策略 ${fmt(m.total_return_pct)}% / 回撤 ${fmt(m.max_drawdown_pct)}% / 夏普 ${fmt(m.sharpe_annual)} / ${m.trades??0} 笔 / 费用 ${fmt(m.total_fees)} 元`;
+  const bl=b.total_return_pct!=null?`基准买入持有 ${fmt(b.total_return_pct)}%`:"基准无数据";
+  const ex=m.excess_pct!=null?` · 超额 ${m.excess_pct>=0?"+":""}${fmt(m.excess_pct)}%`:"";
+  const curve=m.ascii_curve?`<br><span class="mono" style="font-size:11px;letter-spacing:-1px">${esc(m.ascii_curve)}</span>`:"";
+  const pr=Object.entries(m.per_rule||{}).map(([k,v])=>`${esc(k)} ${v.trades??0} 笔`).join("；");
+  const note=(m.skipped_sample||[]).filter(s=>s&&s.why).map(s=>esc(s.why)).slice(0,2).join("；");
+  return `${esc(line)}<br><span class="mut">${esc(bl)}${esc(ex)}（近 ${m.days??0} 个交易日，含真实手续费）</span>`+
+    (pr?`<br><span class="mut">${pr}</span>`:"")+
+    (note?`<br><span class="mut">注意：${note}</span>`:"")+curve;
+}
+async function guard(fn){
+  // 写接口统一走口令 + 凭 Key 接管（与其它写操作同一套，不新增第二套鉴权）
+  let r=await fn();
+  if(!r.ok&&r.error&&r.error.indexOf("口令")>=0){
+    const k=prompt("口令失效，输入 API Key 接管（仅本机使用）：");
+    if(k)r=await fn({api_key:k});
+  }
+  if(r&&r.data&&r.data.admin_token)localStorage.setItem("pt_adm",r.data.admin_token);
+  return r;
+}
+document.getElementById("btn-engine-backtest").onclick=async()=>{
+  const out=document.getElementById("engine-out");
+  out.textContent="回测中（读本地日线，按 T+1 与真实费率撮合）…";
+  const r=await guard((extra)=>post("/api/engine/backtest",
+    Object.assign({admin_token:tok(),days:120,curve:true},extra||{})));
+  out.innerHTML=r.ok?btCN(r.data):`<span class="bad">回测失败：${esc(r.error||"")}</span>`;
+  document.getElementById("engine-stat").textContent=r.ok?"已完成":"";
+};
+document.getElementById("btn-engine-optimize").onclick=async()=>{
+  const out=document.getElementById("engine-out");
+  out.textContent="参数网格搜索中（同一段数据、同一费率，按超额排序）…";
+  const r=await guard((extra)=>post("/api/engine/optimize",
+    Object.assign({admin_token:tok(),grid:document.getElementById("engine-grid").value,
+                  days:250,top:8},extra||{})));
+  if(!r.ok){out.innerHTML=`<span class="bad">搜索失败：${esc(r.error||"")}</span>`;return}
+  const d=r.data;
+  out.innerHTML=`<div class="s">共 ${d.variants} 组参数，基准买入持有 ${fmt(d.benchmark_pct)}%，按超额排序（前 ${(d.top||[]).length} 组）`+
+    (d.intraday?`，日内网格实际只覆盖 ${d.intraday_days} 个交易日（分钟线只存最近几日）`:``)+`</div>`+
+    `<div class="scroll"><table><thead><tr><th>标的</th><th>参数</th><th class="num">收益</th><th class="num">回撤</th><th class="num">夏普</th><th class="num">笔数</th><th class="num">超额</th></tr></thead><tbody>`+
+    (d.top||[]).map(t=>`<tr><td><b>${esc(sym(t.symbol))}</b></td><td class="mut">${esc(JSON.stringify(t.params))}</td>`+
+      `<td class="num ${cls(t.ret_pct)}">${fmt(t.ret_pct)}%</td><td class="num">${fmt(t.mdd_pct)}%</td>`+
+      `<td class="num">${fmt(t.sharpe)}</td><td class="num">${t.trades}</td>`+
+      `<td class="num ${cls(t.excess_pct)}">${t.excess_pct>=0?"+":""}${fmt(t.excess_pct)}%</td></tr>`).join("")+
+    `</tbody></table></div><div class="s mut">${esc(d.note||"")}</div>`;
+  document.getElementById("engine-stat").textContent="已完成";
+};
+engineStatus();
+
+/* ---- 条件单：人工挂 / AI 设计 / 手动检查 / 撤销 ---- */
+function condRow(){
+  const box=document.getElementById("conds");
+  const d=(box.dataset.d)||"";
+  rows(box,[["状态"],["股票"],["方向"],["触发条件",1],["金额/股数",1],["有效期"],["理由"],["操作"]],
+    d?JSON.parse(d).map(o=>{
+      const st=COND_ST[o.status]||[o.status,"mut"];
+      const amt=o.side==="buy"?(Number(o.value)?fmt(o.value,0)+" 元":`${o.volume} 股`):`${o.volume?o.volume+" 股":"全部持仓"}`;
+      const cond=`${esc(COND_CN[o.cond_type]||o.cond_type)} ${fmt(o.cond_value, o.cond_type.startsWith("pct")?2:2)}`;
+      const act=o.status==="armed"?`<button class="ccancel" data-id="${o.id}">撤销</button>`:"";
+      return `<tr><td><span class="${st[1]}">${esc(st[0])}</span>${o.source==="ai"?' <span class="tag">AI</span>':""}</td>`+
+        `<td><b>${esc(sym(o.symbol))}</b></td><td><span class="tag ${o.side}">${o.side==="buy"?"买入":"卖出"}</span></td>`+
+        `<td class="num">${cond}</td><td class="num">${amt}</td>`+
+        `<td class="mut">${esc(String(o.expiry||"").replace("T"," ").slice(0,16))}</td>`+
+        `<td class="mut">${esc(o.note||"")}</td><td>${act}</td></tr>`;}).join("")
+    :`<tr><td colspan="8" class="mut">暂无条件单 —— 条件单现在不成交，盘中触发才下单</td></tr>`);
+  box.querySelectorAll(".ccancel").forEach(b=>b.onclick=async()=>{
+    b.disabled=true;
+    const r=await guard((extra)=>post("/api/cond/cancel",
+      Object.assign({admin_token:tok(),id:Number(b.dataset.id)},extra||{})));
+    if(!r.ok)alert("撤销失败："+(r.error||""));
+    await condStatus();refresh();
+  });
+}
+async function condStatus(){
+  try{
+    const r=await get("/api/cond");const d=(r&&r.data)||{};
+    const os=d.orders||[];
+    document.getElementById("c-cond").textContent=`待触发 ${d.armed??0} 条`;
+    document.getElementById("conds").dataset.d=JSON.stringify(os);
+    condRow();
+    const q=(d.triggers||[]).filter(t=>String(t.source||"").indexOf("cond")>=0);
+    if(q.length)document.getElementById("condstat").textContent=`条件单已触发 ${q.length} 次（见操作流水「条件单触发」）`;
+  }catch(e){}
+}
+document.getElementById("btn-cond-add").onclick=async()=>{
+  const st=document.getElementById("condstat");
+  const b=Object.assign({admin_token:tok(),
+    symbol:document.getElementById("cond-sym").value.trim(),
+    side:document.getElementById("cond-side").value,
+    cond_type:document.getElementById("cond-type").value,
+    cond_value:Number(document.getElementById("cond-trigger").value),
+    value:Number(document.getElementById("cond-value").value)||0,
+    expiry:document.getElementById("cond-expiry").value||""});
+  if(!/^\d{6}$/.test(b.symbol)){st.textContent="请填 6 位股票代码";return}
+  if(!(b.cond_value>0)){st.textContent="请填触发值（价格或涨跌幅%）";return}
+  if(b.side==="buy"&&!b.value){st.textContent="买入条件单要填金额（元）";return}
+  st.textContent="提交中…";
+  const r=await guard((extra)=>post("/api/cond",Object.assign(b,extra||{})));
+  st.textContent=r.ok?((r.data&&r.data.message)||"已挂"):("失败："+(r.error||""));
+  if(r.ok){document.getElementById("cond-trigger").value="";document.getElementById("cond-value").value="";}
+  await condStatus();refresh();
+};
+document.getElementById("btn-cond-design").onclick=async()=>{
+  const st=document.getElementById("condstat");st.textContent="模型设计中（只出条件、挂上不成交）…";
+  const r=await guard((extra)=>post("/api/cond/design",
+    Object.assign({admin_token:tok(),pool_from:"auto",max:5,max_days:3},extra||{})));
+  if(!r.ok){st.textContent="设计失败："+(r.error||"");return}
+  const d=r.data||{};
+  st.textContent=`已挂 ${d.n_created??0} 条${(d.n_rejected||[]).length?`，${d.n_rejected.length} 条未通过校验`:""}`;
+  await condStatus();refresh();
+};
+condStatus();
 </script>
 </body>
 </html>"""
@@ -530,6 +731,149 @@ def _takeover_token(body: dict, secrets_path) -> str:
     if key and saved and key == saved and want:
         return want
     return ""
+
+
+def _engine_view(bridge) -> dict:
+    """规则引擎总览：配置 + 规则集 + 最近触发记录（面板只读展示用）。"""
+    from paper_trading.engine.config import load_engine_config, validate
+    from paper_trading.engine.rules import RULE_TYPES
+
+    cfg_path = getattr(bridge, "config_path", "config.yaml") or "config.yaml"
+    cfg = load_engine_config(cfg_path)
+    ok, msg = validate(cfg)
+    rules = cfg.get("rules") or []
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "interval_sec": cfg.get("interval_sec"),
+        "min_ticket_cny": cfg.get("min_ticket_cny"),
+        "max_orders_per_day": cfg.get("max_orders_per_day"),
+        "valid": ok, "message": msg,
+        "rule_types": list(RULE_TYPES),
+        "rules": [{"id": r.get("id"), "type": r.get("type"),
+                   "symbols": (r.get("symbols") or ([r["symbol"]] if r.get("symbol") else [])),
+                   "params": r.get("params"), "action": r.get("action"),
+                   "once": bool(r.get("once")), "enabled": r.get("enabled", True)}
+                  for r in rules],
+        "triggers": _engine_triggers(bridge.account_db_path),
+    }
+
+
+def _engine_triggers(account_db: str, limit: int = 20) -> list[dict]:
+    """最近规则/条件触发流水（表不存在时静默返回空，面板不因此报错）。"""
+    conn = _ro(account_db)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM engine_triggers ORDER BY id DESC LIMIT ?",
+            (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def _backtest_payload(bridge, days: int, symbols, cash: float,
+                      slippage: float, curve: bool) -> tuple[bool, dict, str]:
+    """回测（面板与 CLI 共用同一口径）。"""
+    from paper_trading.engine.backtest import (Backtester, buy_and_hold,
+                                              load_minutes, metrics)
+    from paper_trading.engine.config import load_engine_config, validate
+    from paper_trading.engine.rules import INTRADAY_TYPES
+
+    cfg_path = getattr(bridge, "config_path", "config.yaml") or "config.yaml"
+    cfg = load_engine_config(cfg_path)
+    ok, msg = validate(cfg)
+    if not ok:
+        return False, {}, f"规则配置非法：{msg}"
+    syms = set(symbols or [])
+    for r in (cfg.get("rules") or []):
+        syms.update(r.get("symbols") or ([r["symbol"]] if r.get("symbol") else []))
+    syms = sorted(s for s in syms if s)
+    if not syms:
+        return False, {}, "规则集里没有标的：请先在 config.yaml 的 engine.rules 配股票"
+    bars_by_sym, day_list = _load_bars(bridge, syms, days)
+    if not bars_by_sym:
+        return False, {}, "本地没有日线数据，请先同步（sync）"
+    fee = _fee_of(cfg_path)
+    minutes_by_day = {}
+    if any(str(r.get("type") or "") in INTRADAY_TYPES
+           for r in (cfg.get("rules") or [])):
+        minutes_by_day = load_minutes(bridge.data_db, syms, day_list)
+    res = Backtester(cfg, fee=fee, slippage_pct=float(slippage or 0.0)).run(
+        bars_by_sym, day_list, initial_cash=float(cash or 100000.0),
+        minutes_by_day=minutes_by_day)
+    m = metrics(res, len(day_list))
+    m["per_rule"] = res.per_rule
+    m["trades_detail"] = res.trades[-30:]
+    m["days"] = len(day_list)
+    m["symbols"] = syms
+    m["intraday_days"] = res.intraday_days
+    m["skipped_sample"] = res.skipped[:10]
+    bench = buy_and_hold(bars_by_sym, day_list, float(cash or 100000.0), fee)
+    if bench:
+        m["benchmark_buy_hold"] = bench
+        m["excess_pct"] = round(m["total_return_pct"] - bench["total_return_pct"], 2)
+    if curve and res.equity_curve:
+        eq = [c["equity"] for c in res.equity_curve]
+        blocks = "▁▂▃▄▅▆▇█"
+        lo, hi = min(eq), max(eq)
+        span = (hi - lo) or 1.0
+        m["ascii_curve"] = "".join(
+            blocks[min(len(blocks) - 1,
+                       int((v - lo) / span * (len(blocks) - 1)))] for v in eq)
+    return True, m, ""
+
+
+def _load_bars(bridge, syms: list[str], days: int):
+    """取日线 + 交易日集合（回测与网格共用，避免两处口径漂移）。"""
+    bars_by_sym, all_days = {}, set()
+    for s in syms:
+        bars = bridge.data_db.get_bars(s, limit=int(days) + 10)
+        if bars:
+            bars_by_sym[s] = bars
+            all_days.update(b.timestamp.date().isoformat() for b in bars)
+    return bars_by_sym, sorted(all_days)[-int(days):]
+
+
+def _fee_of(cfg_path: str):
+    from paper_trading.engine.backtest import FeeModel
+    from paper_trading.utils.config import load_config
+
+    t = (load_config(cfg_path).get("trading") or {})
+    return FeeModel(
+        commission_rate=float(t.get("commission_rate", 0.00025)),
+        commission_min=float(t.get("commission_min", 5.0)),
+        stamp_duty_rate=float(t.get("stamp_duty_rate", 0.0005)),
+        transfer_fee_rate=float(t.get("transfer_fee_rate", 0.00001)))
+
+
+def _optimize_payload(bridge, grid: str, symbols, days: int, cash: float,
+                      value: float, top: int) -> tuple[bool, dict, str]:
+    """参数网格搜索（面板与 CLI 共用）。"""
+    from paper_trading.engine.backtest import load_minutes
+    from paper_trading.engine.config import load_engine_config
+    from paper_trading.engine.optimize import GRIDS, INTRADAY_GRIDS, grid_search
+
+    if grid not in GRIDS:
+        return False, {}, f"未知网格 {grid}（可选：{','.join(GRIDS)}）"
+    cfg_path = getattr(bridge, "config_path", "config.yaml") or "config.yaml"
+    cfg = load_engine_config(cfg_path)
+    syms = set(symbols or [])
+    for r in (cfg.get("rules") or []):
+        syms.update(r.get("symbols") or ([r["symbol"]] if r.get("symbol") else []))
+    syms = sorted(s for s in syms if s)
+    if not syms:
+        return False, {}, "请指定标的或在规则集里配股票"
+    bars_by_sym, day_list = _load_bars(bridge, syms, days)
+    if not bars_by_sym:
+        return False, {}, "本地没有日线数据，请先同步（sync）"
+    minutes = {}
+    if grid in INTRADAY_GRIDS:
+        minutes = load_minutes(bridge.data_db, syms, day_list)
+    out = grid_search(cfg, bars_by_sym, day_list, grid, syms, value=float(value),
+                      fee=_fee_of(cfg_path), initial_cash=float(cash),
+                      top=int(top or 10), minutes_by_day=minutes)
+    return (not out.get("error")), out, str(out.get("error") or "")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -678,6 +1022,18 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     self._json({"ok": True, "data": {}, "live": False,
                                 "error": str(e)[:120]})
+            elif u.path == "/api/engine":
+                self._json({"ok": True, "data": _engine_view(self._bridge())})
+            elif u.path == "/api/cond":
+                from paper_trading.engine.conditional import ConditionalOrders
+
+                q = parse_qs(u.query)
+                co = ConditionalOrders(self.account_db)
+                self._json({"ok": True, "data": {
+                    "orders": co.list_all(int(q.get("limit", ["60"])[0] or 60),
+                                          q.get("status", [None])[0]),
+                    "armed": len(co.pending()),
+                    "triggers": _engine_triggers(self.account_db)}})
             elif u.path == "/api/llm/status":
                 self._json({"ok": True, "data": self._bridge().llm_status()})
             elif u.path == "/api/llm/models":
@@ -807,6 +1163,98 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": res.get("ok", False), "data": _data,
                             "error": None if res.get("ok") else msg},
                            code=200 if res.get("ok") else 502)
+            elif u.path in ("/api/engine/backtest", "/api/engine/optimize"):
+                # 写操作同口径：口令（或凭 API Key 接管），与其它写接口一致
+                if not self._admin_ok(body):
+                    _tok_out = _takeover_token(body, self.secrets_path)
+                    if not _tok_out:
+                        self._json({"ok": False,
+                                    "error": "口令错误（换了浏览器？先在模型设置里保存一次即接管）"},
+                                   code=403)
+                        return
+                else:
+                    _tok_out = ""
+                b = self._bridge()
+                if u.path.endswith("backtest"):
+                    ok, data, err = _backtest_payload(
+                        b, int(body.get("days") or 120),
+                        body.get("symbols") or [], float(body.get("cash") or 100000.0),
+                        float(body.get("slippage") or 0.0), True)
+                else:
+                    from paper_trading.engine.optimize import grid_search
+
+                    ok, data, err = _optimize_payload(
+                        b, str(body.get("grid") or "ma_cross"),
+                        body.get("symbols") or [], int(body.get("days") or 250),
+                        float(body.get("cash") or 100000.0),
+                        float(body.get("value") or 10000.0), int(body.get("top") or 10))
+                if ok and _tok_out:
+                    data["admin_token"] = _tok_out
+                self._json({"ok": ok, "data": data if ok else None,
+                            "error": err or None}, code=200 if ok else 400)
+            elif u.path in ("/api/cond", "/api/cond/cancel", "/api/cond/design",
+                            "/api/cond/tick"):
+                if not self._admin_ok(body):
+                    _tok_out = _takeover_token(body, self.secrets_path)
+                    if not _tok_out:
+                        self._json({"ok": False,
+                                    "error": "口令错误（换了浏览器？先在模型设置里保存一次即接管）"},
+                                   code=403)
+                        return
+                else:
+                    _tok_out = ""
+                from paper_trading.cli import design_conditions, engine_min_ticket
+                from paper_trading.engine.conditional import ConditionalOrders
+                from paper_trading.engine.runner import ConditionRunner
+
+                orders = ConditionalOrders(self.account_db)
+                b = self._bridge()
+                if u.path == "/api/cond":
+                    ok, msg, oid = orders.create({
+                        "symbol": body.get("symbol"), "side": body.get("side"),
+                        "cond_type": body.get("cond_type"),
+                        "cond_value": body.get("cond_value"),
+                        "volume": body.get("volume"), "value": body.get("value"),
+                        "expiry": body.get("expiry"), "note": body.get("note"),
+                        "source": "manual"})
+                    data = {"id": oid, "message": msg,
+                            "orders": orders.list_all(60)} if ok else None
+                    if ok and _tok_out:
+                        data["admin_token"] = _tok_out
+                    self._json({"ok": ok, "data": data,
+                                "error": None if ok else msg},
+                               code=200 if ok else 400)
+                    return
+                if u.path == "/api/cond/cancel":
+                    cid = int(body.get("id") or 0)
+                    ok = orders.cancel(cid)
+                    self._json({"ok": ok,
+                                "data": {"cancelled": ok, "id": cid,
+                                         "orders": orders.list_all(60)} if ok else None,
+                                "error": None if ok else "条件单不存在或已成交"},
+                               code=200 if ok else 400)
+                    return
+                if u.path == "/api/cond/tick":
+                    r = ConditionRunner(b, orders,
+                                        dry_run=bool(body.get("dry_run")),
+                                        min_ticket_cny=engine_min_ticket(),
+                                        max_per_day=8).tick()
+                    r["orders"] = orders.list_all(60)
+                    if _tok_out:
+                        r["admin_token"] = _tok_out
+                    self._json({"ok": True, "data": r})
+                    return
+                ok, data, err = design_conditions(
+                    b, orders, pool_from=str(body.get("pool_from") or "auto"),
+                    pool_limit=int(body.get("pool_limit") or 15),
+                    max_conds=int(body.get("max") or 5),
+                    max_days=int(body.get("max_days") or 3),
+                    dry_run=bool(body.get("dry_run")))
+                if ok and _tok_out:
+                    data["admin_token"] = _tok_out
+                data = {**data, "orders": orders.list_all(60)}
+                self._json({"ok": ok, "data": data if ok else None,
+                            "error": err or None}, code=200 if ok else 400)
             elif u.path == "/api/llm/ask":
                 if not self._admin_ok(body):
                     self._json({"ok": False, "error": "口令错误或未设置"}, code=403)

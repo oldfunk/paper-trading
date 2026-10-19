@@ -108,6 +108,16 @@ python -m paper_trading.cli history --type fills --limit 20 --json
 7. **休盘计划开盘执行**：`--plan-only` 基于最新定稿数据做计划存 `agent_plans`（不碰账本、不锁日）；开盘 `agent run` 优先消费当日待执行计划（价格沿用计划基准，风控重验），消费后标记 done。开盘 gap 与定稿价的差异是已知简化。
 8. **Stock Dashboard 连接只读**：`paper_trading/integration/` 是唯一允许碰母库的地方，且只能 SQLite 只读打开；母库缺失/异常时静默回退本地，永不阻断交易。`--pool-from`（auto/config/watchlist/screening/all）是唯一的池来源开关，缺省 `auto`。
 
+## 规则引擎纪律（量化执行层）
+
+1. **分工**：AI 负责选股与策略设计（慢、贵，一天几次）；规则引擎负责择时执行（快、免费、每分钟）。两者共用同一个 `RiskManager` + `PaperBroker`，任何引擎/条件单的下单都必须过同一把尺子。
+2. **唯一判定源**：`engine/rules.py` 里的规则是纯函数，回测（`engine/backtest.py`）与盘中守护（`engine/runner.py`）调用**同一个** `evaluate()`，禁止任何一侧另写一套判定。
+3. **无未来函数**：日线规则 T 日收盘判定、最早 T+1 开盘成交；日内规则只用**当日已走完**的分钟线（`ts > now` 的分钟必须丢弃），单测锁定。回测与实盘的 T+1 冻结、最低金额 5000、日内笔数/金额上限口径一致。
+4. **费用地板**：`min_ticket_cny` 默认 5000——100 股最小单位下，2 千以下单子往返费率 >50bp，提高频率不等于下更多小单。
+5. **条件单语义**：条件单**只挂条件、现在不成交**；触发时过同一套风控与撮合。校验 fail-closed（非 A 股代码/非法条件类型/金额越界/有效期 ≤0 或 >30 天一律不入库），每条状态可审计（armed/filled/cancelled/expired/rejected）。
+6. **分钟线诚实边界**：东财 1 分钟线只提供最近约 5 个交易日，日内规则与日内网格的样本天然极小；没有分钟数据时回测必须在 `skipped` 里写明"未触发"，禁止假装跑过。面板与 CLI 都要显示这个提示。
+7. **参数网格只作筛选器**：`engine/optimize.py` 按超额收益（对比等权买入持有）排序，输出是"待验证线索"，不是结论；样本外复验前不得写进生产规则集。
+
 ## Risk Parameters
 
 | Parameter | Default | Description |
@@ -133,6 +143,8 @@ After any trading operation, verify:
 - [ ] Stamp duty is only on sells
 - [ ] NAV history is recorded
 - [ ] All state changes are persisted to SQLite
+- [ ] 条件单触发后状态已从 `armed` 变为 `filled`/`rejected`（不是停在 armed）
+- [ ] 日内规则只用了当日分钟线（`engine_triggers` 里的 `ts` 不晚于触发时点）
 
 ## Pi Deployment Sync
 

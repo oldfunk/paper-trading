@@ -4,6 +4,7 @@
 - 规则只产出「意图」，绝不直接下单；执行必须过 RiskManager + 撮合
 - 盘中价规则只用实时价；日线规则（T 日收盘算出的信号）最早 T+1 开盘执行，
   回测与实盘共用该纪律，杜绝未来函数
+- 日内规则只用**当日**分钟线（截止当前时点），天然无未来函数
 - 规则集来自 YAML，用户可改；引擎本身不含任何"隐藏策略"
 """
 from __future__ import annotations
@@ -12,7 +13,12 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 RULE_TYPES = ("ma_cross", "rsi_zone", "price_level", "pct_change",
-              "trailing_stop", "time_stop")
+              "trailing_stop", "time_stop",
+              # 日内规则（依赖分钟线；无分钟数据时自动静默不触发）
+              "vwap_dev", "intraday_pullback", "minute_ma_cross")
+
+#: 需要当日分钟线的规则类型（面板/文档据此提示"先 minute pull"）
+INTRADAY_TYPES = ("vwap_dev", "intraday_pullback", "minute_ma_cross")
 
 
 @dataclass
@@ -40,6 +46,8 @@ class RuleContext:
     closes: list[float] = field(default_factory=list)   # 日线收盘（含今日，按序）
     position: Optional[PositionView] = None
     trading_days_held: int = 0    # 已持有的交易日数
+    minutes: list[tuple] = field(default_factory=list)  # 当日分钟线，按序
+    #   每项 (ts, open, high, low, close, volume, amount)，ts 为 ISO 字符串
 
 
 @dataclass
@@ -167,6 +175,104 @@ def _time_stop(ctx: RuleContext, p: dict) -> Optional[Intent]:
     return None
 
 
+# ---------- 日内规则（只用当日分钟线，截至当前时点；无分钟数据 → 不触发） ----------
+
+def vwap(minutes: list[tuple]) -> Optional[float]:
+    """当日成交量加权均价；无成交额时退化为成交量加权，拿不到量则返回 None。"""
+    num = den = 0.0
+    for m in minutes:
+        try:
+            px = float(m[4])          # close
+            amt = float(m[6] or 0)     # amount
+            vol = float(m[5] or 0)     # volume
+        except (TypeError, ValueError, IndexError):
+            continue
+        if amt <= 0 and vol <= 0:
+            continue
+        w = amt if amt > 0 else px * vol
+        num += px * w
+        den += w
+    return (num / den) if den > 0 else None
+
+
+def _vwap_dev(ctx: RuleContext, p: dict) -> Optional[Intent]:
+    """现价偏离当日 VWAP 达阈值：低于 → 买（均值回归），高于 → 卖。
+
+    只用截至当前分钟的数据，不含未来；开盘头几分钟 VWAP 不稳，min_bars 兜底。
+    """
+    pct = abs(float(p.get("pct", 0) or 0))
+    min_bars = int(p.get("min_bars", 15) or 0)
+    if pct <= 0 or ctx.price <= 0 or len(ctx.minutes) < max(1, min_bars):
+        return None
+    vw = vwap(ctx.minutes)
+    if not vw or vw <= 0:
+        return None
+    dev = (ctx.price - vw) / vw * 100.0
+    if dev <= -pct:
+        return Intent("", ctx.symbol, "buy",
+                      f"现价 {ctx.price:.2f} 低于当日均价 {vw:.2f} {abs(dev):.2f}%（超跌回归）",
+                      ctx.price)
+    if dev >= pct:
+        return Intent("", ctx.symbol, "sell",
+                      f"现价 {ctx.price:.2f} 高于当日均价 {vw:.2f} {dev:.2f}%（溢价兑现）",
+                      ctx.price)
+    return None
+
+
+def _intraday_pullback(ctx: RuleContext, p: dict) -> Optional[Intent]:
+    """日内冲高回落：先涨 gain_pct% 以上，再自当日高点回落 drop_pct% → 卖出。
+
+    gain_pct 缺省 0（不要求先涨）；回落判定用当日分钟线最高价，
+    与 trailing_stop（按持仓期高点）的区别在这里是**当日**。
+    """
+    drop = abs(float(p.get("drop_pct", 0) or 0))
+    gain = float(p.get("gain_pct", 0) or 0)
+    if drop <= 0 or ctx.price <= 0:
+        return None
+    mhi = mlo = 0.0
+    for m in ctx.minutes:
+        try:
+            mhi = max(mhi, float(m[2]))
+            mlo = min(mlo or float(m[3]), float(m[3]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    hi = max(mhi, ctx.day_high or 0.0)
+    base = ctx.prev_close or 0.0
+    if gain > 0:
+        if not base or (ctx.price - base) / base * 100.0 < gain:
+            return None
+    if hi <= 0 or ctx.price >= hi:
+        return None
+    fall = (hi - ctx.price) / hi * 100.0
+    if fall >= drop:
+        return Intent("", ctx.symbol, "sell",
+                      f"自日内高点 {hi:.2f} 回落 {fall:.2f}% ≥ {drop:g}%（冲高回落）",
+                      ctx.price, all_out=bool(p.get("all_out", True)))
+    return None
+
+
+def _minute_ma_cross(ctx: RuleContext, p: dict) -> Optional[Intent]:
+    """分钟线均线交叉：短均线上穿长均线 → 买，下穿 → 卖。"""
+    short = int(p.get("short", 5) or 5)
+    long = int(p.get("long", 20) or 20)
+    closes = [float(m[4]) for m in ctx.minutes
+              if isinstance(m, (list, tuple)) and len(m) > 4 and m[4] is not None]
+    if len(closes) < long + 1:
+        return None
+    prev_s, prev_l = _sma(closes[:-1], short), _sma(closes[:-1], long)
+    cur_s, cur_l = _sma(closes, short), _sma(closes, long)
+    if None in (prev_s, prev_l, cur_s, cur_l):
+        return None
+    up = prev_s <= prev_l and cur_s > cur_l
+    dn = prev_s >= prev_l and cur_s < cur_l
+    if not up and not dn:
+        return None
+    px = ctx.price or cur_s
+    return Intent("", ctx.symbol, "buy" if up else "sell",
+                  f"分钟 MA{short}{'上穿' if up else '下穿'}MA{long}"
+                  f"（{cur_s:.2f} / {cur_l:.2f}）", px)
+
+
 _EVAL: dict[str, Callable[[RuleContext, dict], Optional[Intent]]] = {
     "ma_cross": _ma_cross,
     "rsi_zone": _rsi_zone,
@@ -174,13 +280,17 @@ _EVAL: dict[str, Callable[[RuleContext, dict], Optional[Intent]]] = {
     "pct_change": _pct_change,
     "trailing_stop": _trailing_stop,
     "time_stop": _time_stop,
+    "vwap_dev": _vwap_dev,
+    "intraday_pullback": _intraday_pullback,
+    "minute_ma_cross": _minute_ma_cross,
 }
 
 
-# 方向由信号自身决定的规则类型：ma_cross / rsi_zone / pct_change
+# 方向由信号自身决定的规则类型：ma_cross / rsi_zone / pct_change 等
 # （这些类型的语义就是"金叉买/死叉卖"，action.side 只作默认，不覆盖信号方向；
 #   想反着来就拆成两条规则）
-_DIRECTIONAL = ("ma_cross", "rsi_zone", "pct_change")
+_DIRECTIONAL = ("ma_cross", "rsi_zone", "pct_change",
+                "vwap_dev", "intraday_pullback", "minute_ma_cross")
 
 
 def evaluate(rule: dict, ctx: RuleContext) -> Optional[Intent]:
@@ -207,9 +317,9 @@ def evaluate(rule: dict, ctx: RuleContext) -> Optional[Intent]:
     return it
 
 
-def size_for_value(price: float, value: float,
-                   lot: int = 100) -> int:
-    """按金额算股数（向下取整到 100 股整手）。"""
-    if price <= 0 or value <= 0:
+def size_for_value(price: float, value: float, lot: int = 100) -> int:
+    """按金额算股数（向下取整到整手；买不起一手返回 0）。"""
+    if price <= 0 or value <= 0 or lot <= 0:
         return 0
-    return int(price * lot and int(value / price / lot) * lot)
+    lots = int(value / price) // lot
+    return lots * lot

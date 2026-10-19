@@ -14,7 +14,8 @@ from datetime import datetime
 from typing import Optional
 
 from paper_trading.engine.config import load_engine_config, validate
-from paper_trading.engine.rules import PositionView, RuleContext, evaluate, size_for_value
+from paper_trading.engine.rules import (INTRADAY_TYPES, PositionView, RuleContext,
+                                        evaluate, size_for_value)
 from paper_trading.engine.state import EngineState
 from paper_trading.models import Order, OrderType, Signal, SignalType
 from paper_trading.utils import get_logger
@@ -22,6 +23,9 @@ from paper_trading.utils import get_logger
 logger = get_logger(__name__)
 
 _STOP = False
+
+#: 分钟线补拉节流：同一标的两次补拉至少间隔这么久（东财限流较敏感）
+PULL_GAP_SEC = 300
 
 
 def _on_signal(signum, frame):    # noqa: ANN001, ARG001
@@ -154,7 +158,62 @@ class EngineRunner:
                            day_low=float(q.get("low") or price),
                            change_pct=chg, closes=closes,
                            position=self._position_view(sym),
-                           trading_days_held=self._held_days(sym))
+                           trading_days_held=self._held_days(sym),
+                           minutes=self._minutes_for(sym, now, day))
+
+    # ---------- 分钟线（仅当日、仅日内规则需要） ----------
+
+    def _intraday_symbols(self) -> set[str]:
+        out: set[str] = set()
+        for r in self.cfg.get("rules") or []:
+            if str(r.get("type") or "") not in INTRADAY_TYPES:
+                continue
+            syms = r.get("symbols") or ([r.get("symbol")] if r.get("symbol") else [])
+            out.update(str(s) for s in syms)
+        return out
+
+    def _minutes_for(self, sym: str, now, day: str) -> list[tuple]:
+        """当日分钟线（按序，且**不含未来分钟**：ts > now 的一律丢弃）。
+
+        库里没有或太旧时按需补拉一次（每 PULL_GAP 秒最多一次，防打爆行情源）。
+        """
+        if sym not in self._intraday_symbols():
+            return []
+        rows = self._today_minutes(sym, now, day)
+        last = rows[-1][0] if rows else ""
+        stale = True
+        if last:
+            try:
+                stale = (now - datetime.fromisoformat(last)).total_seconds() > PULL_GAP_SEC
+            except Exception:
+                stale = True
+        if stale and now.strftime("%H:%M") >= "09:35" and self.b.data_db is not None:
+            try:
+                from paper_trading.data.minute import fetch_minute
+
+                fetched = fetch_minute(sym, days=2, now=now)
+                if fetched:
+                    self.b.data_db.upsert_minute_bars(sym, fetched)
+                    rows = self._today_minutes(sym, now, day)
+            except Exception as e:      # noqa: BLE001 - 分钟线拿不到就跳过日内规则
+                logger.debug(f"minute refresh failed {sym}: {type(e).__name__}: {e}")
+        return rows
+
+    def _today_minutes(self, sym: str, now, day: str) -> list[tuple]:
+        out: list[tuple] = []
+        for r in self.b.data_db.get_minute_bars(sym, limit=600):
+            ts = str(r.get("ts") or "")
+            if not ts.startswith(day):
+                continue
+            try:                       # 未来分钟一律丢弃（回测/实盘同口径）
+                if datetime.fromisoformat(ts) > now:
+                    continue
+            except ValueError:
+                continue
+            out.append((ts, float(r.get("open") or 0), float(r.get("high") or 0),
+                        float(r.get("low") or 0), float(r.get("close") or 0),
+                        float(r.get("volume") or 0), float(r.get("amount") or 0)))
+        return out
 
     def _execute(self, rule: dict, intent, q: dict, now, day: str, budget: dict,
                  cooldown: int, min_ticket: float, max_orders: int,
@@ -244,21 +303,33 @@ class EngineRunner:
 
 def run_loop(bridge, interval_sec: int = 60, dry_run: bool = False,
              max_ticks: int = 0) -> list[dict]:
-    """守护循环（Ctrl-C 退出）；max_ticks>0 时跑够次数返回（单测用）。"""
+    """守护循环（Ctrl-C 退出）：每轮同时跑「规则引擎」与「条件单」。
+
+    max_ticks>0 时跑够次数返回（单测/CI 用）。
+    """
+    from paper_trading.engine.conditional import ConditionalOrders
+
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
-    runner = EngineRunner(bridge, dry_run=dry_run)
+    cfg = load_engine_config(getattr(bridge, "config_path", "config.yaml"))
+    runner = EngineRunner(bridge, cfg=cfg, dry_run=dry_run)
+    cond = ConditionRunner(bridge, ConditionalOrders(bridge.account_db_path),
+                           dry_run=dry_run,
+                           min_ticket_cny=float(cfg.get("min_ticket_cny") or 0))
     out: list[dict] = []
     n = 0
     while not _STOP:
-        try:
-            res = runner.tick()
-            if res.get("fired") or res.get("error"):
-                logger.info(f"engine tick: {res}")
-            out.append(res)
-        except Exception as e:      # noqa: BLE001 - 单轮异常不得终止守护
-            logger.error(f"engine tick crashed: {type(e).__name__}: {e}")
-            out.append({"error": f"{type(e).__name__}: {e}"})
+        res: dict = {"ts": datetime.now().isoformat()}
+        for name, fn in (("rules", runner.tick), ("conds", cond.tick)):
+            try:
+                r = fn()
+                if r.get("fired") or r.get("filled") or r.get("error"):
+                    logger.info(f"engine/{name}: {r}")
+                res[name] = r
+            except Exception as e:      # noqa: BLE001 - 单模块异常不拖垮另一模块
+                logger.error(f"engine/{name} crashed: {type(e).__name__}: {e}")
+                res[name] = {"error": f"{type(e).__name__}: {e}"}
+        out.append(res)
         n += 1
         if max_ticks and n >= max_ticks:
             break
@@ -267,3 +338,124 @@ def run_loop(bridge, interval_sec: int = 60, dry_run: bool = False,
                 break
             time.sleep(1)
     return out
+
+
+# ---------- 条件单（AI 下条件，引擎盯盘触发） ----------
+
+class ConditionRunner:
+    """条件单执行器：每轮用实时价检查 armed 条件单，触发即过风控下单。"""
+
+    def __init__(self, bridge, orders, dry_run: bool = False,
+                 min_ticket_cny: float = 0.0, max_per_day: int = 8):
+        self.b = bridge
+        self.orders = orders
+        self.dry_run = dry_run
+        self.min_ticket = float(min_ticket_cny or 0.0)
+        self.max_per_day = int(max_per_day or 8)
+
+    def tick(self, quotes: Optional[dict] = None) -> dict:
+        from paper_trading.data import realtime as rt
+        from paper_trading.engine.conditional import triggered
+
+        now = datetime.now()
+        day = now.date().isoformat()
+        expired = self.orders.expire_due(now)
+        pend = self.orders.pending(now)
+        out = {"ts": now.isoformat(), "expired": expired, "armed": len(pend),
+               "filled": [], "rejected": [], "n_quotes": 0}
+        if not pend:
+            return out
+        syms = sorted({d["symbol"] for d in pend})
+        q = quotes if quotes is not None else rt.get_quotes(syms, force=True)
+        out["n_quotes"] = len(q)
+        if not q:
+            return out
+        try:
+            self.b.data_db.log_quote(now.isoformat(timespec="seconds"), q)
+        except Exception:
+            pass
+        done_today = len([d for d in self.orders.list_all(50, "filled")
+                          if str(d["created_at"])[:10] == day])
+        for d in pend:
+            if done_today >= self.max_per_day:
+                out["rejected"].append({"id": d["id"], "why": "日内条件单上限"})
+                continue
+            quote = q.get(d["symbol"])
+            if not quote or not quote.get("price"):
+                continue
+            price = float(quote["price"])
+            chg = float(quote.get("change_pct") or 0.0)
+            if not triggered(d, price, chg):
+                continue
+            res = self._execute(d, quote, price, now, day)
+            rec = {"id": d["id"], "symbol": d["symbol"], "side": d["side"], **res}
+            if res.get("ok"):
+                out["filled"].append(rec)
+                done_today += 1
+            else:
+                out["rejected"].append(rec)
+                self.orders.mark(d["id"], "rejected", price,
+                                 {"why": res.get("why")}, now)
+        return out
+
+    def _execute(self, d: dict, quote: dict, price: float, now, day: str) -> dict:
+        from paper_trading.engine.rules import size_for_value
+        from paper_trading.models import Order, OrderType, Signal, SignalType
+
+        sym, side = d["symbol"], d["side"]
+        pos = self.b.broker.get_position(sym)
+        if side == "sell":
+            if not pos or pos.available_volume <= 0:
+                return {"ok": False, "why": "无可卖持仓（T+1 或空仓）"}
+            volume = int(d["volume"] or 0) or pos.available_volume
+            volume = min(volume, pos.available_volume)
+            volume = (volume // 100) * 100
+        else:
+            volume = int(d["volume"] or 0)
+            if not volume:
+                value = float(d["value"] or 0)
+                if value < self.min_ticket:
+                    return {"ok": False, "why": f"低于最小金额 {self.min_ticket:.0f}"}
+                volume = size_for_value(price, value)
+            if volume % 100 != 0:
+                volume = (volume // 100) * 100
+        if volume <= 0:
+            return {"ok": False, "why": "手数为 0"}
+        sig = Signal(symbol=sym, direction=(SignalType.BUY if side == "buy"
+                                            else SignalType.SELL),
+                     volume=volume, price=price, reason="cond:" + (d.get("note") or ""))
+        positions = {p.symbol: p for p in self.b.broker.get_all_positions()}
+        prices = {p.symbol: price for p in positions.values()}
+        prices[sym] = price
+        nav = self.b.broker.get_nav(prices)
+        ok, why = self.b.risk.check_signal(sig, price, self.b.broker.get_cash(),
+                                          positions, nav.total_value, prices=prices)
+        if not ok:
+            return {"ok": False, "why": f"风控拒绝：{why}"}
+        if self.dry_run:
+            self.orders.mark(d["id"], "armed", price,
+                             {"dry_run": True, "volume": volume}, now)
+            return {"ok": True, "why": "试运行", "volume": volume}
+        order = Order(symbol=sym, direction=sig.direction.value, volume=volume,
+                      order_type=OrderType.LIMIT, limit_price=price,
+                      prev_close=float(quote.get("prev_close") or 0.0),
+                      ref_high=float(quote.get("high") or price),
+                      ref_low=float(quote.get("low") or price))
+        res = self.b.broker.submit_order(order)
+        st = res.status.value
+        if st != "filled":
+            return {"ok": False, "why": f"撮合拒绝：{st}"}
+        self.orders.mark(d["id"], "filled", res.filled_price,
+                         {"volume": volume, "commission": res.commission,
+                          "stamp_duty": res.stamp_duty,
+                          "transfer_fee": res.transfer_fee}, now)
+        self.b.broker.log_operation(
+            f"cond:{side}", {"order_id": d["id"], "symbol": sym, "volume": volume,
+                             "price": price, "cond": f"{d['cond_type']}"
+                                                      f"{d['cond_value']}"},
+            True, {"filled_price": res.filled_price,
+                   "commission": res.commission,
+                   "stamp_duty": res.stamp_duty,
+                   "transfer_fee": res.transfer_fee}, None, None)
+        return {"ok": True, "volume": volume, "price": res.filled_price,
+                "why": f"条件触发，成交 @ {res.filled_price:.2f}"}

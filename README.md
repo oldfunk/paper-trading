@@ -19,6 +19,10 @@
 - **双数据源**：优先新浪财经（稳定），自动重试机制
 - **风控管理**：单笔限额、仓位上限、最大回撤止损
 - **AI 交易员**：面板/CLI 自定时队列触发（默认 16:45 跑一次交易，保守时间），日内 LLM 决策（JSON 钳制执行+幂等闸+日亏熔断），休盘做计划、开盘执行
+- **规则引擎（量化执行层）**：9 种规则（均线交叉 / RSI 区间 / 价格档位 / 涨跌幅阈值 / 移动止损 / 时间止损 / 偏离当日均价 / 日内冲高回落 / 分钟均线交叉），盘中守护进程每 60 秒判一次，**与 AI 走同一把风控尺子和同一个撮合口径**
+- **回测纪律**：T 日收盘信号最早 T+1 成交、真实费率（含最低 5 元佣金）、最低单 5000 元、日内买入当天不可卖；回测与实盘共用 `rules.py` 同一套判定，杜绝未来函数
+- **参数网格**：批量回测参数变体，按**超额收益**（对比等权买入持有）排序，用来找值得继续验证的参数
+- **条件单**：AI 或人工只给「触发条件 + 有效期 + 理由」（例：跌破 260 买 1 万，3 个交易日内有效），盘中引擎每分钟核对实时价，触发即过风控下单；不触发就是 0 成本，每条都留痕可复盘
 - **投资方案三选一**：[Stock Dashboard](https://github.com/oldfunk/stock-dashboard) 价值 / 通用交易（默认）/ 自定义自然语言指令
 - **全市场选股漏斗**：母项目夜间扫全市场 → 候选池；AI 还可在候选之外**自主提名任意 A 股**（程序校验代码+补数据后才进决策），手填池只作兜底
 - **LLM 万能接入**：OpenAI 兼容接口 + 主流厂商预设 + 手填模型名，只咨询不交易
@@ -50,6 +54,14 @@ paper-trading/
     │   ├── ma_cross_strategy.py   # 仅最后一根交叉才发信号（防重复）
     │   └── schemes.py             # 投资方案三选一（母价值/通用/自定义）
     ├── agent/                     # AI 交易员（决策环+计划表+定时闸+钳制执行）
+    ├── engine/                    # 规则引擎（9 种规则/回测/参数网格/条件单/盘中守护）
+    │   ├── rules.py               # 纯函数判定（日线 6 种 + 日内 3 种）
+    │   ├── backtest.py            # 回测器（真实费率/基准买入持有/T+1/分钟重放）
+    │   ├── optimize.py            # 参数网格搜索（按超额收益排序）
+    │   ├── conditional.py         # 条件单仓库（挂条件，不立即成交）
+    │   ├── ai_conditions.py       # AI 出条件单的提示词与解析校验
+    │   ├── runner.py              # 盘中守护（规则 + 条件单同一循环）
+    │   └── state.py               # 日内预算/冷却/触发落库（重启不丢）
     ├── broker/paper_broker.py     # T+1交易日历/100股/涨跌停/拒单落库/含费成本
     ├── portfolio/portfolio.py
     ├── risk/risk_manager.py       # 多标的价格表+回撤熔断
@@ -198,6 +210,8 @@ ok, reason = risk.check_signal(signal, price, cash, positions, total_value)
 
 - `daily_bars(symbol, timestamp, open, high, low, close, volume, turn)`
 - `stock_pool(symbol, name, added_at)`
+- `minute_bars(symbol, ts, open, high, low, close, volume, amount)` — 1 分钟 K 线（日内规则/条件单；只存最近几日）
+- `quote_log(ts, symbol, price, prev_close, volume)` — 盘中实时快照
 
 ### paper_account.db（账户账本）
 
@@ -209,6 +223,8 @@ ok, reason = risk.check_signal(signal, price, cash, positions, total_value)
 - `t1_freeze(id, symbol, volume, freeze_date, unfreeze_date, is_unfrozen)`
 - `op_log(id, timestamp, action, params, ok, result, cash_after, total_value_after)` — AI/人工操作流水
 - `agent_plans(id, plan_date, symbols, plan_json, status, created_at, executed_at)` — 休盘计划
+- `conditional_orders(id, created_at, day, source, symbol, side, cond_type, cond_value, volume, value, expiry, status, ...)` — 条件单（armed/filled/cancelled/expired/rejected）
+- `engine_state / engine_triggers` — 引擎日内预算、冷却与触发记录（重启不丢）
 
 ## 运行示例
 
@@ -271,6 +287,10 @@ python -m paper_trading.cli agent run --plan-only --json
 python -m paper_trading.cli agent run --pool-from screening --pool-limit 20 --json
 # 关闭 AI 自主提名（只用程序候选池）
 python -m paper_trading.cli agent run --no-picks --json
+
+# 1 分钟 K 线（日内规则与条件单的分钟级判定需要）
+python -m paper_trading.cli minute pull --symbols 000001 --days 5 --json
+python -m paper_trading.cli minute stat --json
 ```
 
 ### 投资方案（永远 3 种；合并/独立通用）
@@ -302,12 +322,72 @@ python -m paper_trading.cli nav --json
 python -m paper_trading.cli history --type orders --json
 python -m paper_trading.cli history --type fills --json
 
-# 回归测试（全量 44 单测，离线可跑）
+# 回归测试（全量单测，离线可跑）
 python -m pytest tests/ -q
 
 # 打开仪表盘（只读网页；本机浏览器访问 http://127.0.0.1:8080，局域网其他设备用运行机器的局域网 IP 同端口）
 python -m paper_trading.dashboard --port 8080
 ```
+
+### 规则引擎（盘中量化执行层）
+
+分工：**AI 负责选股与策略设计（慢、贵，一天几次）；规则引擎负责择时执行（快、免费、每分钟）**。
+两者共用同一个 `RiskManager` + `PaperBroker`，所以口径一致。
+
+```bash
+# 查看/校验规则集（enabled 默认 false：显式开启才盘中自动交易）
+python -m paper_trading.cli engine config --json
+
+# 回测规则集（T+1 成交、真实费率、带基准买入持有与超额、ASCII 净值曲线）
+python -m paper_trading.cli engine backtest --days 250 --curve --json
+
+# 参数网格搜索：按超额收益排序（ma_cross / rsi_zone / trailing_stop）
+python -m paper_trading.cli engine optimize --grid ma_cross --symbols 000001 --days 250 --json
+# 日内网格需要分钟线（分钟线只存最近几日，样本极小，结论仅供参考）
+python -m paper_trading.cli minute pull --symbols 000001 --days 5
+python -m paper_trading.cli engine optimize --grid vwap_dev --symbols 000001 --json
+
+# 跑一轮（守护进程入口在 python -m paper_trading.engine）
+python -m paper_trading.cli engine run --dry-run --json
+```
+
+9 种规则（`engine.rules` 里都是纯函数，回测与实盘同一份代码）：
+
+| 类型 | 触发 | 说明 |
+| --- | --- | --- |
+| `ma_cross` | 短均线上穿/下穿长均线 | 方向型，金叉买死叉卖 |
+| `rsi_zone` | RSI 下穿下界 / 上穿上界 | 方向型 |
+| `price_level` | 现价跌破/升破某个价 | 方向由 action.side 定 |
+| `pct_change` | 日内涨跌幅超过阈值 | 方向型 |
+| `trailing_stop` | 自持仓期高点回落 N% | 建议 `action: {side: sell, all: true}` |
+| `time_stop` | 持有满 N 个交易日 | 建议 `action: {side: sell, all: true}` |
+| `vwap_dev` | 现价偏离当日均价 ±N% | 日内，需分钟线；低于买、高于卖 |
+| `intraday_pullback` | 自日内高点回落 N%（可选先涨 M%） | 日内，需分钟线 |
+| `minute_ma_cross` | 分钟均线金叉/死叉 | 日内，需分钟线 |
+
+规则集写在 `config.yaml` 的 `engine.rules`（仓库内是空列表），本机覆盖写 `engine.local.yaml`。
+
+### 条件单（AI 出条件，盘中触发）
+
+条件单**现在不成交**，只挂一个可验证的触发条件（触发价或涨跌幅）；盘中引擎每分钟核对实时价，
+触发才过风控下单。不触发就是 0 成本，每条都留痕（待触发/已成交/已撤销/已过期/被拒），可复盘 AI 准不准。
+
+```bash
+# 人工挂一条：跌破 9.5 买 2 万，2 天内有效
+python -m paper_trading.cli cond add --symbol 000001 --side buy \
+  --cond price_below --value-trigger 9.5 --value 20000 --expiry 2026-10-22 --note "回踩支撑"
+
+# 让 AI 设计（只出条件，挂上不立即成交；池外代码/非法条件/金额越界一律丢弃）
+python -m paper_trading.cli cond design --pool-from auto --max 5 --max-days 3
+python -m paper_trading.cli cond design --dry-run --json     # 只看 AI 想挂什么
+
+# 查看 / 撤销 / 手动跑一轮检查
+python -m paper_trading.cli cond list --status armed --json
+python -m paper_trading.cli cond cancel --id 3
+python -m paper_trading.cli cond tick --dry-run --json
+```
+
+条件单状态存在 `paper_account.db` 的 `conditional_orders` 表里，守护进程每轮自动检查。
 
 ### 仪表盘
 
@@ -320,6 +400,8 @@ python -m paper_trading.dashboard --port 8080
 - **AI 操作流水**：每次操作的时间、动作、参数、结果（成交价/拒单原因）、操作后资产，详情列自动换行
 - **投资方案**：母价值 / 通用 / 自定义三选一（自定义指令折叠填写）
 - **AI 定时队列**：时刻 → 动作（同步/分析/计划/交易），如 09:00 同步 → 13:00 做计划 → 16:45 交易；每条每天最多跑一次，面板直接增删改，cron 侧用 15 分钟 tick 配合；每行末尾可单独手动执行该行（立即跑，不占队列名额）
+- **规则引擎**：规则集一览（含开关/间隔/单笔下限/校验结果）、一键回测（策略 vs 基准买入持有 + 超额 + ASCII 净值曲线）、参数网格排序表、最近触发记录
+- **条件单**：挂条件（代码/方向/触发类型/触发值/金额/有效期）→ 列表显示待触发/已成交/已撤销/已过期/被拒，可撤销、可让 AI 设计
 - **模型设置**：厂商预设 + 拉取模型列表（不需要口令，失败直接显示原因）+ 手填模型名（Key 掩码显示，保存一次长期有效）
 
 流水写入 `paper_account.db` 的 `op_log` 表（`broker.log_operation`），仪表盘纯只读，可与交易进程并存。
@@ -337,6 +419,12 @@ python -m paper_trading.dashboard --port 8080
 
 # 或单次版（只要默认 16:45 交易一次，不用 tick；改队列后 cron 时间要跟着改）
 # (crontab -l 2>/dev/null; echo "45 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -
+
+# 规则引擎守护（盘中每分钟一轮：判规则 + 检查条件单，触发才过风控下单）。
+# 规则集 enabled: true 才会真下单，否则守护拒绝启动（想只看不买加 --dry-run）。
+# 前台常驻：venv/bin/python -m paper_trading.engine --interval 60
+# cron 每分钟单轮（推荐，与 run_lock 天然互斥）：
+# (crontab -l 2>/dev/null; echo "* 9-11,13-14 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.engine --once --json >> engine.log 2>&1") | crontab -
 ```
 
 说明：`run` 内含增量补数（自动从库中断点续拉，失败次日自愈，无需重试 cron）；

@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from paper_trading.engine.rules import (Intent, PositionView, RuleContext,
-                                         evaluate, size_for_value)
+from paper_trading.engine.rules import (INTRADAY_TYPES, Intent, PositionView,
+                                         RuleContext, evaluate, size_for_value)
 
 
 @dataclass
@@ -52,6 +52,7 @@ class BacktestResult:
     total_fees: float = 0.0
     skipped: list[dict] = field(default_factory=list)
     per_rule: dict[str, dict] = field(default_factory=dict)
+    intraday_days: int = 0          # 有分钟线并重放了日内规则的天数（0=未重放）
 
 
 class Backtester:
@@ -115,10 +116,22 @@ class Backtester:
 
     def run(self, bars_by_sym: dict[str, list], days: list[str],
             initial_cash: float = 100000.0,
-            live: Optional[dict] = None) -> BacktestResult:
-        """bars_by_sym: {sym: [Bar...]按时间升序}；days: 交易日列表（升序）。"""
+            live: Optional[dict] = None,
+            minutes_by_day: Optional[dict] = None) -> BacktestResult:
+        """bars_by_sym: {sym: [Bar...]按时间升序}；days: 交易日列表（升序）。
+
+        minutes_by_day: {(sym, day): [(ts,o,h,l,c,v,a)...按序]}，
+        供日内规则（vwap_dev / intraday_pullback / minute_ma_cross）重放。
+        没有分钟数据时日内规则不触发，并在 skipped 里说明原因（不静默"跑过了"）。
+        """
         res = BacktestResult(initial_cash=initial_cash)
-        rules = [r for r in (self.cfg.get("rules") or []) if isinstance(r, dict)]
+        all_rules = [r for r in (self.cfg.get("rules") or []) if isinstance(r, dict)]
+        rules = [r for r in all_rules if str(r.get("type") or "") not in INTRADAY_TYPES]
+        intra_rules = [r for r in all_rules if str(r.get("type") or "") in INTRADAY_TYPES]
+        minutes_by_day = minutes_by_day or {}
+        if intra_rules and not minutes_by_day:
+            res.skipped.append({"why": "规则集含日内规则，但无分钟线数据，"
+                                       "日内规则全程未触发（先 minute pull）"})
         fired: set[str] = set()
         pending: list[tuple[str, Intent, str]] = []      # (rule_id, intent, exec_day)
         pos: dict[str, BTPosition] = {}
@@ -127,11 +140,14 @@ class Backtester:
         fees_total = 0.0
         day_orders = 0
         day_turnover = 0.0
+        intraday_days: set[str] = set()
 
         for day in days:
             px = {s: self._day_px(b, day) for s, b in bars_by_sym.items()}
             held_days = {s: max(0, days.index(day) - days.index(p.entry_day))
                          for s, p in pos.items() if p.entry_day in days}
+            # 当日买入的部分 T+1 冻结：日内规则与实盘一样卖不掉
+            frozen: dict[str, int] = {}
 
             # 1) 执行昨日挂单（开盘价：prev close 近似 = 昨日收盘；无则以当日收盘）
             for rid, it, exec_day in pending:
@@ -163,6 +179,7 @@ class Backtester:
                     p.volume += tr["volume"]
                     p.entry_day = p.entry_day or day
                     p.peak = max(p.peak, price)
+                    frozen[it.symbol] = frozen.get(it.symbol, 0) + tr["volume"]
                 else:
                     p = pos.get(it.symbol)
                     if not p or p.volume <= 0:
@@ -194,6 +211,14 @@ class Backtester:
                     if rule_cfg.get("once", True):
                         fired.add(rid)
             pending = [p for p in pending if p[2] != day]
+
+            # 1.5) 日内规则逐分钟重放（只用已走完的分钟，无未来函数）
+            if intra_rules:
+                cash, day_orders, day_turnover, replayed = self._replay_intraday(
+                    intra_rules, day, minutes_by_day, px, pos, cash,
+                    day_orders, day_turnover, frozen, held_days, res)
+                if replayed:
+                    intraday_days.add(day)
 
             # 2) 收盘盯市 + 峰值更新
             mv = 0.0
@@ -243,7 +268,112 @@ class Backtester:
         res.equity_curve = equity_curve
         res.final_equity = equity_curve[-1]["equity"] if equity_curve else initial_cash
         res.total_fees = round(fees_total, 2)
+        res.intraday_days = len(intraday_days)
         return res
+
+    # ---------- 日内规则重放 ----------
+
+    def _replay_intraday(self, rules: list[dict], day: str, minutes_by_day: dict,
+                         px: dict, pos: dict, cash: float, day_orders: int,
+                         day_turnover: float, frozen: dict, held_days: dict,
+                         res: BacktestResult) -> tuple[float, int, float, bool]:
+        """逐分钟重放日内规则。
+
+        成交价 = 触发那一分钟的收盘价（引擎每 60 秒一跳，与实盘同口径：
+        只用已走完的那一分钟，不偷看下一分钟）。每规则每天最多触发一次。
+        """
+        syms = sorted({str(k[0]) for k in minutes_by_day
+                       if isinstance(k, tuple) and len(k) == 2 and k[1] == day})
+        replayed = False
+        for sym in syms:
+            mins = minutes_by_day.get((sym, day)) or []
+            if len(mins) < 2:
+                continue
+            replayed = True
+            done: set[str] = set()
+            for i in range(1, len(mins)):
+                window = mins[:i + 1]                  # 只到当前分钟为止
+                m = window[-1]
+                price = float(m[4] or 0)
+                if price <= 0:
+                    continue
+                for r in rules:
+                    rid = str(r.get("id") or "")
+                    if rid in done:
+                        continue
+                    rule_syms = [str(s) for s in (r.get("symbols")
+                                                  or [r.get("symbol")])]
+                    if sym not in rule_syms:
+                        continue
+                    p = pos.get(sym) or BTPosition()
+                    avail = max(0, p.volume - int(frozen.get(sym, 0)))
+                    ctx = RuleContext(now=str(m[0]), day=day, symbol=sym, price=price,
+                                      prev_close=float(px.get(sym) or price),
+                                      day_high=max(float(x[2] or 0) for x in window),
+                                      day_low=min(float(x[3] or 0) for x in window),
+                                      change_pct=0.0, closes=[],
+                                      position=PositionView(
+                                          symbol=sym, total_volume=p.volume,
+                                          available_volume=avail,
+                                          avg_cost=p.avg_cost, entry_day=p.entry_day,
+                                          peak_price=p.peak),
+                                      trading_days_held=held_days.get(sym, 0),
+                                      minutes=window)
+                    it = evaluate(r, ctx)
+                    if not it:
+                        continue
+                    done.add(rid)
+                    exec_px = self._exec_price(price, it.side)
+                    act = r.get("action") or {}
+                    if it.side == "buy":
+                        if (day_orders >= self.max_orders
+                                or day_turnover >= self.max_turnover):
+                            res.skipped.append({"day": day, "symbol": sym,
+                                                "why": "日内上限"})
+                            continue
+                        value = float(act.get("value") or 0) or 10000.0
+                        cash, tr, skip = self._buy(cash, sym, value, exec_px, day)
+                        if skip or not tr:
+                            res.skipped.append({"day": day, "symbol": sym, **(skip or {})})
+                            continue
+                        p = pos.setdefault(sym, BTPosition())
+                        amount = tr["amount"] + tr["commission"] + tr["transfer_fee"]
+                        p.avg_cost = ((p.avg_cost * p.volume + amount) /
+                                      (p.volume + tr["volume"])
+                                      if p.volume else amount / tr["volume"])
+                        p.volume += tr["volume"]
+                        p.entry_day = p.entry_day or day
+                        p.peak = max(p.peak, exec_px)
+                        frozen[sym] = frozen.get(sym, 0) + tr["volume"]
+                    else:
+                        p = pos.get(sym)
+                        avail = max(0, (p.volume if p else 0) - int(frozen.get(sym, 0)))
+                        if not p or avail <= 0:
+                            res.skipped.append({"day": day, "symbol": sym,
+                                                "why": "无可卖持仓（T+1 或空仓）"})
+                            continue
+                        vol = avail if (it.all_out or act.get("all")) else min(
+                            int(act.get("volume") or 0) or avail, avail)
+                        vol = (vol // 100) * 100
+                        if vol <= 0:
+                            continue
+                        pos[sym], tr = self._sell(p, sym, vol, exec_px, day, it.reason)
+                        if not tr:
+                            continue
+                    tr["rule"] = rid
+                    tr["ts"] = str(m[0])
+                    res.trades.append(tr)
+                    fees = tr["commission"] + tr["stamp_duty"] + tr["transfer_fee"]
+                    res.total_fees = round(res.total_fees + fees, 2)
+                    day_orders += 1
+                    day_turnover += tr["amount"]
+                    st = res.per_rule.setdefault(rid, {"trades": 0, "pnl": 0.0,
+                                                        "fees": 0.0})
+                    st["trades"] += 1
+                    st["fees"] = round(st["fees"] + fees, 2)
+                    if "pnl" in tr:
+                        st["pnl"] = round(st["pnl"] + tr["pnl"], 2)
+        return cash, day_orders, day_turnover, replayed
 
     @staticmethod
     def _day_px(bars: list, day: str) -> Optional[float]:
@@ -254,6 +384,33 @@ class Backtester:
 
 
 # ---------- 指标 ----------
+
+def load_minutes(data_db, syms: list[str], days: list[str]) -> dict:
+    """从本地库读分钟线，整理成 {(sym, day): [(ts,o,h,l,c,v,a)...] 按序}。
+
+    只取 days 覆盖的交易日；库里没有就返回空 dict（回测会明确提示
+    "日内规则未触发"），绝不假装跑过。
+    """
+    want = set(days or [])
+    out: dict = {}
+    for sym in syms or []:
+        try:
+            rows = data_db.get_minute_bars(sym, limit=4000)
+        except Exception:       # noqa: BLE001 - 表不存在/读失败都退化为无分钟数据
+            continue
+        for r in rows:
+            ts = str(r.get("ts") or "")
+            day = ts[:10]
+            if day not in want or len(ts) < 16:
+                continue
+            out.setdefault((sym, day), []).append(
+                (ts, float(r.get("open") or 0), float(r.get("high") or 0),
+                 float(r.get("low") or 0), float(r.get("close") or 0),
+                 float(r.get("volume") or 0), float(r.get("amount") or 0)))
+    for k in out:
+        out[k].sort(key=lambda x: x[0])
+    return out
+
 
 def buy_and_hold(bars_by_sym: dict[str, list], days: list[str],
                  initial_cash: float = 100000.0,
