@@ -629,11 +629,12 @@ document.getElementById("btn-engine-optimize").onclick=async()=>{
   out.textContent="参数网格搜索中（同一段数据、同一费率，按超额排序）…";
   const r=await guard((extra)=>post("/api/engine/optimize",
     Object.assign({admin_token:tok(),grid:document.getElementById("engine-grid").value,
-                  days:250,top:8},extra||{})));
+                  days:120,top:8},extra||{})));
   if(!r.ok){out.innerHTML=`<span class="bad">搜索失败：${esc(r.error||"")}</span>`;return}
   const d=r.data;
   out.innerHTML=`<div class="s">共 ${d.variants} 组参数，基准买入持有 ${fmt(d.benchmark_pct)}%，按超额排序（前 ${(d.top||[]).length} 组）`+
-    (d.intraday?`，日内网格实际只覆盖 ${d.intraday_days} 个交易日（分钟线只存最近几日）`:``)+`</div>`+
+    (d.intraday?`，日内网格实际只覆盖 ${d.intraday_days} 个交易日（分钟线只存最近几日）`:``)+
+    (d.dropped_no_trade?`；另有 ${d.dropped_no_trade} 组几乎不触发已剔除`:``)+`</div>`+
     `<div class="scroll"><table><thead><tr><th>标的</th><th>参数</th><th class="num">收益</th><th class="num">回撤</th><th class="num">夏普</th><th class="num">笔数</th><th class="num">超额</th></tr></thead><tbody>`+
     (d.top||[]).map(t=>`<tr><td><b>${esc(sym(t.symbol))}</b></td><td class="mut">${esc(JSON.stringify(t.params))}</td>`+
       `<td class="num ${cls(t.ret_pct)}">${fmt(t.ret_pct)}%</td><td class="num">${fmt(t.mdd_pct)}%</td>`+
