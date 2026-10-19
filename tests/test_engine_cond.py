@@ -216,9 +216,11 @@ def test_grid_search_ranks_by_excess():
     from paper_trading.engine.backtest import FeeModel
     from paper_trading.models import Bar
 
-    days = [f"2026-05-{d:02d}" for d in range(1, 29)]
-    # 构造上行趋势：短周期 MA 会先金叉 → 应跑赢买入持有
-    closes = [10 + i * 0.3 for i in range(28)]
+    days = ([f"2026-05-{d:02d}" for d in range(1, 32)]
+            + [f"2026-06-{d:02d}" for d in range(1, 29)])
+    # 先平 25 根再涨：平段够长（≥MA20 窗口）均线才会在拉升后真的金叉一次
+    # （线性上涨永远不会交叉——短均线始终在长均线上方，交叉条件不成立）
+    closes = [10.0 if i < 25 else 10.0 + (i - 25) * 0.4 for i in range(60)]
     bars = {"600519": [Bar(symbol="600519", timestamp=dt.fromisoformat(d),
                            open=c, high=c * 1.01, low=c * 0.99, close=c,
                            volume=1000) for d, c in zip(days, closes)]}
@@ -227,6 +229,38 @@ def test_grid_search_ranks_by_excess():
     assert out["variants"] > 0 and out["benchmark_pct"] is not None
     assert out["top"] == sorted(out["top"], key=lambda x: x["excess_pct"],
                                 reverse=True)
+    assert all(t["trades"] >= 1 for t in out["top"])
     assert set(GRIDS) >= {"ma_cross", "rsi_zone", "trailing_stop"}
     bad = grid_search({"rules": []}, bars, days, "ma_cross", [], fee=FeeModel())
     assert "error" in bad
+
+
+def test_grid_drops_zero_trade_variants():
+    """0 笔成交的变体不算策略：熊市里"什么都不做"会排第一，必须剔除。
+
+    真机上就踩到过：ma_cross 网格把「0 笔、收益 0%」的变体排第一，
+    看起来"超额 +36%"，其实只是没交易。
+    """
+    from datetime import datetime as dt
+
+    from paper_trading.engine.backtest import FeeModel
+    from paper_trading.models import Bar
+
+    days = ([f"2026-05-{d:02d}" for d in range(1, 32)]
+            + [f"2026-06-{d:02d}" for d in range(1, 29)])
+    # 先平 25 根再跌：只会死叉（无持仓可卖）→ 所有变体 0 笔成交
+    closes = [20.0 if i < 25 else 20.0 - (i - 25) * 0.4 for i in range(60)]
+    bars = {"600519": [Bar(symbol="600519", timestamp=dt.fromisoformat(d),
+                           open=c, high=c * 1.01, low=c * 0.99, close=c,
+                           volume=1000) for d, c in zip(days, closes)]}
+    out = grid_search({"rules": []}, bars, days, "ma_cross", ["600519"],
+                      value=10000, fee=FeeModel(), initial_cash=100000)
+    assert out["dropped_no_trade"] > 0
+    for t in out["top"]:
+        assert t["trades"] >= 1, "0 笔成交的变体不得参与排名"
+    assert "什么都不做" in out["note"]
+    # 允许显式放宽（min_trades=0）时它们会回来
+    out0 = grid_search({"rules": []}, bars, days, "ma_cross", ["600519"],
+                       value=10000, fee=FeeModel(), initial_cash=100000,
+                       min_trades=0)
+    assert out0["variants"] > out["variants"]

@@ -33,10 +33,12 @@ def panel(tmp_path):
     b = TradingBridge(data_db=data_db, account_db=acct_db,
                       config_path="/nonexistent.yaml",
                       secrets_path=str(tmp_path / "s.json"))
-    days = [(datetime(2026, 1, 1) + timedelta(days=i)) for i in range(60)]
-    b.data_db.upsert_bars([Bar(symbol="000001", timestamp=d, open=10.0,
-                               high=10.2, low=9.8, close=10.0 + i * 0.02,
-                               volume=1000) for i, d in enumerate(days)])
+    days = [(datetime(2026, 1, 1) + timedelta(days=i)) for i in range(90)]
+    # 先平 40 根再涨：让均线真的发生一次金叉（线性上涨永远不交叉）
+    closes = [10.0 if i < 40 else 10.0 + (i - 40) * 0.2 for i in range(90)]
+    b.data_db.upsert_bars([Bar(symbol="000001", timestamp=d, open=c,
+                               high=c * 1.02, low=c * 0.98, close=c,
+                               volume=1000) for d, c in zip(days, closes)])
 
     class _H(d.Handler):
         pass
@@ -84,19 +86,20 @@ def test_engine_backtest_requires_token(panel):
 def test_engine_backtest_and_optimize_with_token(panel):
     base, dbs = panel
     r, code = _post(f"{base}/api/engine/backtest",
-                    {"admin_token": dbs["token"], "days": 40, "symbols": ["000001"],
+                    {"admin_token": dbs["token"], "days": 90, "symbols": ["000001"],
                      "cash": 100000, "curve": True})
     assert code == 200, r
     d = r["data"]
     assert "total_return_pct" in d and "benchmark_buy_hold" in d
-    assert "excess_pct" in d and d["days"] == 40
+    assert "excess_pct" in d and d["days"] == 90
     assert d.get("ascii_curve")
 
     r2, code2 = _post(f"{base}/api/engine/optimize",
                       {"admin_token": dbs["token"], "grid": "ma_cross",
-                       "symbols": ["000001"], "days": 40, "top": 3})
+                       "symbols": ["000001"], "days": 90, "top": 3})
     assert code2 == 200, r2
     assert r2["data"]["variants"] > 0 and len(r2["data"]["top"]) <= 3
+    assert all(t["trades"] >= 1 for t in r2["data"]["top"])
 
 
 def test_engine_optimize_unknown_grid(panel):
@@ -131,6 +134,16 @@ def test_cond_crud_flow(panel):
     assert _get(f"{base}/api/cond")["data"]["armed"] == 0
     r4, code4 = _post(f"{base}/api/cond/cancel", {"admin_token": t, "id": 1})
     assert code4 == 400 and "已成交" in r4["error"]
+
+
+def test_cond_rejects_below_min_ticket(panel):
+    """手续费地板：入库前就拒掉过小的买入金额，不给"挂得上、永远触发不了"的单子。"""
+    base, dbs = panel
+    r, code = _post(f"{base}/api/cond", {
+        "admin_token": dbs["token"], "symbol": "000001", "side": "buy",
+        "cond_type": "price_below", "cond_value": 9.5, "value": 100})
+    assert code == 400 and "最小下单金额" in r["error"]
+    assert _get(f"{base}/api/cond")["data"]["orders"] == []
 
 
 def test_cond_requires_token(panel):

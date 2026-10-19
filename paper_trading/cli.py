@@ -768,7 +768,7 @@ def design_conditions(bridge, orders, *, pool_from: str = "auto",
     if dry_run:
         return True, {"dry_run": True, "parsed": conds, "pool": syms,
                       "pool_source": note, "raw": str(raw)[:600]}, ""
-    res = orders.create_many(conds)
+    res = orders.create_many(conds, min_ticket=engine_min_ticket(config_path))
     bridge.broker.log_operation("cond:design", {"pool": syms, "n": res["n_created"]},
                                 True, {"created": res["created"],
                                        "rejected": res["rejected"]}, None, None)
@@ -1396,7 +1396,7 @@ def main() -> None:
                     "cond_type": args.cond, "cond_value": args.cond_value,
                     "volume": args.volume, "value": args.value,
                     "expiry": args.expiry, "note": args.note,
-                    "source": "manual"})
+                    "source": "manual"}, min_ticket=engine_min_ticket(args.config))
                 emit({"id": oid, "message": msg} if ok else None, ok=ok,
                      error=None if ok else msg)
                 if not ok:

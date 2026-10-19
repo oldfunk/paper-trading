@@ -66,8 +66,13 @@ class ConditionalOrders:
     # ---------- 校验与入库 ----------
 
     @staticmethod
-    def validate(item: dict, now: Optional[datetime] = None) -> tuple[bool, str, dict]:
-        """fail-closed 校验：非法条件单不入库。"""
+    def validate(item: dict, now: Optional[datetime] = None,
+                 min_ticket: float = 0.0) -> tuple[bool, str, dict]:
+        """fail-closed 校验：非法条件单不入库。
+
+        min_ticket > 0 时按手续费地板在**入库前**就拒掉过小的买入金额——
+        与盘中执行用的是同一道门槛，不给"挂得上、永远触发不了"的单子留空间。
+        """
         from paper_trading.integration.universe import is_a_share
 
         now = now or datetime.now()
@@ -95,6 +100,8 @@ class ConditionalOrders:
                 return False, "买入数量须为 100 的整数倍", {}
             if volume == 0 and value <= 0:
                 return False, "买入须给 volume 或 value", {}
+            if min_ticket > 0 and volume == 0 and value < float(min_ticket):
+                return False, f"买入金额 {value:.0f} 元低于最小下单金额 {float(min_ticket):.0f} 元", {}
         if side == "sell" and volume % 100 != 0:
             return False, "卖出数量须为 100 的整数倍", {}
         exp = str(item.get("expiry") or "").strip()
@@ -115,8 +122,9 @@ class ConditionalOrders:
                  "source": str(item.get("source") or "manual")[:20]}
         return True, "ok", clean
 
-    def create(self, item: dict, now: Optional[datetime] = None) -> tuple[bool, str, int]:
-        ok, msg, clean = self.validate(item, now)
+    def create(self, item: dict, now: Optional[datetime] = None,
+               min_ticket: float = 0.0) -> tuple[bool, str, int]:
+        ok, msg, clean = self.validate(item, now, min_ticket)
         if not ok:
             return False, msg, 0
         with self._connect() as conn:
@@ -133,10 +141,11 @@ class ConditionalOrders:
                  json.dumps({"raw": item}, ensure_ascii=False, default=str)))
             return True, f"已挂条件单 #{cur.lastrowid}", int(cur.lastrowid)
 
-    def create_many(self, items: list, now: Optional[datetime] = None) -> dict:
+    def create_many(self, items: list, now: Optional[datetime] = None,
+                    min_ticket: float = 0.0) -> dict:
         made, rejected = [], []
         for it in items or []:
-            ok, msg, oid = self.create(it, now)
+            ok, msg, oid = self.create(it, now, min_ticket)
             (made if ok else rejected).append(
                 {"id": oid, "symbol": it.get("symbol"), "why": None if ok else msg})
         return {"created": made, "rejected": rejected,

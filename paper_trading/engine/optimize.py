@@ -39,7 +39,7 @@ GRIDS: dict[str, dict] = {
     # 日内网格（需分钟线）
     "vwap_dev": {
         "base_type": "vwap_dev",
-        "grid": {"pct": [0.5, 1, 2, 3], "min_bars": [15, 30]},
+        "grid": {"pct": [0.5, 1, 2, 3], "min_bars": [5, 15]},
         "filter": lambda p: True,
     },
     "minute_ma": {
@@ -85,8 +85,14 @@ def grid_search(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
                 initial_cash: float = 100000.0,
                 slippage_pct: float = 0.0,
                 top: int = 10,
-                minutes_by_day: Optional[dict] = None) -> dict:
-    """对单个网格做参数搜索；返回按超额收益排序的变体结果。"""
+                minutes_by_day: Optional[dict] = None,
+                min_trades: int = 1) -> dict:
+    """对单个网格做参数搜索；返回按超额收益排序的变体结果。
+
+    min_trades：至少成交多少笔才算"一条策略"。**默认剔除 0 笔的变体**——
+    熊市里"什么都不做"会以 0% 收益跑赢任何真亏钱的策略，把这种空结果排第一
+    等于给出"最佳参数是不交易"这种荒谬结论。它们单独统计在 dropped 里。
+    """
     fee = fee or FeeModel()
     symbols = list(symbols or [])
     variants = _variants(grid_name, symbols, value)
@@ -94,6 +100,8 @@ def grid_search(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
         return {"error": f"网格 {grid_name} 无有效变体或未指定标的",
                 "grids": list(GRIDS)}
     minutes_by_day = minutes_by_day or {}
+    # min_trades=0 显式表示"不过滤"；None/缺省为 1（剔除 0 笔的空结果）
+    _min_trades = 1 if min_trades is None else max(0, int(min_trades))
     intraday = grid_name in INTRADAY_GRIDS
     if intraday and not minutes_by_day:
         return {"error": f"网格 {grid_name} 依赖分钟线，本地没有分钟数据"
@@ -108,6 +116,7 @@ def grid_search(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
         groups.setdefault(tag, []).append(r)
 
     results = []
+    dropped: list[dict] = []
     for tag, rules in groups.items():
         trial = dict(cfg)
         trial["rules"] = rules
@@ -119,7 +128,7 @@ def grid_search(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
             minutes_by_day=minutes_by_day if intraday else None)
         m = metrics(res, len(days))
         pf = m.get("profit_factor")
-        results.append({
+        rec = {
             "tag": tag, "symbol": rules[0]["symbol"], "params": rules[0]["params"],
             "ret_pct": m["total_return_pct"], "mdd_pct": m["max_drawdown_pct"],
             "sharpe": m["sharpe_annual"], "trades": m["trades"],
@@ -127,18 +136,30 @@ def grid_search(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
             "profit_factor": pf if isinstance(pf, (int, float)) else None,
             "fees": m["total_fees"],
             "excess_pct": round(m["total_return_pct"] - bench_ret, 2),
-        })
+        }
+        if int(m.get("trades") or 0) < _min_trades:
+            dropped.append(rec)
+            continue
+        results.append(rec)
     results.sort(key=lambda x: (x["excess_pct"], -x["mdd_pct"]), reverse=True)
+    dropped.sort(key=lambda x: -x["excess_pct"])
     best = results[0] if results else None
+    note = "超额=变体收益−等权买入持有；样本内结果，需样本外复验"
+    if intraday:
+        note += "；分钟线只覆盖最近数日，样本极小，结论仅供参考"
+    if dropped:
+        note += (f"；另有 {len(dropped)} 组参数在该样本内几乎不触发（成交不足 "
+                 f"{_min_trades} 笔），已剔除不参与排名——否则熊市里「什么都不做」"
+                 f"会排第一")
     return {"grid": grid_name, "rule_type": _GRID_TYPE.get(grid_name),
             "symbols": symbols, "days": len(days),
             "intraday": intraday,
             "intraday_days": res.intraday_days if intraday else 0,
             "benchmark_pct": bench_ret, "variants": len(results),
+            "dropped_no_trade": len(dropped),
+            "dropped_top": dropped[:3],
             "best": best, "top": results[:top],
-            "note": ("超额=变体收益−等权买入持有；样本内结果，需样本外复验"
-                     + ("；分钟线只覆盖最近数日，样本极小，结论仅供参考"
-                        if intraday else ""))}
+            "note": note}
 
 
 def available_grids() -> Iterable[str]:

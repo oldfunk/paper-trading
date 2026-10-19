@@ -1216,7 +1216,8 @@ class Handler(BaseHTTPRequestHandler):
                         "cond_value": body.get("cond_value"),
                         "volume": body.get("volume"), "value": body.get("value"),
                         "expiry": body.get("expiry"), "note": body.get("note"),
-                        "source": "manual"})
+                        "source": "manual"},
+                        min_ticket=engine_min_ticket())
                     data = {"id": oid, "message": msg,
                             "orders": orders.list_all(60)} if ok else None
                     if ok and _tok_out:
