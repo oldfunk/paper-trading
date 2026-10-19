@@ -268,8 +268,9 @@ def buy_and_hold(bars_by_sym: dict[str, list], days: list[str],
     if not px:
         return {}
     per = initial_cash / len(px)
-    cash, mv, fees = 0.0, 0.0, 0.0
-    holdings = {}
+    fees = 0.0
+    holdings: dict[str, int] = {}
+    spent = 0.0
     for s, p in px.items():
         vol = int(per / p / 100) * 100
         if vol <= 0:
@@ -280,7 +281,8 @@ def buy_and_hold(bars_by_sym: dict[str, list], days: list[str],
             continue
         holdings[s] = vol
         fees += c + t
-        cash += per - amount - c - t
+        spent += amount + c + t
+    leftover = initial_cash - spent          # 未买满整手的余额留在现金
     curve = []
     for d in days:
         mv = 0.0
@@ -288,7 +290,7 @@ def buy_and_hold(bars_by_sym: dict[str, list], days: list[str],
             c = Backtester._day_px(bars_by_sym[s], d)
             if c:
                 mv += c * vol
-        curve.append({"day": d, "equity": round(cash + mv, 2)})
+        curve.append({"day": d, "equity": round(leftover + mv, 2)})
     res = BacktestResult(initial_cash=initial_cash, equity_curve=curve,
                          total_fees=round(fees, 2), start=days[0], end=days[-1])
     res.final_equity = curve[-1]["equity"] if curve else initial_cash
