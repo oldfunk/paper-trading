@@ -277,7 +277,13 @@ def buy_and_hold(bars_by_sym: dict[str, list], days: list[str],
             continue
         amount = p * vol
         c, t = fee.buy_cost(amount)
-        if amount + c + t > per:
+        while vol > 0 and amount + c + t > per:   # 费用挤破预算就减一手
+            vol -= 100
+            if vol <= 0:
+                break
+            amount = p * vol
+            c, t = fee.buy_cost(amount)
+        if vol <= 0:
             continue
         holdings[s] = vol
         fees += c + t
