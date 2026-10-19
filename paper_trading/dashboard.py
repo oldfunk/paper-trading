@@ -600,7 +600,8 @@ function btCN(m){
   const ex=m.excess_pct!=null?` · 超额 ${m.excess_pct>=0?"+":""}${fmt(m.excess_pct)}%`:"";
   const curve=m.ascii_curve?`<br><span class="mono" style="font-size:11px;letter-spacing:-1px">${esc(m.ascii_curve)}</span>`:"";
   const pr=Object.entries(m.per_rule||{}).map(([k,v])=>`${esc(k)} ${v.trades??0} 笔`).join("；");
-  const note=(m.skipped_sample||[]).filter(s=>s&&s.why).map(s=>esc(s.why)).slice(0,2).join("；");
+  // 只提示「配置/数据级」的注意事项（没有 symbol 的那条），逐笔跳过原因不刷屏
+  const note=(m.skipped_sample||[]).filter(s=>s&&s.why&&!s.symbol).map(s=>esc(s.why)).slice(0,2).join("；");
   return `${esc(line)}<br><span class="mut">${esc(bl)}${esc(ex)}（近 ${m.days??0} 个交易日，含真实手续费）</span>`+
     (pr?`<br><span class="mut">${pr}</span>`:"")+
     (note?`<br><span class="mut">注意：${note}</span>`:"")+curve;

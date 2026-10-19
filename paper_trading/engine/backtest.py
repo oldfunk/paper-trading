@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
@@ -143,18 +144,22 @@ class Backtester:
         day_turnover = 0.0
         intraday_days: set[str] = set()
         last_px: dict[str, float] = {}
+        # 价格索引：{symbol: {day: close}}。原来每个交易日都线性扫一遍 bars
+        # （days × bars × 变体数），参数网格跑一轮要好几分钟；建索引后是 O(1) 查。
+        px_idx = {s: self._index_days(b) for s, b in bars_by_sym.items()}
+        day_pos = {d: i for i, d in enumerate(days)}
 
         for day in days:
             # px：当日真实收盘（没有就不成交）；px_last：沿用最近一次有效收盘（算市值用）
             # 分开的原因：某只票当天没数据时，市值不能当 0（否则权益曲线凭空塌一块），
             # 但也不能拿旧价假装成交。
-            px = {s: self._day_px(b, day) for s, b in bars_by_sym.items()}
+            px = {s: px_idx[s].get(day) for s in bars_by_sym}
             for s, v in px.items():
                 if v:
                     last_px[s] = v
             px_last = {s: last_px.get(s) for s in bars_by_sym}
-            held_days = {s: max(0, days.index(day) - days.index(p.entry_day))
-                         for s, p in pos.items() if p.entry_day in days}
+            held_days = {s: max(0, day_pos[day] - day_pos[p.entry_day])
+                         for s, p in pos.items() if p.entry_day in day_pos}
             # 当日买入的部分 T+1 冻结：日内规则与实盘一样卖不掉
             frozen: dict[str, int] = {}
 
@@ -244,7 +249,7 @@ class Backtester:
 
             # 3) 用今日收盘判定规则 → 明日开盘挂单
             if day != days[-1]:
-                next_day = days[days.index(day) + 1]
+                next_day = days[day_pos[day] + 1]
                 for r in rules:
                     rid = r["id"]
                     if rid in fired and bool(r.get("once", True)):
@@ -252,8 +257,7 @@ class Backtester:
                     syms = r.get("symbols") or [r.get("symbol")]
                     for sym in syms:
                         b = bars_by_sym.get(sym) or []
-                        closes = [x.close for x in b
-                                  if x.timestamp.date().isoformat() <= day]
+                        closes = self._closes_until(b, day)
                         if len(closes) < 2:
                             continue
                         ctx = RuleContext(now=f"{day}T15:00:00", day=day, symbol=sym,
@@ -393,6 +397,27 @@ class Backtester:
                 return x.close
         return None
 
+    @staticmethod
+    def _index_days(bars: list) -> dict:
+        """{day: close} 索引（一次建表，之后 O(1) 查）。"""
+        out: dict = {}
+        for x in bars:
+            out[x.timestamp.date().isoformat()] = x.close
+        return out
+
+    @staticmethod
+    def _closes_until(bars: list, day: str) -> list[float]:
+        """截至某日的收盘序列（含当日，按序）。
+
+        原来每次都全量扫 bars（days × bars × 变体数 = 网格搜索的主要开销），
+        这里用 bisect 定位切点后切片，复杂度降到 O(log n + k)。
+        """
+        if not bars:
+            return []
+        days = [x.timestamp.date().isoformat() for x in bars]
+        i = bisect.bisect_right(days, day)
+        return [x.close for x in bars[:i]]
+
 
 # ---------- 指标 ----------
 
@@ -431,7 +456,8 @@ def buy_and_hold(bars_by_sym: dict[str, list], days: list[str],
     syms = [s for s in bars_by_sym if bars_by_sym[s]]
     if not syms:
         return {}
-    px = {s: Backtester._day_px(bars_by_sym[s], days[0]) for s in syms}
+    px_idx = {s: Backtester._index_days(bars_by_sym[s]) for s in syms}
+    px = {s: px_idx[s].get(days[0]) for s in syms}
     px = {s: v for s, v in px.items() if v}
     if not px:
         return {}
@@ -462,7 +488,7 @@ def buy_and_hold(bars_by_sym: dict[str, list], days: list[str],
     for d in days:
         mv = 0.0
         for s, vol in holdings.items():
-            c = Backtester._day_px(bars_by_sym[s], d)
+            c = px_idx[s].get(d)
             if c:                 # 当日有收盘就用它；没有就沿用最近一次有效收盘
                 last_px[s] = c
             c = last_px.get(s)
