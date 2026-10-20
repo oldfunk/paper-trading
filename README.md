@@ -268,6 +268,8 @@ python -m paper_trading.cli sync --json
 
 # LLM 接入（只咨询，不交易；Key 只落本地 secrets.local.json）
 python -m paper_trading.cli llm config --preset deepseek --api-key xxx --model deepseek-chat
+# 本地/局域网模型：只给地址，不用令牌（Ollama/LM Studio/vLLM/自建网关）
+python -m paper_trading.cli llm config --preset ollama --model qwen3:8b
 python -m paper_trading.cli llm models --json
 python -m paper_trading.cli llm ask --prompt "评价一下当前持仓" --json
 
@@ -437,6 +439,7 @@ python -m paper_trading.cli cond tick --dry-run --json
 - **规则引擎**：规则集一览（含开关/间隔/单笔下限/校验结果）、一键回测（策略 vs 基准买入持有 + 超额 + ASCII 净值曲线）、参数网格排序表、样本外检验表、最近触发记录
 - **条件单**：挂条件（代码/方向/触发类型/触发值/金额/有效期）→ 列表显示待触发/已成交/已撤销/已过期/被拒，可撤销、可让 AI 设计
 - **模型设置**：厂商预设 + 拉取模型列表（不需要口令，失败直接显示原因）+ 手填模型名（Key 掩码显示，保存一次长期有效）。**本地/局域网接口（Ollama / LM Studio / vLLM / 自建网关）只填接口地址即可，不用令牌**；这类预设会自动清掉之前保存的云端 Key（不把 Key 发到别的机器）
+- **模型兼容**：始终思考的模型（GLM 5.3 系列等）会自动降到 low 档并抬高输出预算；答案被思考吃光时直接报「只输了思考过程」，不会静默返回空回答
 
 流水写入 `paper_account.db` 的 `op_log` 表（`broker.log_operation`），仪表盘纯只读，可与交易进程并存。
 

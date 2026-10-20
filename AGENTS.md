@@ -94,7 +94,9 @@ python -m paper_trading.cli history --type fills --limit 20 --json
 1. **Key 三不**：不进 git（`secrets.local.json` 已 gitignore）、不进日志（`op_log` params/result 禁止出现 Key，单测锁定）、面板只回显掩码（`****末4位`）。
 2. **面板写操作必须口令，但用户无感**：`admin_token` 首次保存自动生成，浏览器 localStorage 自动保管，用户永远不用看见；换浏览器凭 API Key 保存一次即接管（无令牌的本地接口没有 Key 可接管，需在原浏览器改，或删掉 `secrets.local.json` 重配）。局域网使用，禁止把面板暴露到公网。
 3. **LLM 不碰下单链**：`llm:ask` 只问答记流水；任何决策环（P2）必须走 fail-closed 钳制（schema/白名单/100 股倍数/金额上限），再经 `RiskManager`，缺一不可。
-4. 命令行传 Key 会留 shell 历史，敏感环境一律用面板设置页。
+4. **命令行传 Key 会留 shell 历史，敏感环境一律用面板设置页。**
+5. **本地接口免令牌**：Ollama / LM Studio / vLLM / 局域网网关只填接口地址即可（`TOKENLESS_PRESETS`）；空 Key 时**不发** `Authorization` 头（空 Bearer 反而会被拒）。切到这类预设会清掉已存的云端 Key，避免把 Key 发到别的机器。无令牌接口没有 Key 可用来"换浏览器接管"，只能原浏览器改或删 `secrets.local.json` 重配。
+6. **模型差异不能打死链路**：`thinking=disabled` 是默认（省预算），但始终思考的模型（GLM 5.3 系列回 HTTP 400 / 1210）要自动降档 `enabled/low` 并把输出预算抬到至少 4096；答案被思考吃光时必须报"只输了思考过程"，禁止静默返回空串。
 
 ## AI 交易员自治规则（P2，定时队列）
 
