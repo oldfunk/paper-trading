@@ -786,7 +786,8 @@ def design_conditions(bridge, orders, *, pool_from: str = "auto",
                                  max_conds=int(max_conds), max_days=int(max_days))
     try:
         raw = _ask_llm(bridge._llm_config(), user_p, sys_p,
-                       bridge.agent_cfg.llm_timeout, 1, 2048,
+                       bridge.agent_cfg.llm_timeout, 1,
+                       bridge.agent_cfg.llm_max_tokens,
                        bridge.agent_cfg.llm_thinking)
     except Exception as e:                 # noqa: BLE001
         return False, {}, f"模型调用失败：{type(e).__name__}: {e}"

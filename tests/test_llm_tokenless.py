@@ -126,7 +126,7 @@ def test_always_thinking_model_falls_back_to_low(monkeypatch):
     seen = []
 
     def fake_chat(cfg, messages, system=""):
-        seen.append(dict(cfg.extra_body))
+        seen.append((dict(cfg.extra_body), cfg.max_tokens))
         if cfg.extra_body.get("thinking", {}).get("type") == "disabled":
             raise LLMError('HTTP 400 /chat/completions：{"error":{"code":"1210",'
                            '"message":"该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"}}')
@@ -134,9 +134,10 @@ def test_always_thinking_model_falls_back_to_low(monkeypatch):
 
     monkeypatch.setattr(prov, "chat", fake_chat)
     cfg = LLMConfig(base_url="http://x/v1", api_key="k", model="glm-5.3-flash")
-    assert _ask_llm(cfg, "x", "", 10, 0) == "答"
-    assert seen[0] == {"thinking": {"type": "disabled"}}
-    assert seen[1] == {"thinking": {"type": "enabled", "level": "low"}}
+    assert _ask_llm(cfg, "x", "", 10, 0, max_tokens=2048) == "答"
+    assert seen[0] == ({"thinking": {"type": "disabled"}}, 2048)
+    # 思考也占输出预算：降档同时把预算抬到至少 4096
+    assert seen[1] == ({"thinking": {"type": "enabled", "level": "low"}}, 4096)
 
 
 def test_other_llm_errors_are_not_retried(monkeypatch):

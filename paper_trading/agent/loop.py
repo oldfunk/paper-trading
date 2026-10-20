@@ -68,6 +68,9 @@ def _ask_llm(cfg, prompt: str, system: str, timeout: float, retries: int,
         return _attempt(extra)
     except LLMError as e:
         if thinking == "disabled" and "1210" in str(e):
+            # 始终思考的模型：思考也占输出预算，给足（至少 4096），
+            # 否则"只剩思考、没有答案"（真机在 2048 上撞过）
+            cfg.max_tokens = max(int(max_tokens or 0), 4096)
             return _attempt({"thinking": {"type": "enabled", "level": "low"}})
         raise
 
