@@ -37,23 +37,39 @@ def _ask_llm(cfg, prompt: str, system: str, timeout: float, retries: int,
     thinking="disabled" 时透传厂商开关，关掉 chain-of-thought：
     格式受限的 JSON 决策不需要思考过程，开着只会烧掉输出预算
     （曾实测 3220 thinking tokens 挤掉答案导致空返回）。
+
+    但有些模型**始终思考**（GLM 5.3 系列，HTTP 400 / 1210 "不支持关闭思考"），
+    这时降到 low 档（思考预算最小）再试一次——不能因为一个透传参数把整条链路打死。
     """
+    from paper_trading.llm.provider import LLMError
     from paper_trading.llm.provider import chat as _chat
 
     cfg.timeout = timeout
     cfg.max_tokens = max_tokens
-    cfg.extra_body = {"thinking": {"type": "disabled"}} if thinking == "disabled" else {}
-    last: Exception | None = None
-    for attempt in range(retries + 1):
-        try:
-            return _chat(cfg, [{"role": "user", "content": prompt}], system=system)
-        except Exception as e:  # noqa: BLE001 - 仅超时重试，其余直接抛
-            last = e
-            if "timed out" not in str(e).lower() and "timeout" not in str(e).lower():
-                raise
-            if attempt >= retries:
-                raise
-    raise last or RuntimeError("LLM unreachable")
+
+    def _attempt(extra: dict) -> str:
+        cfg.extra_body = extra
+        last: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                return _chat(cfg, [{"role": "user", "content": prompt}],
+                             system=system)
+            except Exception as e:  # noqa: BLE001 - 仅超时重试，其余直接抛
+                last = e
+                if "timed out" not in str(e).lower() \
+                        and "timeout" not in str(e).lower():
+                    raise
+                if attempt >= retries:
+                    raise
+        raise last or RuntimeError("LLM unreachable")
+
+    extra = {"thinking": {"type": "disabled"}} if thinking == "disabled" else {}
+    try:
+        return _attempt(extra)
+    except LLMError as e:
+        if thinking == "disabled" and "1210" in str(e):
+            return _attempt({"thinking": {"type": "enabled", "level": "low"}})
+        raise
 
 
 def today_str() -> str:

@@ -117,6 +117,48 @@ def test_empty_answer_raises_clear_error():
         srv.shutdown()
 
 
+def test_always_thinking_model_falls_back_to_low(monkeypatch):
+    """GLM 5.3 系列"始终思考"，拒绝 disabled（400/1210）：自动降到 low 档重试一次。"""
+    from paper_trading.agent.loop import _ask_llm
+    from paper_trading.llm import LLMConfig, LLMError
+    from paper_trading.llm import provider as prov
+
+    seen = []
+
+    def fake_chat(cfg, messages, system=""):
+        seen.append(dict(cfg.extra_body))
+        if cfg.extra_body.get("thinking", {}).get("type") == "disabled":
+            raise LLMError('HTTP 400 /chat/completions：{"error":{"code":"1210",'
+                           '"message":"该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"}}')
+        return "答"
+
+    monkeypatch.setattr(prov, "chat", fake_chat)
+    cfg = LLMConfig(base_url="http://x/v1", api_key="k", model="glm-5.3-flash")
+    assert _ask_llm(cfg, "x", "", 10, 0) == "答"
+    assert seen[0] == {"thinking": {"type": "disabled"}}
+    assert seen[1] == {"thinking": {"type": "enabled", "level": "low"}}
+
+
+def test_other_llm_errors_are_not_retried(monkeypatch):
+    from paper_trading.agent.loop import _ask_llm
+    from paper_trading.llm import LLMConfig, LLMError
+    from paper_trading.llm import provider as prov
+
+    calls = []
+
+    def fake_chat(cfg, messages, system=""):
+        calls.append(1)
+        raise LLMError("HTTP 401 bad key")
+
+    monkeypatch.setattr(prov, "chat", fake_chat)
+    cfg = LLMConfig(base_url="http://x/v1", api_key="k", model="m")
+    try:
+        _ask_llm(cfg, "x", "", 10, 0)
+        raise AssertionError("should raise")
+    except LLMError as e:
+        assert "401" in str(e) and len(calls) == 1
+
+
 def test_build_prompt_does_not_crash_on_json_braces():
     """回归：「AI 设计条件单」500 的根因——规则正文含 JSON 大括号，不能走 str.format。"""
     from paper_trading.engine.ai_conditions import build_prompt
