@@ -562,6 +562,9 @@ class TradingBridge:
             or str(existing.get("base_url", ""))
         if not base_url:
             return {"ok": False, "error": "未知厂商且未填写接口地址（base_url）"}
+        # 模型留空 = 沿用已存模型：面板/CLI 只想改地址或 Key 时不能把模型洗掉
+        # （洗成空串后所有调用都会报"未指定模型"，看起来像 API 失效）
+        model = model.strip() or str(existing.get("model", ""))
         tokenless = preset in TOKENLESS_PRESETS
         api_key = "" if tokenless else (api_key.strip()
                                         or str(existing.get("api_key", "")))
@@ -577,7 +580,7 @@ class TradingBridge:
             elif not tokenless:
                 warning = "未填 Key：本机接口通常不需要令牌，若拉取失败请确认服务已启动"
         save_provider({"preset": preset, "base_url": base_url,
-                       "model": model.strip(), "api_key": api_key},
+                       "model": model, "api_key": api_key},
                       self.secrets_path)
         view = public_provider_view(self.secrets_path)
         self.broker.log_operation("llm:config", {"preset": preset, "model": view["model"]},
@@ -621,8 +624,9 @@ class TradingBridge:
             out = {"ok": True, "models": models}
             saved = str(p.get("model") or "")
             if saved and saved not in models:
-                out["warning"] = (f"当前保存的模型 {saved} 不在列表里"
-                                  f"（可能已下线/改名），建议换一个再保存")
+                out["warning"] = (f"当前保存的模型 {saved} 不在厂商列表里"
+                                  f"（可能已下线）；系统不会自动更换，"
+                                  f"调用失败时会如实报错")
             return out
         except LLMError as e:
             return {"ok": False, "error": str(e)}

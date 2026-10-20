@@ -184,6 +184,25 @@ def test_secrets_file_with_bom_is_readable(tmp_path):
     assert data["provider"]["api_key"] == "sk-bom"
 
 
+def test_llm_save_keeps_model_when_blank(tmp_path):
+    """模型留空 = 沿用已存模型（不许被"只改 Key/地址"顺手洗成空串）。"""
+    import paper_trading.cli as hb
+    from paper_trading.llm import load_secrets
+
+    sec = str(tmp_path / "s.json")
+    b = hb.TradingBridge(data_db=str(tmp_path / "d.db"),
+                         account_db=str(tmp_path / "a.db"),
+                         config_path="/nonexistent.yaml", secrets_path=sec)
+    assert b.llm_save("glm", "", "glm-4.5-flash", "sk-x")["ok"]
+    # 只改地址，不给模型
+    r = b.llm_save("glm", "https://open.bigmodel.cn/api/paas/v4", "", "")
+    assert r["ok"] and r["model"] == "glm-4.5-flash"
+    # 只换 Key，不给模型
+    r = b.llm_save("glm", "", "", "sk-y")
+    assert r["ok"] and r["model"] == "glm-4.5-flash"
+    assert load_secrets(sec)["provider"]["model"] == "glm-4.5-flash"
+
+
 def test_llm_save_survives_restart(tmp_path, monkeypatch):
     """长效保存：保存后用全新进程式读取（重新 load 文件）仍在；换模型不洗掉 Key。"""
     import paper_trading.cli as hb

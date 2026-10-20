@@ -220,7 +220,8 @@ def test_llm_models_without_key_against_stub(tmp_path):
                                    "model": "已下线的模型", "api_key": ""}}, sec)
         r = b.llm_models()
         assert r["ok"] and r["models"] == ["qwen3:8b", "llama3.2"]
-        assert "不在列表" in r.get("warning", "")
+        assert "不在厂商列表" in r.get("warning", "")
+        assert "建议" not in r.get("warning", "")  # 不催用户换模型
     finally:
         srv.shutdown()
 
