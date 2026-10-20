@@ -171,6 +171,19 @@ def test_llm_models_open_and_explains(tmp_path):
         srv.shutdown()
 
 
+def test_secrets_file_with_bom_is_readable(tmp_path):
+    """Windows 记事本保存会带 BOM：不能因此把配置读成"没配"（静默失败最难查）。"""
+    from paper_trading.llm import load_secrets
+
+    p = tmp_path / "s.json"
+    p.write_bytes(b"\xef\xbb\xbf" + json.dumps(
+        {"provider": {"preset": "glm", "base_url": "https://x/v1",
+                      "model": "m", "api_key": "sk-bom"}},
+        ensure_ascii=False).encode("utf-8"))
+    data = load_secrets(str(p))
+    assert data["provider"]["api_key"] == "sk-bom"
+
+
 def test_llm_save_survives_restart(tmp_path, monkeypatch):
     """长效保存：保存后用全新进程式读取（重新 load 文件）仍在；换模型不洗掉 Key。"""
     import paper_trading.cli as hb
