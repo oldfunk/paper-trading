@@ -43,7 +43,11 @@ def build_prompt(pool: list[str], quotes: dict, positions: list[dict],
     user = (f"数据截至 {asof}\n股票池实时价：\n" + ("\n".join(q_lines) or "（无）")
             + f"\n当前持仓：{pos_txt}\n{scheme_txt}\n"
             + f"请给出最多 {max_conds} 条条件单（最长 {max_days} 天有效）。")
-    return COND_RULES.format(max_conds=max_conds, max_days=max_days), user
+    # 不能用 str.format：规则正文里的 JSON 示例本身含大括号（{"conditions": …}），
+    # format 会把它当占位符 → KeyError: '"conditions"'（真机上「AI 设计」一直 500）
+    rules = (COND_RULES.replace("{max_conds}", str(max_conds))
+                        .replace("{max_days}", str(max_days)))
+    return rules, user
 
 
 def parse_conditions(raw: Optional[str], pool: list[str],

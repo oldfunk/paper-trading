@@ -544,19 +544,38 @@ class TradingBridge:
 
     def llm_save(self, preset: str = "custom", base_url: str = "",
                  model: str = "", api_key: str = "") -> dict:
-        """保存厂商配置（合并语义：Key/地址留空=沿用已存值，不会被洗掉）。"""
+        """保存厂商配置（合并语义：Key/地址留空=沿用已存值，不会被洗掉）。
+
+        本地/局域网接口（Ollama、LM Studio、vLLM、自建网关）不需要令牌：
+        这类预设允许空 Key，并且会清掉之前保存的云端 Key（不把旧 Key 发到别的机器）。
+        """
+        from urllib.parse import urlparse
+
         from paper_trading.llm import (
-            load_secrets as _load, preset_base_url, public_provider_view, save_provider,
+            TOKENLESS_PRESETS, load_secrets as _load, preset_base_url,
+            public_provider_view, save_provider,
         )
 
+        preset = (preset or "custom").strip()
         existing = (_load(self.secrets_path).get("provider") or {})
         base_url = base_url.strip() or preset_base_url(preset) \
             or str(existing.get("base_url", ""))
         if not base_url:
             return {"ok": False, "error": "未知厂商且未填写接口地址（base_url）"}
-        api_key = api_key.strip() or str(existing.get("api_key", ""))
+        tokenless = preset in TOKENLESS_PRESETS
+        api_key = "" if tokenless else (api_key.strip()
+                                        or str(existing.get("api_key", "")))
+        local_host = (urlparse(base_url).hostname or "").lower() in (
+            "localhost", "127.0.0.1", "::1", "0.0.0.0")
+        warning = ""
         if not api_key:
-            return {"ok": False, "error": "请填写 API Key（首次配置必填；之后换模型不用重填）"}
+            if not tokenless and not local_host:
+                warning = ("接口地址不在本机：云端服务通常需要 API Key。"
+                           "已保存，但拉模型/对话可能返回 401；如果这是局域网内"
+                           "不需要令牌的网关，忽略此提示即可")
+            # 本地/局域网接口本就无需令牌，只记一条中性说明
+            elif not tokenless:
+                warning = "未填 Key：本机接口通常不需要令牌，若拉取失败请确认服务已启动"
         save_provider({"preset": preset, "base_url": base_url,
                        "model": model.strip(), "api_key": api_key},
                       self.secrets_path)
@@ -564,38 +583,47 @@ class TradingBridge:
         self.broker.log_operation("llm:config", {"preset": preset, "model": view["model"]},
                                   True, {"base_url": base_url}, None, None)
         # 口令仅在此处返回一次（落盘+本次回显），日志与常规回显均不含它
-        return {"ok": True, "admin_token": _load(self.secrets_path).get("admin_token", ""),
-                **view}
+        out = {"ok": True,
+               "admin_token": _load(self.secrets_path).get("admin_token", ""),
+               **view}
+        if warning:
+            out["warning"] = warning
+        return out
 
     def _llm_config(self):
         from paper_trading.llm import LLMConfig, LLMError, load_secrets
 
         data = load_secrets(self.secrets_path)
         p = data.get("provider") or {}
-        if not p.get("base_url") or not p.get("api_key"):
-            raise LLMError("LLM 未配置（先在面板或 llm-config 填写接口地址与 Key）")
-        return LLMConfig(base_url=p["base_url"], api_key=p["api_key"],
+        if not p.get("base_url"):
+            raise LLMError("LLM 未配置（先在面板或 llm-config 填写接口地址；"
+                           "本地接口不用 Key）")
+        # 本地/局域网接口允许无 Key：provider 在 Key 为空时不发 Authorization 头
+        return LLMConfig(base_url=p["base_url"], api_key=p.get("api_key", ""),
                          model=p.get("model", ""))
 
     def llm_models(self) -> dict:
         """拉取远端模型列表（Key 不出本机，只返回 id）。
 
         不设口令门禁（面板只读、局域网使用）：拉不到就如实回失败原因，
-        让用户看到是"没配 Key/地址"还是"Key 被拒/超时/地址非法"。
+        让用户看到是"没配地址"还是"Key 被拒/超时/地址非法"。
+        本地接口（Ollama / LM Studio / 自建网关）不需要 Key 也能拉。
         """
         from paper_trading.llm import LLMError, list_models, load_secrets
 
         p = load_secrets(self.secrets_path).get("provider") or {}
         if not p.get("base_url"):
             return {"ok": False, "hint": "save",
-                    "error": "尚未保存接口地址与 API Key：在面板「模型设置」填一次并"
-                             "保存即可长期有效（换模型不用再填 Key，重启也不丢）"}
-        if not p.get("api_key"):
-            return {"ok": False, "hint": "save",
-                    "error": "已保存接口地址但缺 API Key：补填 Key 保存一次，之后长期有效"}
+                    "error": "尚未保存接口地址：在面板「模型设置」填一次并保存"
+                             "即可长期有效（本地接口不需要 Key）"}
         try:
             models = list_models(self._llm_config())
-            return {"ok": True, "models": models}
+            out = {"ok": True, "models": models}
+            saved = str(p.get("model") or "")
+            if saved and saved not in models:
+                out["warning"] = (f"当前保存的模型 {saved} 不在列表里"
+                                  f"（可能已下线/改名），建议换一个再保存")
+            return out
         except LLMError as e:
             return {"ok": False, "error": str(e)}
 
@@ -865,7 +893,8 @@ def main() -> None:
 
     llm_cfg = llm_sub.add_parser("config", help="保存厂商配置（Key 只落本地文件）")
     llm_cfg.add_argument("--preset", default="custom",
-                         help="deepseek/qwen/moonshot/glm/doubao/openai/custom")
+                         help="deepseek/qwen/moonshot/glm/doubao/openai/ollama/lmstudio/vllm/lan/custom"
+                              "（本地接口可不填 --api-key）")
     llm_cfg.add_argument("--base-url", default="")
     llm_cfg.add_argument("--model", default="")
     llm_cfg.add_argument("--api-key", default="")

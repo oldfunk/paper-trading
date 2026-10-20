@@ -226,7 +226,7 @@ tbody tr:hover{background:var(--bg-hover)}
 <section>
   <div class="section-header"><h2 class="section-title">模型设置</h2></div>
   <div class="ai-panel">
-    <div class="s">先选厂商（接口地址自动填好），填 Key，拉模型列表选一个，保存即可。管理口令由浏览器自动保管，不用填也不用记；换浏览器后凭 API Key 保存一次即接管。</div>
+    <div class="s">先选厂商（接口地址自动填好），填 Key，拉模型列表选一个，保存即可。**本地接口（Ollama / LM Studio / vLLM / 局域网网关）不需要 Key，留空就行**。管理口令由浏览器自动保管，不用填也不用记；换浏览器后凭 API Key 保存一次即接管。</div>
     <div class="ai-row"><label>厂商 / 接口地址 / 模型</label></div>
     <div class="ai-row">
       <select id="preset">
@@ -236,12 +236,16 @@ tbody tr:hover{background:var(--bg-hover)}
         <option value="glm">智谱 GLM</option>
         <option value="doubao">豆包（火山引擎 Ark）</option>
         <option value="openai">OpenAI</option>
+        <option value="ollama">本机 Ollama（无需 Key）</option>
+        <option value="lmstudio">本机 LM Studio（无需 Key）</option>
+        <option value="vllm">本机 vLLM（无需 Key）</option>
+        <option value="lan">局域网网关（无需 Key）</option>
         <option value="custom">自定义（兼容网关/代理）</option>
       </select>
       <input id="base" placeholder="接口地址 https://…/v1" style="flex:2;min-width:200px">
     </div>
     <div class="ai-row">
-      <input id="apikey" type="password" placeholder="API Key（只存本机，不回显）" style="flex:2;min-width:200px">
+      <input id="apikey" type="password" placeholder="API Key（本地接口可留空；只存本机，不回显）" style="flex:2;min-width:200px">
     </div>
     <div class="ai-row">
       <select id="modelsel" style="flex:1;min-width:160px">
@@ -254,7 +258,7 @@ tbody tr:hover{background:var(--bg-hover)}
       <button id="btn-save" class="primary">保存配置</button>
       <span id="llmstat" class="mut" style="align-self:center"></span>
     </div>
-    <div class="s">Key 只保存在本机 secrets.local.json（0600 权限），永不进 git、不进日志；页面只显示掩码。保存一次长期有效：重启不丢、换模型不用重填。拉取模型列表不需要口令，拉不到会直接显示原因（未配置 / Key 被拒 / 超时 / 地址非法）。局域网使用，不要把面板暴露到公网。</div>
+    <div class="s">Key 只保存在本机 secrets.local.json（0600 权限），永不进 git、不进日志；页面只显示掩码。保存一次长期有效：重启不丢、换模型不用重填。**本地/局域网接口不填 Key 也能拉模型和对话**（选那类预设会自动清掉旧云端 Key，避免把 Key 发到别的机器）。局域网使用，不要把面板暴露到公网。</div>
   </div>
 </section>
 </div>
@@ -388,20 +392,26 @@ refresh();setInterval(refresh,15000);
 
 /* ---- 模型设置与 AI 问答（口令浏览器自动保管，用户无感） ---- */
 const tok=()=> (localStorage.getItem("pt_adm")||"");
-const PRESET_URLS={deepseek:"https://api.deepseek.com/v1",qwen:"https://dashscope.aliyuncs.com/compatible-mode/v1",moonshot:"https://api.moonshot.cn/v1",glm:"https://open.bigmodel.cn/api/paas/v4",doubao:"https://ark.cn-beijing.volces.com/api/v3",openai:"https://api.openai.com/v1",custom:""};
-const PRESET_MODELS={deepseek:"deepseek-chat",qwen:"qwen-plus",moonshot:"moonshot-v1-8k",glm:"glm-4-flash",doubao:"",openai:"gpt-4o-mini",custom:""};
+const PRESET_URLS={deepseek:"https://api.deepseek.com/v1",qwen:"https://dashscope.aliyuncs.com/compatible-mode/v1",moonshot:"https://api.moonshot.cn/v1",glm:"https://open.bigmodel.cn/api/paas/v4",doubao:"https://ark.cn-beijing.volces.com/api/v3",openai:"https://api.openai.com/v1",ollama:"http://127.0.0.1:11434/v1",lmstudio:"http://127.0.0.1:1234/v1",vllm:"http://127.0.0.1:8000/v1",lan:"",custom:""};
+const PRESET_MODELS={deepseek:"deepseek-chat",qwen:"qwen-plus",moonshot:"moonshot-v1-8k",glm:"glm-4-flash",doubao:"",openai:"gpt-4o-mini",ollama:"",lmstudio:"",vllm:"",lan:"",custom:""};
+const TOKENLESS=new Set(["ollama","lmstudio","vllm","lan"]);
 const KNOWN_URLS=new Set(Object.values(PRESET_URLS));
 document.getElementById("preset").addEventListener("change",e=>{
   const b=document.getElementById("base");
   if(!b.value.trim()||KNOWN_URLS.has(b.value.trim()))b.value=PRESET_URLS[e.target.value]||"";
   const m=document.getElementById("model");
   if(!m.value.trim()&&PRESET_MODELS[e.target.value])m.value=PRESET_MODELS[e.target.value];
+  const k=document.getElementById("apikey");
+  k.placeholder=TOKENLESS.has(e.target.value)
+    ?"本地接口无需 Key（留空即可；服务端若设了令牌才填）"
+    :"API Key（只存本机，不回显）";
 });
 async function post(u,b){const r=await fetch(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});return r.json()}
 async function llmStatus(){
   const s=await get("/api/llm/status");const d=s.data||{};
-  document.getElementById("llmstat").textContent=d.configured?`已配置：${d.preset} / ${d.model||"未选模型"} / Key ${d.key_masked}（长期保存，重启不丢）`:"未配置：先填接口地址与 Key，点保存配置（只需一次，之后长期有效）";
-  document.getElementById("apikey").placeholder=d.has_key?`已保存 Key（${d.key_masked}），换模型不用重填；换 Key 才需填写`:"API Key（只存本机，不回显）";
+  const cred=d.tokenless?"本地接口（无令牌）":`Key ${d.key_masked}`;
+  document.getElementById("llmstat").textContent=d.configured?`已配置：${d.preset} / ${d.model||"未选模型"} / ${cred}（长期保存，重启不丢）`:"未配置：先填接口地址（云端还要 Key），点保存配置；本地接口不用 Key";
+  document.getElementById("apikey").placeholder=d.has_key?`已保存 Key（${d.key_masked}），换模型不用重填；换 Key 才需填写`:"API Key（本地接口可留空；只存本机，不回显）";
   if(d.preset)document.getElementById("preset").value=d.preset;
   if(d.base_url)document.getElementById("base").value=d.base_url;
   if(d.model)document.getElementById("model").value=d.model;
@@ -416,7 +426,7 @@ document.getElementById("btn-models").onclick=async()=>{
   }
   const sel=document.getElementById("modelsel");sel.innerHTML='<option value="">下拉选择…</option>';
   (r.models||[]).forEach(m=>{const o=document.createElement("option");o.value=m;o.textContent=m;sel.appendChild(o)});
-  st.textContent=`共 ${(r.models||[]).length} 个模型，下拉选一个（会自动填入右侧），或直接手填`;
+  st.textContent=`共 ${(r.models||[]).length} 个模型，下拉选一个（会自动填入右侧），或直接手填`+(r.warning?`；${r.warning}`:"");
 };
 document.getElementById("modelsel").addEventListener("change",e=>{
   if(e.target.value)document.getElementById("model").value=e.target.value;
@@ -429,7 +439,7 @@ document.getElementById("btn-save").onclick=async()=>{
   document.getElementById("apikey").value="";
   if(r.admin_token)localStorage.setItem("pt_adm",r.admin_token);
   await llmStatus();refresh();
-  alert("已保存，以后换模型直接改，不用再碰口令。");
+  alert("已保存，以后换模型直接改，不用再碰口令。"+(r.warning?("\n\n提示："+r.warning):""));
 };
 document.getElementById("btn-ask").onclick=async()=>{
   const q=document.getElementById("q").value.trim();if(!q){alert("先写问题");return}
@@ -1153,9 +1163,11 @@ class Handler(BaseHTTPRequestHandler):
                 # 口令规则：未配置过→直接存；已配置→要口令，或凭 Key 接管（换浏览器不用旧口令）
                 if st0.get("configured") and not self._admin_ok(body) \
                         and not str(body.get("api_key") or "").strip():
-                    self._json({"ok": False,
-                                "error": "口令错误（换了浏览器？填写 API Key 后保存即可接管）"},
-                               code=403)
+                    _msg = ("口令错误：当前是本地/无令牌接口，没有 Key 可用来接管。"
+                            "请在原浏览器继续修改，或删除 secrets.local.json 后重新配置"
+                            if not st0.get("has_key") else
+                            "口令错误（换了浏览器？填写 API Key 后保存即可接管）")
+                    self._json({"ok": False, "error": _msg}, code=403)
                     return
                 r = self._bridge().llm_save(
                     body.get("preset", "custom"), body.get("base_url", ""),
