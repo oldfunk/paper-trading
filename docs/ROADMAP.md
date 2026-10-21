@@ -44,9 +44,11 @@
 - [x] 新增回归测试覆盖每一项修复；**回测-实盘对照测试**锁定：
       同一规则、同一日线序列、同一风控参数下，「是否成交 / 成交日 / 成交价口径 / T+1 是否可卖」一致。
       （`tests/test_m1_correctness.py::test_backtest_vs_simulated_live_tick_parity`）
-- [ ] 本地与 Pi 双端 `python -m pytest -q` 全绿。（本地 170 项全绿；Pi 待部署后跑）
-- [ ] v0.6.0 发版、Pi 部署、母项目确认按 tag 取用。
+- [x] 本地与 Pi 双端 `python -m pytest -q` 全绿。（本地 170 项；Pi 170 项，2026-10-21 验证）
+- [x] v0.6.0 发版、Pi 部署、母项目已通知按 tag 取用（stock-dashboard#1）。
+      （Release: https://github.com/oldfunk/paper-trading/releases/tag/v0.6.0；Pi `da9bc44`）
 - [ ] 本文件勾选完成，`engine.enabled` 才允许从 `false` 改为 `true`（改之前先在 Pi 上 `--dry-run` 观察一个交易日）。
+      **当前仍为 `false`**：双端验收已过，但尚未做开盘 dry-run 观察；开启前需单独确认。
 
 ### M1-A 持仓元数据（实盘止损可信）
 
@@ -149,3 +151,4 @@
 | 2026-10-21 | v0.5.5 | — | 量化能力审计完成；本路线图建立，M1 启动 |
 | 2026-10-21 | v0.6.0（开发中） | M1 | 持仓元数据 / 回测口径 / 账户级风控 / 时段与报价 / 其他硬问题（见上） |
 | 2026-10-21 | v0.6.0 | M1 | 14 项审计修复全部落地；新增 `tests/test_m1_correctness.py`（20 项，含回测 vs 模拟实盘 tick 对照）；本地 170 项全绿。待 Pi 部署后做双端验收。 |
+| 2026-10-21 | v0.6.0 | M1 | 双端验收通过：Pi `git pull` 到 `da9bc44`，`venv/bin/python -m pytest -q` 170 项全绿；dashboard 服务 active、HTTP 200；`positions` 迁移完成（entry_day/peak_price），`engine.enabled` 仍为 false。Release v0.6.0 已发布。 |
