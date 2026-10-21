@@ -32,6 +32,9 @@ python -m paper_trading.cli sell --symbol 600519 --volume 100 --price 1500.00 --
 python -m paper_trading.cli nav --json
 python -m paper_trading.cli history --type orders --limit 20 --json
 python -m paper_trading.cli history --type fills --limit 20 --json
+
+# 除权除息人工调整（M1：只检测+审计，不自动改账本）
+python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20 --cash-per-share 0.5 --share-ratio 0.3 --json
 ```
 
 ### Cron Integration
@@ -80,7 +83,7 @@ python -m paper_trading.cli history --type fills --limit 20 --json
 | 13 | 交易时段 9:30-11:30/13:00-15:00 | 集合竞价/盘后定价另有规则 | 简化：不校验下单时间，按信号价撮合 |
 | 14 | 集合竞价/价格笼子/排队成交 | 9:20 后不可撤、±2% 有效申报范围、涨停排队 | 简化：带内即全额成交，不做盘口模拟 |
 | 15 | 资金 T+1 可取 | 卖出资金可用不可取（次日可取） | 简化：`available_cash == cash`，不区分可取 |
-| 16 | 停牌/除权除息/退市整理/首日不设限 | 行情缺失、qfq 复权 | 简化：依赖前复权数据源；停牌=无新 K 线（触发无新鲜数据跳过）；首日/退市整理不建模 |
+| 16 | 停牌/除权除息/退市整理/首日不设限 | 行情缺失、qfq 复权 | 简化：依赖前复权数据源；停牌=无新 K 线（触发无新鲜数据跳过）；除权除息只做「检测 + `op_log` + `corporate apply` 人工调整」，自动调整 M1.5；首日/退市整理不建模 |
 | 17 | 盘中实时价仅展示 | 面板现价盘中优先腾讯实时（60s 缓存），NAV/结算永远收盘口径 | 已建模：`data/realtime.py`（与 Stock Dashboard 同源），失败回收盘价 |
 
 硬约束（agent 必守）：
@@ -121,6 +124,21 @@ python -m paper_trading.cli history --type fills --limit 20 --json
 6. **分钟线诚实边界**：分钟线默认 5 分钟粒度（新浪源，数月历史）；东财 1 分钟接口在部分网络环境直接断连，不要依赖它。没有分钟数据时回测必须在 `skipped` 里写明"未触发"，禁止假装跑过。面板与 CLI 都要显示这个提示。
 7. **参数网格只作筛选器**：`engine/optimize.py` 按超额收益（对比等权买入持有）排序，输出是"待验证线索"，不是结论；**必须再跑 `engine walkforward` 做样本外检验**（前 60% 选参数、后 40% 检验），掉下来的参数不得写进生产规则集。**0 笔成交的变体不参与排名**（熊市里"什么都不做"会排第一），它们单独统计在 `dropped_no_trade`。
 8. **回测两条不变量**（单测锁死，改回测器必须重跑）：① 资金守恒——卖出回款必须回到现金，权益 = 现金 + 市值；② 缺当日日线的票沿用最近收盘计价（不当 0），但当天没数据不成交。
+
+## 路线图纪律（量化可信度）
+
+`docs/ROADMAP.md` 是量化能力建设的唯一进度真相源（M1 正确性 → M2 数据可复现 →
+M3 策略组合 → M4 运维审计）。迭代时必守：
+
+1. **先读后做**：每次迭代开始先读 `docs/ROADMAP.md`，确认当前里程碑与未勾选项；
+   完成后回来勾选复选框并补一行「进度记录」。
+2. **M1 门禁**：M1 全部验收通过前，`engine.enabled` 保持 `false`；
+   只允许 `--dry-run` 观察，不得用「先跑起来再修」绕过。
+3. **口径一致**：回测与实盘必须共用同一套判定（`engine/rules.py`）、同一套费用、
+   同一套风控参数；改任一侧必须同步另一侧并补对照测试。
+4. **不静默**：任何无法自动处理的失真（如除权除息）必须落 `op_log` 告警或有文档说明，
+   禁止让 NAV/持仓在无声中漂移。
+5. **不做**：不接券商实盘、不做 tick/HFT、不做期权、不做空（用户决策，勿擅自扩展）。
 
 ## Risk Parameters
 

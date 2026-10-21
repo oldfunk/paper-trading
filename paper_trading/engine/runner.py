@@ -34,6 +34,51 @@ def _on_signal(signum, frame):    # noqa: ANN001, ARG001
     logger.info("Engine stopping (signal)")
 
 
+def bars_excluding_today(bars: list, now: datetime) -> list:
+    """排除当日未收盘日线（收盘后 15:00 才把当日视为已收盘）。
+
+    审计 P0：引擎盘中读到当日未完成 K 线会造出 T+0/未来函数信号。
+    """
+    today = now.date()
+    after_close = (now.hour * 60 + now.minute) >= 15 * 60
+    return [b for b in bars
+            if b.timestamp.date() < today
+            or (after_close and b.timestamp.date() == today)]
+
+
+def price_map(bridge, quotes: dict, symbols: list[str]) -> dict[str, float]:
+    """各标的最新价：实时优先，缺失回退最近已收盘日线（绝不把别家价格填给它）。
+
+    审计 P0：原来风控把当前标的价格填给所有持仓 → 总仓位上限失真。
+    """
+    out: dict[str, float] = {}
+    for s in symbols:
+        q = quotes.get(s)
+        if q and float(q.get("price") or 0.0) > 0:
+            out[s] = float(q["price"])
+            continue
+        bars = bridge.data_db.get_bars(s, limit=1)
+        if bars:
+            out[s] = float(bars[-1].close)
+    return out
+
+
+def account_guard(bridge, prices: dict, day: str) -> dict:
+    """账户级熔断：更新峰值 + 组合回撤 + 当日亏损。引擎/条件单/AI 共用。"""
+    nav = bridge.broker.get_nav(prices)
+    risk = bridge.risk
+    risk.update_peak(nav.total_value)
+    dd_halt, dd = risk.check_drawdown(nav.total_value)
+    dl_halt, dl = risk.check_daily_loss(nav.total_value, day)
+    why = []
+    if dd_halt:
+        why.append(f"组合回撤 {dd:.2%}")
+    if dl_halt:
+        why.append(f"当日亏损 {dl:.2%}")
+    return {"nav": nav, "halted": bool(why), "drawdown": dd, "daily_loss": dl,
+            "why": "、".join(why)}
+
+
 class EngineRunner:
     """一轮 = 拉实时价 + 判规则 + 执行。无 LLM、无网络依赖（行情源失败即跳过）。"""
 
@@ -48,11 +93,28 @@ class EngineRunner:
 
     # ---------- 工具 ----------
 
+    def _pool_symbols(self) -> list[str]:
+        """engine.universe=auto 时，未点名标的的规则取本地股票池（有上限）。"""
+        if str(self.cfg.get("universe") or "") != "auto":
+            return []
+        try:
+            pool = self.b.data_db.get_pool_symbols()
+        except Exception:      # noqa: BLE001 - 池读不到就退回"无标的"
+            pool = []
+        cap = int(self.cfg.get("universe_max") or 50)
+        return [str(s) for s in pool[:max(1, cap)]]
+
+    def _rule_syms_of(self, rule: dict) -> list[str]:
+        syms = rule.get("symbols") or ([rule.get("symbol")] if rule.get("symbol")
+                                       else [])
+        if not syms:
+            syms = self._pool_symbols()
+        return [str(s) for s in syms]
+
     def _rule_symbols(self) -> list[str]:
         out: list[str] = []
         for r in self.cfg.get("rules") or []:
-            syms = r.get("symbols") or ([r.get("symbol")] if r.get("symbol") else [])
-            out.extend([str(s) for s in syms])
+            out.extend(self._rule_syms_of(r))
         seen, res = set(), []
         for s in out:
             if s not in seen:
@@ -66,19 +128,43 @@ class EngineRunner:
             return None
         return PositionView(symbol=sym, total_volume=p.total_volume,
                             available_volume=p.available_volume,
-                            avg_cost=p.avg_cost)
+                            avg_cost=p.avg_cost,
+                            entry_day=str(p.entry_day or ""),
+                            peak_price=float(p.peak_price or 0.0))
 
     def _held_days(self, sym: str) -> int:
-        """持有交易日数（用本地日线计数，最新收盘日 − 建仓日）。"""
+        """持有交易日数 = 建仓日之后**已收盘**的交易日数。
+
+        与回测 `trading_days_held`（day_idx − entry_idx）同口径：引擎开盘时
+        最新一根未收盘日线不计入，所以实盘在 T+1 日开盘才会比 T 日多一天。
+        """
         pos = self.b.broker.get_position(sym)
         if not pos:
             return 0
-        bars = self.b.data_db.get_bars(sym, limit=120)
-        if not bars:
+        entry = str(pos.entry_day or "")
+        if not entry:
             return 0
-        entry = str(getattr(pos, "entry_day", "") or "")
-        return 0 if not entry else len([b for b in bars
-                                       if b.timestamp.date().isoformat() > entry])
+        hist = bars_excluding_today(self.b.data_db.get_bars(sym, limit=120),
+                                    datetime.now())
+        return len([b for b in hist
+                    if b.timestamp.date().isoformat() > entry])
+
+    def _refresh_peak(self, sym: str, quote: Optional[dict], now: datetime) -> None:
+        """持仓峰值 = max(落库峰值, 成本价, 实时价/当日高点, 建仓以来日线高点)，落库。"""
+        pos = self.b.broker.get_position(sym)
+        if not pos or pos.total_volume <= 0:
+            return
+        entry = str(pos.entry_day or "")
+        peak = max(float(pos.peak_price or 0.0), float(pos.avg_cost or 0.0))
+        if quote:
+            peak = max(peak, float(quote.get("price") or 0.0),
+                       float(quote.get("high") or 0.0))
+        hist = bars_excluding_today(self.b.data_db.get_bars(sym, limit=120), now)
+        for b in hist:
+            if not entry or b.timestamp.date().isoformat() >= entry:
+                peak = max(peak, float(b.high or 0.0))
+        if peak > 0:
+            self.b.broker.update_peak_price(sym, peak)
 
     # ---------- 单轮 ----------
 
@@ -99,7 +185,10 @@ class EngineRunner:
         if not rt.is_trading_session():
             out["error"] = "非交易时段"
             return out
-        quotes = rt.get_quotes(syms, force=True)
+        # 持仓标的也要取价：风控按各自真实价格算总仓位（不再拿规则标的价填全场）
+        held = [p.symbol for p in self.b.broker.get_all_positions()]
+        quote_syms = sorted(set(syms) | set(held))
+        quotes = rt.get_quotes(quote_syms, force=True)
         out["quotes"] = len(quotes)
         try:
             self.b.data_db.log_quote(now.isoformat(timespec="seconds"), quotes)
@@ -107,6 +196,19 @@ class EngineRunner:
             logger.debug(f"quote log failed: {e}")
         if not quotes:
             out["error"] = "行情源无数据"
+            return out
+
+        # 先维护持仓峰值（trailing_stop 的判定输入），再算账户级熔断
+        for sym in held:
+            self._refresh_peak(sym, quotes.get(sym), now)
+        prices = price_map(self.b, quotes, quote_syms)
+        guard = account_guard(self.b, prices, day)
+        out["nav"] = round(guard["nav"].total_value, 2)
+        if guard["halted"]:
+            out["halted"] = {"why": guard["why"],
+                             "drawdown": round(guard["drawdown"], 4),
+                             "daily_loss": round(guard["daily_loss"], 4)}
+            out["error"] = f"账户熔断：{guard['why']}"
             return out
 
         fired_today = self.state.fired_rules(day)
@@ -118,10 +220,12 @@ class EngineRunner:
 
         for rule in self.cfg.get("rules") or []:
             rid = str(rule.get("id"))
+            if rule.get("enabled") is False:      # 规则级开关（审计 P0）
+                continue
             if rule.get("once", True) and rid in fired_today:
                 continue
             act = rule.get("action") or {}
-            for sym in (rule.get("symbols") or [rule.get("symbol")]):
+            for sym in self._rule_syms_of(rule):
                 q = quotes.get(str(sym))
                 if not q or not q.get("price"):
                     continue
@@ -135,7 +239,8 @@ class EngineRunner:
                 if not intent:
                     continue
                 res = self._execute(rule, intent, q, now, day, budget,
-                                     cooldown, min_ticket, max_orders, max_turnover)
+                                     cooldown, min_ticket, max_orders,
+                                     max_turnover, prices)
                 (out["fired"] if res.get("ok") else out["skipped"]).append(
                     {"rule": rid, "symbol": sym, "side": intent.side,
                      "reason": intent.reason, **res})
@@ -147,7 +252,8 @@ class EngineRunner:
         return out
 
     def _context(self, sym: str, q: dict, now, day: str) -> RuleContext:
-        bars = self.b.data_db.get_bars(sym, limit=60)
+        # 排除当日未收盘日线：只用最近已收盘交易日的收盘序列（防 T+0/未来函数）
+        bars = bars_excluding_today(self.b.data_db.get_bars(sym, limit=61), now)
         closes = [b.close for b in bars]
         prev_close = float(q.get("prev_close") or 0.0)
         price = float(q.get("price") or 0.0)
@@ -168,8 +274,7 @@ class EngineRunner:
         for r in self.cfg.get("rules") or []:
             if str(r.get("type") or "") not in INTRADAY_TYPES:
                 continue
-            syms = r.get("symbols") or ([r.get("symbol")] if r.get("symbol") else [])
-            out.update(str(s) for s in syms)
+            out.update(self._rule_syms_of(r))
         return out
 
     def _minutes_for(self, sym: str, now, day: str) -> list[tuple]:
@@ -217,7 +322,7 @@ class EngineRunner:
 
     def _execute(self, rule: dict, intent, q: dict, now, day: str, budget: dict,
                  cooldown: int, min_ticket: float, max_orders: int,
-                 max_turnover: float) -> dict:
+                 max_turnover: float, prices: Optional[dict] = None) -> dict:
         rid = intent.rule_id
         sym = intent.symbol
         side = intent.side
@@ -264,11 +369,12 @@ class EngineRunner:
                                             else SignalType.SELL),
                      volume=volume, price=price, reason="engine:" + intent.reason)
         positions = {p.symbol: p for p in self.b.broker.get_all_positions()}
-        latest = {p.symbol: float(q.get("price") or 0.0) for p in positions.values()}
-        latest[sym] = price
-        nav = self.b.broker.get_nav({**latest, sym: price})
+        prices = prices or price_map(
+            self.b, {sym: q},
+            sorted({p.symbol for p in positions.values()} | {sym}))
+        nav = self.b.broker.get_nav(prices)
         ok, why = self.b.risk.check_signal(sig, price, self.b.broker.get_cash(),
-                                          positions, nav.total_value, prices=latest)
+                                          positions, nav.total_value, prices=prices)
         if not ok:
             self.state.log_trigger(now.isoformat(), day, rid, sym, side,
                                    "risk_reject", {**detail, "why": why})
@@ -320,7 +426,9 @@ def run_loop(bridge, interval_sec: int = 60, dry_run: bool = False,
     cond = ConditionRunner(bridge, ConditionalOrders(bridge.account_db_path),
                            dry_run=dry_run,
                            enabled=bool(cfg.get("enabled")),
-                           min_ticket_cny=float(cfg.get("min_ticket_cny") or 0))
+                           min_ticket_cny=float(cfg.get("min_ticket_cny") or 0),
+                           max_per_day=int(cfg.get("max_orders_per_day") or 8),
+                           state=runner.state)   # 与规则引擎共用日内订单预算
     out: list[dict] = []
     n = 0
     while not _STOP:
@@ -352,7 +460,7 @@ class ConditionRunner:
 
     def __init__(self, bridge, orders, dry_run: bool = False,
                  min_ticket_cny: float = 0.0, max_per_day: int = 8,
-                 enabled: bool = True):
+                 enabled: bool = True, state: Optional[EngineState] = None):
         self.b = bridge
         self.orders = orders
         self.dry_run = dry_run
@@ -360,6 +468,8 @@ class ConditionRunner:
         self.max_per_day = int(max_per_day or 8)
         # 与规则引擎同一个总开关：engine.enabled=false 时条件单也不自动成交
         self.enabled = bool(enabled)
+        # 与规则引擎共用日内订单预算（同一账户同一天的总量不被叠加绕过）
+        self.state = state
 
     def tick(self, quotes: Optional[dict] = None) -> dict:
         from paper_trading.data import realtime as rt
@@ -373,7 +483,8 @@ class ConditionRunner:
                "filled": [], "rejected": [], "held": [], "n_quotes": 0}
         if not pend:
             return out
-        syms = sorted({d["symbol"] for d in pend})
+        held_syms = [p.symbol for p in self.b.broker.get_all_positions()]
+        syms = sorted({d["symbol"] for d in pend} | set(held_syms))
         q = quotes if quotes is not None else rt.get_quotes(syms, force=True)
         out["n_quotes"] = len(q)
         if not q:
@@ -382,11 +493,22 @@ class ConditionRunner:
             self.b.data_db.log_quote(now.isoformat(timespec="seconds"), q)
         except Exception:
             pass
-        done_today = len([d for d in self.orders.list_all(50, "filled")
-                          if str(d["created_at"])[:10] == day])
+        prices = price_map(self.b, q, syms)
+        guard = account_guard(self.b, prices, day)
+        if guard["halted"]:
+            out["halted"] = {"why": guard["why"],
+                             "drawdown": round(guard["drawdown"], 4),
+                             "daily_loss": round(guard["daily_loss"], 4)}
+            for d in pend:
+                out["held"].append({"id": d["id"], "symbol": d["symbol"],
+                                    "why": f"账户熔断：{guard['why']}，保持待触发"})
+            return out
+        # 日内预算与规则引擎共用（budget 由两个模块共同累加）
+        budget = self.state.budget(day) if self.state is not None else {"orders": 0}
         for d in pend:
-            if done_today >= self.max_per_day:
-                out["rejected"].append({"id": d["id"], "why": "日内条件单上限"})
+            if int(budget.get("orders", 0)) >= self.max_per_day > 0:
+                out["rejected"].append({"id": d["id"],
+                                        "why": "日内订单预算已用完（与规则引擎共用）"})
                 continue
             quote = q.get(d["symbol"])
             if not quote or not quote.get("price"):
@@ -395,11 +517,13 @@ class ConditionRunner:
             chg = float(quote.get("change_pct") or 0.0)
             if not triggered(d, price, chg):
                 continue
-            res = self._execute(d, quote, price, now, day)
+            res = self._execute(d, quote, price, now, day, prices)
             rec = {"id": d["id"], "symbol": d["symbol"], "side": d["side"], **res}
             if res.get("ok"):
                 out["filled"].append(rec)
-                done_today += 1
+                if self.state is not None and not self.dry_run:
+                    budget = self.state.bump_budget(
+                        day, 1, float(price) * int(res.get("volume") or 0))
             elif res.get("keep_armed"):
                 # 引擎没开：条件本身没问题，只是现在不该成交 → 保持待触发
                 out["held"].append(rec)
@@ -409,7 +533,8 @@ class ConditionRunner:
                                  {"why": res.get("why")}, now)
         return out
 
-    def _execute(self, d: dict, quote: dict, price: float, now, day: str) -> dict:
+    def _execute(self, d: dict, quote: dict, price: float, now, day: str,
+                 prices: Optional[dict] = None) -> dict:
         from paper_trading.engine.rules import size_for_value
         from paper_trading.models import Order, OrderType, Signal, SignalType
 
@@ -436,8 +561,9 @@ class ConditionRunner:
                                             else SignalType.SELL),
                      volume=volume, price=price, reason="cond:" + (d.get("note") or ""))
         positions = {p.symbol: p for p in self.b.broker.get_all_positions()}
-        prices = {p.symbol: price for p in positions.values()}
-        prices[sym] = price
+        prices = prices or price_map(
+            self.b, {sym: quote},
+            sorted({p.symbol for p in positions.values()} | {sym}))
         nav = self.b.broker.get_nav(prices)
         ok, why = self.b.risk.check_signal(sig, price, self.b.broker.get_cash(),
                                           positions, nav.total_value, prices=prices)

@@ -59,6 +59,8 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "max_position_pct": float(risk.get("max_position_pct", 0.3)),
             "max_total_position_pct": float(risk.get("max_total_position_pct", 0.95)),
             "max_drawdown_pct": float(risk.get("max_drawdown_pct", 0.20)),
+            "daily_loss_halt_pct": float(risk.get("daily_loss_halt_pct",
+                                                  agent.get("daily_loss_halt_pct", 0.05))),
         },
         "stock_pool": [_norm_sym(s) for s in raw.get("stock_pool", [])],
         "agent": {

@@ -92,7 +92,8 @@ def _rules_for(grid_name: str, symbol: str, params: dict, value: float) -> list[
 
 def _evaluate(cfg: dict, rules: list[dict], bars_by_sym: dict, days: list[str],
               fee: FeeModel, initial_cash: float, slippage_pct: float,
-              minutes_by_day: Optional[dict]) -> dict:
+              minutes_by_day: Optional[dict], slippage_fixed: float = 0.01,
+              risk: Optional[dict] = None) -> dict:
     """跑一组规则并返回可比较的指标（样本内/样本外同一口径）。"""
     trial = dict(cfg)
     trial["rules"] = rules
@@ -100,7 +101,8 @@ def _evaluate(cfg: dict, rules: list[dict], bars_by_sym: dict, days: list[str],
     trial.setdefault("max_orders_per_day", 10 ** 6)
     trial["max_turnover_per_day"] = 0
     intraday = any(str(r.get("type") or "") in INTRADAY_TYPES for r in rules)
-    res = Backtester(trial, fee=fee, slippage_pct=slippage_pct).run(
+    res = Backtester(trial, fee=fee, slippage_pct=slippage_pct,
+                     slippage_fixed=slippage_fixed, risk=risk).run(
         bars_by_sym, days, initial_cash=initial_cash,
         minutes_by_day=minutes_by_day if intraday else None)
     m = metrics(res, len(days))
@@ -125,6 +127,8 @@ def grid_search(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
                 value: float = 10000.0, fee: Optional[FeeModel] = None,
                 initial_cash: float = 100000.0,
                 slippage_pct: float = 0.0,
+                slippage_fixed: float = 0.01,
+                risk: Optional[dict] = None,
                 top: int = 10,
                 minutes_by_day: Optional[dict] = None,
                 min_trades: int = 1) -> dict:
@@ -161,7 +165,8 @@ def grid_search(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
     intraday_days = 0
     for tag, rules in groups.items():
         m = _evaluate(cfg, rules, bars_by_sym, days, fee, initial_cash,
-                      slippage_pct, minutes_by_day if intraday else None)
+                      slippage_pct, minutes_by_day if intraday else None,
+                      slippage_fixed=slippage_fixed, risk=risk)
         intraday_days = max(intraday_days, int(m.get("intraday_days") or 0))
         rec = {
             "tag": tag, "symbol": rules[0]["symbol"], "params": rules[0]["params"],
@@ -201,6 +206,7 @@ def walk_forward(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
                  grid_name: str, symbols: Optional[list[str]] = None,
                  value: float = 10000.0, fee: Optional[FeeModel] = None,
                  initial_cash: float = 100000.0, slippage_pct: float = 0.0,
+                 slippage_fixed: float = 0.01, risk: Optional[dict] = None,
                  top: int = 5, split: float = 0.6,
                  minutes_by_day: Optional[dict] = None,
                  min_trades: int = 1) -> dict:
@@ -219,7 +225,8 @@ def walk_forward(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
     is_days, oos_days = days[:cut], days[cut:]
     in_sample = grid_search(cfg, bars_by_sym, is_days, grid_name, symbols,
                             value=value, fee=fee, initial_cash=initial_cash,
-                            slippage_pct=slippage_pct, top=top,
+                            slippage_pct=slippage_pct,
+                            slippage_fixed=slippage_fixed, risk=risk, top=top,
                             minutes_by_day=minutes_by_day, min_trades=min_trades)
     if in_sample.get("error"):
         return in_sample
@@ -230,7 +237,8 @@ def walk_forward(cfg: dict, bars_by_sym: dict[str, list], days: list[str],
         if not rules:
             continue
         m = _evaluate(cfg, rules, bars_by_sym, oos_days, fee, initial_cash,
-                      slippage_pct, minutes_by_day if intraday else None)
+                      slippage_pct, minutes_by_day if intraday else None,
+                      slippage_fixed=slippage_fixed, risk=risk)
         oos_rows.append({
             "symbol": rec["symbol"], "params": rec["params"],
             "in_excess_pct": rec["excess_pct"], "in_trades": rec["trades"],

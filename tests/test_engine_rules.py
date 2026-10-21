@@ -162,7 +162,7 @@ def _days(month: int, n: int) -> list[str]:
 
 
 def test_backtest_no_lookahead_and_t_plus_1():
-    """T 日收盘信号最早 T+1 成交（用 T+1 收盘价近似开盘）。"""
+    """T 日收盘信号最早 T+1 成交（M1：T+1 **开盘价** ± 固定滑点 0.01）。"""
     days = _days(1, 8)
     closes = [10, 10, 10, 9, 9, 20, 20, 20]      # 第6天大涨
     bars = {"600519": _bars(days, closes)}
@@ -173,8 +173,11 @@ def test_backtest_no_lookahead_and_t_plus_1():
                 "action": {"side": "buy", "value": 10000}}]}
     res = Backtester(cfg).run(bars, days, initial_cash=100000)
     buys = [t for t in res.trades if t["side"] == "buy"]
-    assert len(buys) == 1
-    assert buys[0]["day"] == days[6] and buys[0]["price"] == 20.0
+    # M1：once=按交易日（不是整段回测一次）。第 6 天收盘出信号 → 第 7 天开盘
+    # 20.01 买入；第 7 天收盘仍满足 → 第 8 天开盘再买一次（与实盘每日判定一致）。
+    assert len(buys) == 2
+    assert [t["day"] for t in buys] == [days[6], days[7]]
+    assert all(t["price"] == 20.01 for t in buys)
 
 
 def test_backtest_min_ticket_and_fees():

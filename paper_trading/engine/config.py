@@ -27,7 +27,8 @@ LOCAL_FILE = "engine.local.yaml"
 DEFAULTS = {
     "enabled": False,
     "interval_sec": 60,
-    "universe": "auto",
+    "universe": "auto",        # auto=规则未点名时用本地股票池；list=必须逐条点名
+    "universe_max": 50,        # auto 模式最多订阅多少只（防一次拉爆行情源）
     "max_orders_per_day": 6,
     "max_turnover_per_day": 60000.0,
     "per_symbol_cooldown_sec": 900,
@@ -71,6 +72,9 @@ def validate(cfg: dict) -> tuple[bool, str]:
         return False, "interval_sec 至少 5 秒"
     if int(cfg.get("max_orders_per_day") or 0) < 0:
         return False, "max_orders_per_day 不能为负"
+    universe = str(cfg.get("universe") or "auto").lower()
+    if universe not in ("auto", "list"):
+        return False, f"universe 须为 auto/list，got {universe}"
     seen: set[str] = set()
     for i, r in enumerate(cfg.get("rules") or []):
         rid = str(r.get("id") or "")
@@ -82,8 +86,8 @@ def validate(cfg: dict) -> tuple[bool, str]:
         if str(r.get("type")) not in RULE_TYPES:
             return False, f"规则 {rid} 类型未知（支持 {','.join(RULE_TYPES)}）"
         syms = r.get("symbols") or ([r["symbol"]] if r.get("symbol") else [])
-        if not syms:
-            return False, f"规则 {rid} 未指定标的"
+        if not syms and universe != "auto":
+            return False, f"规则 {rid} 未指定标的（universe=list 必须点名）"
         act = r.get("action") or {}
         if str(act.get("side", "")).lower() not in ("buy", "sell"):
             return False, f"规则 {rid} action.side 须为 buy/sell"

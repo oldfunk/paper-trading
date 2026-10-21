@@ -23,14 +23,19 @@ def _bars(sym, days, closes):
 
 
 def test_sell_proceeds_return_to_cash():
-    """一买一卖后现金必须回到"卖出净额"，而不是凭空蒸发。"""
-    days = ["2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05"]
-    bars = {"A": _bars("A", days, [10.0, 10.0, 11.0, 11.0])}
+    """一买一卖后现金必须回到"卖出净额"，而不是凭空蒸发。
+
+    M1 口径：信号 T 日收盘 → T+1 开盘成交。第 3 天开盘 +5%（10.5，不是一字板）
+    买入；第 4 天开盘清仓（约 +4.8%）；此后价格高于买入阈值，不再触发。
+    """
+    days = ["2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05",
+            "2026-03-06"]
+    bars = {"A": _bars("A", days, [10.0, 10.0, 10.5, 11.0, 11.0])}
     cfg = {"min_ticket_cny": 0, "max_orders_per_day": 10,
            "max_turnover_per_day": 0,
            "rules": [
                {"id": "buy", "type": "price_level", "symbol": "A",
-                "params": {"op": "below", "value": 11},
+                "params": {"op": "below", "value": 10.6},
                 "action": {"side": "buy", "value": 20000}, "once": False},
                {"id": "sell", "type": "price_level", "symbol": "A",
                 "params": {"op": "above", "value": 10.5},

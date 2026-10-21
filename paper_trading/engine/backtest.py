@@ -12,8 +12,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+from paper_trading.broker.paper_broker import PaperBroker
 from paper_trading.engine.rules import (INTRADAY_TYPES, Intent, PositionView,
                                          RuleContext, evaluate, size_for_value)
+from paper_trading.models import Position, Signal, SignalType
 
 
 @dataclass
@@ -57,33 +59,76 @@ class BacktestResult:
 
 
 class Backtester:
-    """日线重放回测器（无 LLM、无网络、纯本地数据）。"""
+    """日线重放回测器（无 LLM、无网络、纯本地数据）。
+
+    与实盘口径对齐（M1-B）：
+    - T 日收盘信号 → T+1 **开盘价**成交（± 滑点）；无当日 K 线（停牌）不成交
+    - 开盘一字涨停不买、一字跌停不卖（保守）
+    - 当日买入 T+1 冻结，当日不可卖
+    - `once` 按交易日：同一规则每天最多成交一次（不是整段回测一次）
+    - 组合风控（单笔/单票/总仓位）默认使用与 config 一致的参数；
+      传 `risk={}` 可显式关闭（研究用途，不用于生产结论）
+    """
+
+    RISK_DEFAULTS = {"max_single_order_value": 30000.0, "max_position_pct": 0.3,
+                     "max_total_position_pct": 0.95, "max_drawdown_pct": 0.2}
 
     def __init__(self, cfg: dict, fee: Optional[FeeModel] = None,
-                 slippage_pct: float = 0.0):
+                 slippage_pct: float = 0.0, slippage_fixed: float = 0.01,
+                 risk: Optional[dict] = None):
         self.cfg = cfg
         self.fee = fee or FeeModel()
         self.slippage = float(slippage_pct or 0.0)
+        self.slippage_fixed = float(slippage_fixed or 0.0)
         self.min_ticket = float(cfg.get("min_ticket_cny") or 0.0)
         self.max_orders = int(cfg.get("max_orders_per_day") or 0) or 10 ** 9
         self.max_turnover = float(cfg.get("max_turnover_per_day") or 0.0) or float("inf")
+        # 组合风控：默认与 config.yaml 同口径（30k/30%/95%）；显式 risk={} 关闭
+        from paper_trading.risk.risk_manager import RiskManager
+        self.risk = None
+        if risk != {}:
+            self.risk = RiskManager(**{**self.RISK_DEFAULTS, **(risk or {})})
 
     # ---------- 内部工具 ----------
 
     def _exec_price(self, ref: float, side: str) -> float:
-        px = ref * (1.0 + self.slippage if side == "buy" else 1.0 - self.slippage)
+        """成交价 = 开盘参考价 ± 固定滑点（与 PaperBroker 同口径），再按最小档位取整。"""
+        px = ref + (self.slippage_fixed if side == "buy" else -self.slippage_fixed)
+        if self.slippage:
+            px *= (1.0 + self.slippage if side == "buy" else 1.0 - self.slippage)
         return round(px, 2)
+
+    def _risk_reject(self, side: str, sym: str, volume: int, price: float,
+                     cash: float, pos: dict[str, BTPosition], prices: dict,
+                     frozen: dict) -> str:
+        """组合风控检查（与实盘 RiskManager 同一实现）。返回空串=通过。"""
+        if self.risk is None:
+            return ""
+        positions = {
+            s: Position(symbol=s, total_volume=p.volume,
+                        available_volume=max(0, p.volume - int(frozen.get(s, 0))),
+                        avg_cost=p.avg_cost, last_update=datetime.now())
+            for s, p in pos.items()
+        }
+        total_value = cash + sum(p.volume * float(prices.get(s) or 0.0)
+                                 for s, p in pos.items())
+        sig = Signal(symbol=sym,
+                     direction=SignalType.BUY if side == "buy" else SignalType.SELL,
+                     volume=volume, price=price)
+        ok, why = self.risk.check_signal(sig, price, cash, positions, total_value,
+                                         prices=prices)
+        return "" if ok else why
 
     def _buy(self, cash: float, sym: str, value: float, price: float,
              day: str) -> tuple[float, Optional[dict], Optional[dict]]:
         """返回 (新现金, 成交记录, 跳过原因)。"""
+        if value < self.min_ticket:
+            return cash, None, {"day": day, "symbol": sym, "why": "低于最小下单金额",
+                                "value": value}
         vol = size_for_value(price, value)
         if vol <= 0:
             return cash, None, {"day": day, "symbol": sym, "why": "金额不足一手"}
         amount = price * vol
-        if value < self.min_ticket:
-            return cash, None, {"day": day, "symbol": sym, "why": "低于最小下单金额",
-                                "value": value}
         commission, transfer = self.fee.buy_cost(amount)
         if amount + commission + transfer > cash:
             return cash, None, {"day": day, "symbol": sym, "why": "现金不足",
@@ -127,14 +172,14 @@ class Backtester:
         没有分钟数据时日内规则不触发，并在 skipped 里说明原因（不静默"跑过了"）。
         """
         res = BacktestResult(initial_cash=initial_cash)
-        all_rules = [r for r in (self.cfg.get("rules") or []) if isinstance(r, dict)]
+        all_rules = [r for r in (self.cfg.get("rules") or [])
+                     if isinstance(r, dict) and r.get("enabled") is not False]
         rules = [r for r in all_rules if str(r.get("type") or "") not in INTRADAY_TYPES]
         intra_rules = [r for r in all_rules if str(r.get("type") or "") in INTRADAY_TYPES]
         minutes_by_day = minutes_by_day or {}
         if intra_rules and not minutes_by_day:
             res.skipped.append({"why": "规则集含日内规则，但无分钟线数据，"
                                        "日内规则全程未触发（先 minute pull）"})
-        fired: set[str] = set()
         pending: list[tuple[str, Intent, str]] = []      # (rule_id, intent, exec_day)
         pos: dict[str, BTPosition] = {}
         cash = float(initial_cash)
@@ -144,35 +189,60 @@ class Backtester:
         day_turnover = 0.0
         intraday_days: set[str] = set()
         last_px: dict[str, float] = {}
-        # 价格索引：{symbol: {day: close}}。原来每个交易日都线性扫一遍 bars
-        # （days × bars × 变体数），参数网格跑一轮要好几分钟；建索引后是 O(1) 查。
+        # 价格索引：{symbol: {day: close}}；bar 索引另存 OHLC（开盘成交用）
         px_idx = {s: self._index_days(b) for s, b in bars_by_sym.items()}
+        bar_idx = {s: {x.timestamp.date().isoformat(): x for x in b}
+                   for s, b in bars_by_sym.items()}
         day_pos = {d: i for i, d in enumerate(days)}
 
         for day in days:
             # px：当日真实收盘（没有就不成交）；px_last：沿用最近一次有效收盘（算市值用）
-            # 分开的原因：某只票当天没数据时，市值不能当 0（否则权益曲线凭空塌一块），
-            # 但也不能拿旧价假装成交。
+            # prev_px：**昨日及更早**的最后收盘（涨跌停判定；不能拿今日收盘判今日）
             px = {s: px_idx[s].get(day) for s in bars_by_sym}
+            prev_px = dict(last_px)
             for s, v in px.items():
                 if v:
                     last_px[s] = v
             px_last = {s: last_px.get(s) for s in bars_by_sym}
             held_days = {s: max(0, day_pos[day] - day_pos[p.entry_day])
                          for s, p in pos.items() if p.entry_day in day_pos}
-            # 当日买入的部分 T+1 冻结：日内规则与实盘一样卖不掉
+            # 当日买入的部分 T+1 冻结：日线路径与实盘一样当天卖不掉
             frozen: dict[str, int] = {}
+            # `once` 按交易日：每天重置（与实盘 EngineState.fired_rules 同口径）
+            fired_today: set[str] = set()
 
-            # 1) 执行昨日挂单（开盘价：prev close 近似 = 昨日收盘；无则以当日收盘）
+            # 1) 执行昨日挂单：T+1 **开盘价**成交；停牌/一字板保守不成交
             for rid, it, exec_day in pending:
                 if exec_day != day:
                     continue
-                if rid in fired:
+                rule_cfg = next((r for r in rules if r["id"] == rid), {})
+                once = bool(rule_cfg.get("once", True))
+                if once and rid in fired_today:
                     continue
-                ref = px.get(it.symbol)
-                if not ref:
+                bar = bar_idx.get(it.symbol, {}).get(day)
+                if bar is None:
+                    res.skipped.append({"day": day, "symbol": it.symbol,
+                                        "why": "停牌/无当日K线，不成交"})
                     continue
+                ref = float(bar.open or bar.close or 0.0)
+                if ref <= 0:
+                    continue
+                # 开盘一字涨停买不到 / 一字跌停卖不掉（保守口径，文档标注）
+                pc = float(prev_px.get(it.symbol) or 0.0)
+                if pc > 0:
+                    lim = PaperBroker.limit_pct_for(it.symbol)
+                    if it.side == "buy" and ref >= pc * (1 + lim) - 0.005:
+                        res.skipped.append({"day": day, "symbol": it.symbol,
+                                            "why": "开盘涨停，保守不成交"})
+                        continue
+                    if it.side == "sell" and ref <= pc * (1 - lim) + 0.005:
+                        res.skipped.append({"day": day, "symbol": it.symbol,
+                                            "why": "开盘跌停，保守不成交"})
+                        continue
                 price = self._exec_price(ref, it.side)
+                risk_px = {s: float(px_last.get(s) or p.avg_cost)
+                           for s, p in pos.items()}
+                risk_px[it.symbol] = price
                 if it.side == "buy":
                     if day_orders >= self.max_orders or day_turnover >= self.max_turnover:
                         res.skipped.append({"day": day, "symbol": it.symbol,
@@ -181,6 +251,13 @@ class Backtester:
                     act = (next((r for r in rules if r["id"] == rid), {})
                            .get("action") or {})
                     value = float(act.get("value") or 0) or 10000.0
+                    vol = size_for_value(price, value)
+                    why = self._risk_reject("buy", it.symbol, vol, price, cash,
+                                            pos, risk_px, frozen)
+                    if why:
+                        res.skipped.append({"day": day, "symbol": it.symbol,
+                                            "why": f"风控拒绝：{why}"})
+                        continue
                     cash, tr, skip = self._buy(cash, it.symbol, value, price, day)
                     if skip or not tr:
                         res.skipped.append({"day": day, "symbol": it.symbol, **(skip or {})})
@@ -192,7 +269,7 @@ class Backtester:
                                   if p.volume else amount / tr["volume"])
                     p.volume += tr["volume"]
                     p.entry_day = p.entry_day or day
-                    p.peak = max(p.peak, price)
+                    p.peak = max(p.peak, price, float(bar.high or 0.0))
                     frozen[it.symbol] = frozen.get(it.symbol, 0) + tr["volume"]
                 else:
                     p = pos.get(it.symbol)
@@ -204,6 +281,18 @@ class Backtester:
                            .get("action") or {})
                     vol = p.volume if act.get("all") else (
                         int(act.get("volume") or 0) or p.volume)
+                    avail = max(0, p.volume - int(frozen.get(it.symbol, 0)))
+                    vol = min(vol, avail)
+                    if vol <= 0:
+                        res.skipped.append({"day": day, "symbol": it.symbol,
+                                            "why": "T+1 冻结，当日不可卖"})
+                        continue
+                    why = self._risk_reject("sell", it.symbol, vol, price, cash,
+                                            pos, risk_px, frozen)
+                    if why:
+                        res.skipped.append({"day": day, "symbol": it.symbol,
+                                            "why": f"风控拒绝：{why}"})
+                        continue
                     pos[it.symbol], tr = self._sell(p, it.symbol, vol, price, day,
                                                      it.reason)
                     if not tr:
@@ -222,15 +311,14 @@ class Backtester:
                     st["fees"] += fees
                     if "pnl" in tr:
                         st["pnl"] += tr["pnl"]
-                    rule_cfg = next((r for r in rules if r["id"] == rid), {})
-                    if rule_cfg.get("once", True):
-                        fired.add(rid)
+                    if once:
+                        fired_today.add(rid)
             pending = [p for p in pending if p[2] != day]
 
             # 1.5) 日内规则逐分钟重放（只用已走完的分钟，无未来函数）
             if intra_rules:
                 cash, day_orders, day_turnover, replayed = self._replay_intraday(
-                    intra_rules, day, minutes_by_day, px_last, pos, cash,
+                    intra_rules, day, minutes_by_day, prev_px, pos, cash,
                     day_orders, day_turnover, frozen, held_days, res)
                 if replayed:
                     intraday_days.add(day)
@@ -241,7 +329,8 @@ class Backtester:
                 c = px_last.get(s)
                 if c:
                     mv += c * p.volume
-                    p.peak = max(p.peak, c)
+                    b = bar_idx.get(s, {}).get(day)
+                    p.peak = max(p.peak, float(b.high or 0.0) if b else c)
             equity = cash + mv
             equity_curve.append({"day": day, "cash": round(cash, 2),
                                  "market_value": round(mv, 2),
@@ -252,9 +341,16 @@ class Backtester:
                 next_day = days[day_pos[day] + 1]
                 for r in rules:
                     rid = r["id"]
-                    if rid in fired and bool(r.get("once", True)):
+                    if r.get("enabled") is False:
                         continue
-                    syms = r.get("symbols") or [r.get("symbol")]
+                    # 注意：这里**不**按 fired_today 压制。信号在 T 日收盘判定、T+1
+                    # 开盘成交；实盘对应的是 T+1 开盘那一刻的判定（此时 fired 已按日
+                    # 重置），所以 T+1 收盘仍可产生 T+2 的合法信号。执行侧才检查
+                    # fired_today，保证"同一规则每天最多成交一次"。
+                    syms = [str(s) for s in (r.get("symbols")
+                                             or [r.get("symbol")] or [])]
+                    if not syms and str(self.cfg.get("universe") or "") == "auto":
+                        syms = sorted(bars_by_sym)   # universe=auto：未点名→全部回测标的
                     for sym in syms:
                         b = bars_by_sym.get(sym) or []
                         closes = self._closes_until(b, day)
@@ -315,8 +411,13 @@ class Backtester:
                     rid = str(r.get("id") or "")
                     if rid in done:
                         continue
+                    if r.get("enabled") is False:
+                        continue
                     rule_syms = [str(s) for s in (r.get("symbols")
-                                                  or [r.get("symbol")])]
+                                                  or [r.get("symbol")] or [])]
+                    if not rule_syms and str(self.cfg.get("universe")
+                                             or "") == "auto":
+                        rule_syms = list(syms)     # universe=auto：未点名→当日有分钟线的标的
                     if sym not in rule_syms:
                         continue
                     p = pos.get(sym) or BTPosition()
@@ -346,6 +447,16 @@ class Backtester:
                                                 "why": "日内上限"})
                             continue
                         value = float(act.get("value") or 0) or 10000.0
+                        vol_pre = size_for_value(exec_px, value)
+                        risk_px = {s: float(px.get(s) or q.avg_cost)
+                                   for s, q in pos.items()}
+                        risk_px[sym] = exec_px
+                        why = self._risk_reject("buy", sym, vol_pre, exec_px, cash,
+                                                pos, risk_px, frozen)
+                        if why:
+                            res.skipped.append({"day": day, "symbol": sym,
+                                                "why": f"风控拒绝：{why}"})
+                            continue
                         cash, tr, skip = self._buy(cash, sym, value, exec_px, day)
                         if skip or not tr:
                             res.skipped.append({"day": day, "symbol": sym, **(skip or {})})
@@ -370,6 +481,15 @@ class Backtester:
                             int(act.get("volume") or 0) or avail, avail)
                         vol = (vol // 100) * 100
                         if vol <= 0:
+                            continue
+                        risk_px = {s: float(px.get(s) or q.avg_cost)
+                                   for s, q in pos.items()}
+                        risk_px[sym] = exec_px
+                        why = self._risk_reject("sell", sym, vol, exec_px, cash,
+                                                pos, risk_px, frozen)
+                        if why:
+                            res.skipped.append({"day": day, "symbol": sym,
+                                                "why": f"风控拒绝：{why}"})
                             continue
                         pos[sym], tr = self._sell(p, sym, vol, exec_px, day, it.reason)
                         if not tr:

@@ -35,6 +35,7 @@ risk:
   max_position_pct: 0.3
   max_total_position_pct: 0.95
   max_drawdown_pct: 0.20
+  daily_loss_halt_pct: 0.05   # 账户级：当日亏损（自日初基线）达到 5% 熔断
 
 agent:
   enabled: true
@@ -52,6 +53,8 @@ agent:
 engine:
   enabled: false          # 总开关：false 时守护进程拒绝启动（显式开启才盘中自动交易）
   interval_sec: 60        # 盘中轮询间隔（秒）
+  universe: auto          # auto=规则未点名标的时取本地股票池；list=必须逐条点名
+  universe_max: 50        # auto 模式最多订阅多少只
   min_ticket_cny: 5000    # 低于此金额不下单（手续费地板：2千以下单子费率>50bp）
   max_orders_per_day: 6   # 日内报单笔数上限
   max_turnover_per_day: 60000   # 日内成交金额上限（元）

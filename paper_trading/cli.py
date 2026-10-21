@@ -167,7 +167,10 @@ class TradingBridge:
         self.data_db_path = str(self.data_db.db_path)
         self.config_path = str(config_path or "config.yaml")
         self.portfolio = Portfolio(self.broker)
-        self.risk = RiskManager(**risk_kwargs) if risk_kwargs else RiskManager()
+        # 峰值/日亏基线落库（与账本同库），引擎/条件单/CLI/AI 共用同一份熔断状态
+        self.risk = RiskManager(
+            db_path=self.account_db_path,
+            **(risk_kwargs or {}))
         self.strategy = MACrossStrategy(
             short_window=int(strat_kwargs.get("short_window", 5)),
             long_window=int(strat_kwargs.get("long_window", 20)),
@@ -201,14 +204,28 @@ class TradingBridge:
             return {"ok": False, "symbols": symbols, "updated": {},
                     "error": "akshare unavailable"}
         updated: dict[str, int] = {}
+        revisions: list[dict] = []
         for sym in symbols:
             try:
                 latest = self.data_db.get_latest_timestamp(sym)
                 start = latest[:10].replace("-", "") if latest else None
                 bars = Fetcher.fetch_daily(sym, start_date=start)
                 if bars:
+                    # 除权除息检测：前复权会在除权后重算历史收盘（M1 至少做到不静默）
+                    rev = self._detect_revisions(sym, bars)
                     self.data_db.upsert_bars(bars)
                     self.data_db.add_stock_to_pool(sym)
+                    if rev:
+                        revisions.append({"symbol": sym, "changes": rev[:5]})
+                        logger.warning(
+                            f"{sym}: 历史收盘被回溯调整（疑似除权除息）"
+                            f"：{rev[:3]}；持仓/NAV 需人工核对，"
+                            f"可用 `corporate apply` 调整")
+                        self.broker.log_operation(
+                            "data:revision", {"symbol": sym, "changes": rev[:10]},
+                            True, {"why": "历史收盘被回溯调整（疑似除权除息）",
+                                   "action": "人工核对后用 corporate apply 调整；"
+                                             "M1.5 自动处理"})
                 updated[sym] = len(bars) if bars else 0
             except Exception as e:
                 logger.error(f"Failed to sync {sym}: {e}")
@@ -223,7 +240,33 @@ class TradingBridge:
         except Exception as e:
             logger.warning(f"Stock name refresh skipped: {e}")
         ok = all(v >= 0 for v in updated.values())
-        return {"ok": ok, "symbols": symbols, "updated": updated}
+        return {"ok": ok, "symbols": symbols, "updated": updated,
+                "revisions": revisions}
+
+    def _detect_revisions(self, sym: str, bars: list) -> list[dict]:
+        """检测前复权回溯调整：同一历史交易日的收盘在两次同步间发生变化。
+
+        前复权数据在除权除息后会整体重算历史价格——这是除权除息的可靠信号
+        （比"今日跌幅超限"更可靠）。只比较**今天之前**的日期：今天的数据本来
+        就会变，不当作除权信号。检测到只告警+记流水，绝不自动改账本。
+        """
+        today = datetime.now().date()
+        old = {b.timestamp.date().isoformat(): b.close
+               for b in self.data_db.get_bars(sym, limit=90)
+               if b.timestamp.date() < today}
+        out = []
+        for b in bars:
+            d = b.timestamp.date()
+            if d >= today:
+                continue
+            prev = old.get(d.isoformat())
+            if prev and prev > 0 and b.close > 0:
+                delta = b.close - prev
+                if abs(delta) / prev > 0.001:
+                    out.append({"day": d.isoformat(), "old": round(prev, 4),
+                                "new": round(b.close, 4),
+                                "pct": round(delta / prev * 100, 3)})
+        return out
 
     def price_map(self, symbols: list[str]) -> dict[str, float]:
         """最新价表：run 标的 ∪ 全部持仓（持仓不在池中时也必须计价，
@@ -307,6 +350,13 @@ class TradingBridge:
         if halted:
             logger.error(f"Drawdown halt: {dd:.2%}, skip trading")
             signals = {}
+        else:
+            # 账户级当日亏损熔断（与引擎/条件单/AI 共用同一份落库基线）
+            dl_halt, dl = self.risk.check_daily_loss(
+                nav.total_value, datetime.now().date().isoformat())
+            if dl_halt:
+                logger.error(f"Daily loss halt: {dl:.2%}, skip trading")
+                signals = {}
 
         executed_orders = []
         for symbol, signal in signals.items():
@@ -1053,6 +1103,20 @@ def main() -> None:
     cond_design.add_argument("--dry-run", action="store_true", help="只看不挂")
     cond_design.add_argument("--json", action="store_true")
 
+    # corporate（除权除息人工调整；M1 降级保护：检测+审计+手动入口）
+    corp_parser = subparsers.add_parser(
+        "corporate", help="除权除息调整（人工确认；自动检测 M1.5）")
+    corp_sub = corp_parser.add_subparsers(dest="corporate_command")
+    corp_apply = corp_sub.add_parser("apply", help="按人工确认的分红/送转调整持仓与成本")
+    corp_apply.add_argument("--symbol", required=True)
+    corp_apply.add_argument("--ex-date", required=True, dest="ex_date",
+                            help="除权除息日 YYYY-MM-DD")
+    corp_apply.add_argument("--cash-per-share", type=float, default=0.0,
+                            dest="cash_per_share", help="每股税前现金红利（元）")
+    corp_apply.add_argument("--share-ratio", type=float, default=0.0,
+                            dest="share_ratio", help="每股送转比例（10送3→0.3）")
+    corp_apply.add_argument("--json", action="store_true")
+
     # nav
     nav_parser = subparsers.add_parser("nav", help="查看 NAV 历史")
     nav_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
@@ -1362,7 +1426,11 @@ def main() -> None:
                 if not bars_by_sym:
                     emit(None, ok=False, error="本地无日线数据，先跑 sync")
                     sys.exit(3)
-                trading = load_config(args.config).get("trading") or {}
+                full_cfg = load_config(args.config)
+                trading = full_cfg.get("trading") or {}
+                # 与实盘同一套口径：滑点/风控参数从 config 读，网格结论才可比
+                slip_fixed = float(trading.get("slippage_fixed", 0.01))
+                risk_cfg = full_cfg.get("risk")
                 fee = FeeModel(
                     commission_rate=float(trading.get("commission_rate", 0.00025)),
                     commission_min=float(trading.get("commission_min", 5.0)),
@@ -1378,11 +1446,13 @@ def main() -> None:
                                        syms, value=args.value, fee=fee,
                                        initial_cash=args.cash, top=args.top,
                                        split=args.split,
+                                       slippage_fixed=slip_fixed, risk=risk_cfg,
                                        minutes_by_day=grid_minutes)
                 else:
                     out = grid_search(cfg, bars_by_sym, grid_days,
                                       args.grid, syms, value=args.value, fee=fee,
                                       initial_cash=args.cash, top=args.top,
+                                      slippage_fixed=slip_fixed, risk=risk_cfg,
                                       minutes_by_day=grid_minutes)
                 emit(out, ok=not out.get("error"), error=out.get("error"))
                 return
@@ -1408,7 +1478,9 @@ def main() -> None:
                 emit(None, ok=False, error="本地无日线数据，先跑 sync")
                 sys.exit(3)
             days = sorted(all_days)[-args.days:]
-            trading_cfg = (load_config(args.config).get("trading") or {})
+            full_cfg = load_config(args.config)
+            trading_cfg = full_cfg.get("trading") or {}
+            risk_cfg = full_cfg.get("risk")
             fee = FeeModel(
                 commission_rate=float(trading_cfg.get("commission_rate", 0.00025)),
                 commission_min=float(trading_cfg.get("commission_min", 5.0)),
@@ -1420,8 +1492,12 @@ def main() -> None:
             if any(str(r.get("type") or "") in INTRADAY_TYPES
                    for r in (cfg.get("rules") or [])):
                 minutes_by_day = load_minutes(bridge.data_db, syms, days)
+            # 回测默认口径 = 实盘：固定滑点 + 同一组仓位上限（config.yaml）
             res = Backtester(cfg, fee=fee,
-                             slippage_pct=args.slippage_pct).run(
+                             slippage_pct=args.slippage_pct,
+                             slippage_fixed=float(trading_cfg.get(
+                                 "slippage_fixed", 0.01)),
+                             risk=risk_cfg).run(
                                  bars_by_sym, days, initial_cash=args.cash,
                                  minutes_by_day=minutes_by_day)
             m = metrics(res, len(days))
@@ -1474,12 +1550,14 @@ def main() -> None:
                 return
             if cmd == "tick":
                 from paper_trading.engine.config import load_engine_config
+                from paper_trading.engine.state import EngineState
 
                 eng = load_engine_config(args.config)
                 r = ConditionRunner(bridge, orders, dry_run=args.dry_run,
                                     enabled=bool(eng.get("enabled")),
                                     min_ticket_cny=engine_min_ticket(args.config),
-                                    max_per_day=8).tick()
+                                    max_per_day=int(eng.get("max_orders_per_day") or 8),
+                                    state=EngineState(bridge.account_db_path)).tick()
                 emit(r, ok=True)
                 return
             if cmd == "design":
@@ -1519,6 +1597,20 @@ def main() -> None:
             syms = list(args.symbols or bridge.data_db.get_pool_symbols()[:20])
             emit({s: bridge.data_db.minute_count(s) for s in syms})
             return
+
+        elif args.command == "corporate":
+            if getattr(args, "corporate_command", None) == "apply":
+                out = bridge.broker.apply_corporate_action(
+                    args.symbol, args.ex_date,
+                    cash_per_share=args.cash_per_share,
+                    share_ratio=args.share_ratio)
+                emit(out, ok=bool(out.get("ok")),
+                     error=None if out.get("ok") else out.get("why"))
+                if not out.get("ok"):
+                    sys.exit(3)
+                return
+            parser.print_help()
+            sys.exit(2)
 
         elif args.command == "nav":
             emit(bridge.get_nav_history())

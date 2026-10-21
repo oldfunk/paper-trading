@@ -512,13 +512,15 @@ class AgentTrader:
                                    False, {"skipped": "drawdown-halt",
                                            "drawdown": round(dd, 4)}, None, None)
             return {"ok": False, "error": f"回撤熔断 {dd:.2%}", "timestamp": now}
-        if nav.pnl_pct <= -self.cfg.daily_loss_halt_pct:
-            logger.error(f"Daily loss halt {nav.pnl_pct:.2%}, AI skips")
+        dl_halt, dl = b.risk.check_daily_loss(nav.total_value, today_str(),
+                                              halt_pct=self.cfg.daily_loss_halt_pct)
+        if dl_halt:
+            logger.error(f"Daily loss halt {dl:.2%}, AI skips")
             b.broker.log_operation("ai:decide", {"symbols": symbols, "mode": mode},
                                    False, {"skipped": "daily-loss-halt",
-                                           "pnl_pct": round(nav.pnl_pct, 4)},
+                                           "daily_loss": round(dl, 4)},
                                    None, None)
-            return {"ok": False, "error": f"日亏熔断 {nav.pnl_pct:.2%}", "timestamp": now}
+            return {"ok": False, "error": f"日亏熔断 {dl:.2%}", "timestamp": now}
 
         # 4.5 待执行计划优先（休盘计划开盘执行；dry-run 不消费计划；
         #     计划基于定稿数据，不受新鲜守卫限制）

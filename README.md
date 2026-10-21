@@ -266,6 +266,9 @@ python -m paper_trading.cli run --symbols 600519 000858 --json
 # 只同步行情+名称，不交易（日内任意时间可执行）
 python -m paper_trading.cli sync --json
 
+# 除权除息人工调整（sync 检测到历史收盘被回溯调整时会写 op_log: data:revision）
+python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20 --cash-per-share 0.5 --share-ratio 0.3 --json
+
 # LLM 接入（只咨询，不交易；Key 只落本地 secrets.local.json）
 python -m paper_trading.cli llm config --preset deepseek --api-key xxx --model deepseek-chat
 # 本地/局域网模型：只给地址，不用令牌（Ollama/LM Studio/vLLM/自建网关）
@@ -378,6 +381,14 @@ python -m paper_trading.cli engine run --dry-run --json
 **回测口径**（两条不变量，单测锁死）：① 资金守恒——卖出回款必须回到现金，权益 = 现金 + 市值；
 ② 缺当日日线的票沿用最近一次收盘计价（不当 0），但当天没数据也**不成交**（不拿旧价假装成交）。
 
+**回测-实盘口径（M1）**：信号 T 日收盘判定、**T+1 开盘价**成交（±0.01 滑点）；当日买入 T+1 冻结；
+`once` 按交易日（不是整段回测一次）；开盘一字涨停不买、一字跌停不卖、停牌不成交；
+默认接入与实盘同一组仓位风控。`engine optimize/walkforward` 与 CLI 回测使用同一套滑点/风控参数。
+
+**除权除息（M1 降级保护）**：前复权数据在除权后会重算历史收盘，`sync` 检测到差异会写
+`op_log`（`data:revision`）并在输出 `revisions` 里提示；但**不会自动改账本**。除权日 NAV/股数
+可能失真，必须人工核对后用 `corporate apply` 调整；自动调整与分红税细化在 M1.5。
+
 ### 实测结论（截至 2026-10，Pi 真机数据）
 
 先说结论：**当前规则集没有证明自己有 alpha，生产配置保持 `engine.enabled: false`。**
@@ -474,6 +485,8 @@ python -m paper_trading.cli cond tick --dry-run --json
 ### 项目规则
 
 - 详见 `AGENTS.md` — 定义交互规则、硬约束、验证清单
+- 详见 `docs/ROADMAP.md` — 量化可信度路线图（M1–M4）、验收标准与长期 todolist；
+  **每次迭代先读它，完成后回来勾选**。M1 验收通过前 `engine.enabled` 保持 `false`。
 
 ## 技术栈
 
