@@ -282,6 +282,7 @@ const ACTION_CN={
   "sync":"同步行情","buy":"买入","sell":"卖出","preview":"下单试算","status":"查询账户",
   "nav":"查询净值","history":"查询记录","names":"刷新股票名称",
   "llm:ask":"AI 问答","llm:config":"保存模型配置","ai:decide":"AI 决策","ai:plan":"AI 计划",
+  "ai:review":"AI 事件复盘","ai:event":"AI 事件触发",
   "engine:buy":"规则引擎买入","engine:sell":"规则引擎卖出",
   "cond:design":"AI 设计条件单","cond:buy":"条件单触发买入","cond:sell":"条件单触发卖出"};
 function errCN(e){
@@ -309,6 +310,8 @@ function paramCN(a,j){let p={};try{p=JSON.parse(j||"{}")}catch(e){}
   if(a==="buy"||a==="sell"){const px=(p.price!=null&&p.price!=="")?`，限价 ${fmt(p.price)} 元`:"";return `${sym(p.symbol)} ${p.volume}股${px}`;}
   if(a==="llm:ask")return `问 ${p.model||"AI"}：${(p.prompt||"").slice(0,120)}`;
   if(a==="ai:decide")return `${p.mode==="dry"?"试运行":"实盘"}：股票 ${(p.symbols||[]).map(sym).join("、")}${p.summary?"——"+p.summary.slice(0,80):""}`;
+  if(a==="ai:review")return `事件复盘：股票 ${(p.pool||[]).map(sym).join("、")||"空"}${p.event?"——"+String(p.event).slice(0,100):""}`;
+  if(a==="ai:event")return `异动 ${(p.events||[]).length} 个：${(p.selected||[]).map(sym).join("、")}${p.dry_run?"（试运行）":""}`;
   if(a==="llm:config")return `厂商 ${p.preset||""}，模型 ${p.model||"未填"}`;
   if(a==="cond:design")return `股票池 ${(p.pool||[]).map(sym).join("、")||"空"}，挂上 ${p.n??0} 条`;
   if(a==="engine:buy"||a==="engine:sell"||a==="cond:buy"||a==="cond:sell"){
@@ -329,17 +332,22 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
     if(sk==="not-in-schedule")return `定时未到或今日队列已跑完（队列 ${((r.queue||[]).map(q=>q.time?q.time+q.action:q)).join("、")||"未设"}），跳过`;
     if(sk==="drawdown-halt")return `回撤熔断（${(r.drawdown*100).toFixed(2)}%），停手`;
     if(sk==="daily-loss-halt")return `日亏熔断（${(r.pnl_pct*100).toFixed(2)}%），停手`;
-    const ds=r.decisions||[];
-    if(!ds.length)return "无动作";
+    const ds=r.decisions||[],cs=r.conditions||{};
+    const nc=(cs.created||[]).length,nr=(cs.rejected||[]).length;
+    const ctail=(nc||nr)?`；条件单 ${nc} 条${nr?`（${nr} 条被拒）`:""}`:"";
+    if(!ds.length)return nc?`挂条件单 ${nc} 条`:"无动作";
     return ds.map(d=>{const dir=d.action==="buy"?"买入":d.action==="sell"?"卖出":"持有";
-      return `${dir}${sym(d.symbol)}${d.volume||""}股(${d.status||""})`}).join("；");}
+      return `${dir}${sym(d.symbol)}${d.volume||""}股(${d.status||""})`}).join("；")+ctail;}
+  if(a==="ai:review"){const n=(r.created||[]).length,bad=(r.rejected||[]).length;
+    return `解析 ${r.parsed??0} 条，挂上 ${n} 条${bad?`，${bad} 条被拒`:""}${r.skipped&&r.skipped.length?`，跳过 ${r.skipped.length} 条重复`:""}`;}
+  if(a==="ai:event")return `触发 ${(r.events||[]).length} 个异动，复盘 ${(r.selected||[]).map(sym).join("、")||"无"}${r.dry_run?"（试运行）":""}`;
   if(a==="llm:config")return `已保存（${r.base_url||""}）`;
   if(a==="cond:design"){const n=(r.created||[]).length,bad=(r.rejected||[]).length;
     return bad?`挂上 ${n} 条，${bad} 条未通过校验`:(n?`挂上 ${n} 条条件单`:"没有符合条件的条件单");}
   if(a==="engine:buy"||a==="engine:sell"||a==="cond:buy"||a==="cond:sell"){
     const fee=(Number(r.commission)||0)+(Number(r.stamp_duty)||0)+(Number(r.transfer_fee)||0);
     return `成交价 ${fmt(r.filled_price)} 元，手续费 ${fmt(fee)} 元`;}
-  if(a==="ai:plan")return `计划#${r.plan_id??""}：${r.summary||""}（${r.n_actions??0}条，开盘执行）`;
+  if(a==="ai:plan")return `计划#${r.plan_id??""}：${r.summary||""}（${r.n_actions??0}条动作、${r.n_conditions??0}条条件，${r.plan_date?r.plan_date+"开盘": "下一交易日开盘"}执行）`;
   if(a==="sync"){const u=r.updated||{};const ks=Object.keys(u);
     if(!ks.length)return "无更新";
     return ks.map(s=>`${sym(s)}${u[s]<0?"同步失败":`新增 ${u[s]} 根K线`}`).join("、");}

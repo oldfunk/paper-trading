@@ -193,6 +193,16 @@ class TradingBridge:
             llm_thinking=str(agent_kwargs.get("llm_thinking", "disabled")),
             picks_enabled=bool(agent_kwargs.get("picks_enabled", True)),
             picks_max=max(1, min(10, int(agent_kwargs.get("picks_max", 5)))),
+            conditions_enabled=bool(agent_kwargs.get("conditions_enabled", True)),
+            max_conditions=max(1, min(10, int(agent_kwargs.get("max_conditions", 5)))),
+            condition_max_days=max(1, min(30, int(agent_kwargs.get("condition_max_days", 3)))),
+            event_enabled=bool(agent_kwargs.get("event_enabled", True)),
+            event_price_move_pct=float(agent_kwargs.get("event_price_move_pct", 3.0)),
+            event_drawdown_pct=float(agent_kwargs.get("event_drawdown_pct", 5.0)),
+            event_cooldown_min=max(0, int(agent_kwargs.get("event_cooldown_min", 30))),
+            event_min_interval_min=max(0, int(agent_kwargs.get("event_min_interval_min", 15))),
+            event_max_calls_per_day=max(0, int(agent_kwargs.get("event_max_calls_per_day", 6))),
+            event_max_conditions=max(1, min(10, int(agent_kwargs.get("event_max_conditions", 3)))),
         )
 
     def sync_data(self, symbols: list[str]) -> dict:
@@ -999,6 +1009,18 @@ def main() -> None:
                             help="关闭 AI 自主提名（只用程序候选池决策）")
     agent_tick.add_argument("--force", action="store_true",
                             help="忽略已消费标记，执行最早已到条目")
+    agent_event = agent_sub.add_parser(
+        "event", help="事件驱动复盘：盘中异动才调 LLM 产出条件单")
+    agent_event.add_argument("--symbols", nargs="*", default=None)
+    agent_event.add_argument("--pool-from", default="auto",
+                             choices=["auto", "config", "watchlist", "screening", "all"])
+    agent_event.add_argument("--pool-tag", default="")
+    agent_event.add_argument("--pool-limit", type=int, default=20)
+    agent_event.add_argument("--json", action="store_true")
+    agent_event.add_argument("--dry-run", action="store_true",
+                             help="只让 AI 出条件，不挂单（仍会调用模型）")
+    agent_event.add_argument("--force", action="store_true",
+                             help="忽略交易时段/冷却/预算（人工排查用）")
     agent_sched = agent_sub.add_parser("schedule", help="AI 定时队列查看与设置")
     agent_sched_sub = agent_sched.add_subparsers(dest="agent_sched_command")
     agent_sched_list = agent_sched_sub.add_parser("list", help="查看当前定时队列与今日执行情况")
@@ -1360,6 +1382,18 @@ def main() -> None:
                         trader.cfg.picks_enabled = False
                     res = trader.tick(syms, candidates=cands, pool_source=note,
                                       force=args.force)
+                emit(res, ok=res.get("ok", False), error=res.get("error"))
+                if not res.get("ok"):
+                    sys.exit(3)
+                return
+            if args.agent_command == "event":
+                from paper_trading.agent.events import run_event_review
+
+                syms, note, _cands, _picks_on = _resolve_syms(bridge, args)
+                with run_lock(args.lock_file):
+                    res = run_event_review(bridge, syms, dry_run=args.dry_run,
+                                           force=args.force)
+                res["pool_source"] = note
                 emit(res, ok=res.get("ok", False), error=res.get("error"))
                 if not res.get("ok"):
                     sys.exit(3)

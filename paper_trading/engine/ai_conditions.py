@@ -28,7 +28,7 @@ COND_RULES = """条件单规则（违反即作废该条）：
 
 def build_prompt(pool: list[str], quotes: dict, positions: list[dict],
                  scheme_txt: str, asof: str, max_conds: int = 5,
-                 max_days: int = 3) -> tuple[str, str]:
+                 max_days: int = 3, event_txt: str = "") -> tuple[str, str]:
     """构造（system, user）prompt：只给必要上下文，控制 token。"""
     q_lines = []
     for s in pool[:20]:
@@ -40,8 +40,12 @@ def build_prompt(pool: list[str], quotes: dict, positions: list[dict],
                            else f"- {s} 现价 {px}")
     pos_txt = ("、".join(f"{p['stock']}{p['total']}股@{p['avg_cost']}"
                           for p in positions) or "空仓")
+    event_line = ""
+    if event_txt.strip():
+        event_line = ("\n本次盘中异动（触发复盘；条件单仍由引擎盘中执行）：\n"
+                      + event_txt.strip()[:1200] + "\n")
     user = (f"数据截至 {asof}\n股票池实时价：\n" + ("\n".join(q_lines) or "（无）")
-            + f"\n当前持仓：{pos_txt}\n{scheme_txt}\n"
+            + f"\n当前持仓：{pos_txt}\n{scheme_txt}\n{event_line}"
             + f"请给出最多 {max_conds} 条条件单（最长 {max_days} 天有效）。")
     # 不能用 str.format：规则正文里的 JSON 示例本身含大括号（{"conditions": …}），
     # format 会把它当占位符 → KeyError: '"conditions"'（真机上「AI 设计」一直 500）

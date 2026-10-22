@@ -58,6 +58,18 @@ def test_rules_do_not_trade_when_disabled(tmp_path):
     assert not res.get("ok")
     assert "未启用" in res.get("why", "")
     assert b.broker.get_position("000001") is None
+    # dry-run 观察：被开关拦下的意图也要落库（每天同规则/标的一次）
+    tr = runner.state.triggers_today(datetime.now().date().isoformat())
+    assert any(t["status"] == "blocked_disabled" and t["symbol"] == "000001"
+               for t in tr)
+    runner._execute(cfg["rules"][0],
+                    Intent("pl", "000001", "buy", "测试", 10.0),
+                    {"price": 10.0, "prev_close": 10.0, "high": 10.0,
+                     "low": 10.0, "change_pct": 0.0},
+                    datetime.now(), datetime.now().date().isoformat(),
+                    {"orders": 0, "turnover": 0.0}, 0, 0.0, 0, 0.0)
+    tr2 = runner.state.triggers_today(datetime.now().date().isoformat())
+    assert len([t for t in tr2 if t["status"] == "blocked_disabled"]) == 1
 
 
 def test_rules_trade_when_enabled(tmp_path):
@@ -81,6 +93,8 @@ def test_rules_trade_when_enabled(tmp_path):
 
 
 def test_conditions_do_not_fill_when_disabled(tmp_path):
+    from paper_trading.engine.state import EngineState
+
     b = _bridge(tmp_path)
     _bars(b)
     co = ConditionalOrders(str(tmp_path / "cond.db"))
@@ -88,11 +102,15 @@ def test_conditions_do_not_fill_when_disabled(tmp_path):
                "cond_value": 10.0, "value": 20000})
     quotes = {"000001": {"code": "000001", "price": 9.9, "prev_close": 10.0,
                          "high": 10.0, "low": 9.9, "volume": 1e6, "change_pct": -1.0}}
-    r = ConditionRunner(b, co, enabled=False, min_ticket_cny=0).tick(quotes)
+    state = EngineState(b.account_db_path)
+    r = ConditionRunner(b, co, enabled=False, min_ticket_cny=0,
+                        state=state).tick(quotes)
     assert not r["filled"]
     # 仍然是待触发（没被作废），等人开了开关再说
     assert co.list_all(1)[0]["status"] == "armed"
     assert b.broker.get_position("000001") is None
+    assert any(t["status"] == "blocked_disabled"
+               for t in state.triggers_today(datetime.now().date().isoformat()))
 
 
 def test_conditions_fill_when_enabled(tmp_path):

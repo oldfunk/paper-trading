@@ -645,7 +645,7 @@ class PaperBroker:
             return int(cur.lastrowid)
 
     def get_pending_plan(self, plan_date: str) -> Optional[dict]:
-        """取某日待执行的计划（无则 None）。"""
+        """取某日待执行的计划（无则 None；保留给面板/测试按日查询）。"""
         import json as _json
 
         with self._connect() as conn:
@@ -653,6 +653,35 @@ class PaperBroker:
                 """SELECT * FROM agent_plans WHERE plan_date = ? AND status = 'pending'
                    ORDER BY id DESC LIMIT 1""",
                 (plan_date,),
+            ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        try:
+            d["plan"] = _json.loads(d["plan_json"])
+        except Exception:
+            d["plan"] = {}
+        return d
+
+    def get_executable_plan(self, day: str,
+                            max_age_days: int = 7) -> Optional[dict]:
+        """取“今天及更早、最近一条”待执行计划。
+
+        计划在收盘后生成，目标交易日是下一个交易日；所以开盘执行时
+        plan_date 可能早于今天。只接受最近 N 天，避免长时间停机后
+        把过期计划当成今天的机会。旧 pending 不删除，保留审计痕迹。
+        """
+        import json as _json
+        from datetime import date, timedelta
+
+        earliest = (date.fromisoformat(day[:10])
+                    - timedelta(days=max(1, int(max_age_days)))).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM agent_plans
+                   WHERE plan_date <= ? AND plan_date >= ? AND status = 'pending'
+                   ORDER BY plan_date DESC, id DESC LIMIT 1""",
+                (day, earliest),
             ).fetchone()
         if not row:
             return None

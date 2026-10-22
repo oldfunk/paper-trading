@@ -48,6 +48,18 @@ agent:
   llm_thinking: disabled
   picks_enabled: true     # AI 自主提名：候选之外允许它点名全市场任意 A 股
   picks_max: 5            # 单轮最多提名几只（1-10）
+  # AI 条件单（实时执行层）：LLM 出触发条件，引擎每分钟盯盘执行
+  conditions_enabled: true
+  max_conditions: 5
+  condition_max_days: 3
+  # 事件驱动复盘：异动才调 LLM（低频轮询发现事件，不是逐笔调用）
+  event_enabled: true
+  event_price_move_pct: 3.0   # 日内涨跌幅绝对值
+  event_drawdown_pct: 5.0     # 持仓自峰值回撤
+  event_cooldown_min: 30      # 同标的复盘冷却
+  event_min_interval_min: 15  # 任意两次复盘最小间隔
+  event_max_calls_per_day: 6  # 每日模型调用预算
+  event_max_conditions: 3     # 单次复盘最多挂几条条件单
 
 # 规则引擎（盘中量化执行层；与 LLM 分工：引擎负责择时执行，LLM 负责选股与策略）
 engine:

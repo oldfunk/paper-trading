@@ -386,6 +386,12 @@ class EngineRunner:
         if not self.cfg.get("enabled"):
             # enabled=false 的语义是"不开盘中自动交易"——cron 单轮（--once）也必须守
             # （原来只在守护入口查这个开关，cron 走单轮时绕过了它，会照常下单）
+            # 但仍然落一条“被拦下的意图”，供 dry-run 观察/复盘；每天同规则同标的只记一次。
+            self.state.log_trigger_once(
+                key=f"rule:{rid}:{sym}:{side}", ts=now.isoformat(), day=day,
+                rule_id=rid, symbol=sym, side=side, status="blocked_disabled",
+                detail={**detail, "volume": volume,
+                        "why": "engine.enabled=false"})
             return {"ok": False, "why": "引擎未启用（engine.enabled=false），不下单"}
         order = Order(symbol=sym, direction=sig.direction.value, volume=volume,
                       order_type=OrderType.LIMIT, limit_price=price,
@@ -574,7 +580,15 @@ class ConditionRunner:
                              {"dry_run": True, "volume": volume}, now)
             return {"ok": True, "why": "试运行", "volume": volume}
         if not self.enabled:
-            # 总开关关着就不成交（保持 armed，等人再开）
+            # 总开关关着就不成交（保持 armed，等人再开）；同时落 dry-run 意图流水。
+            if self.state is not None:
+                self.state.log_trigger_once(
+                    key=f"cond:{d['id']}", ts=now.isoformat(), day=day,
+                    rule_id=f"cond:{d['id']}", symbol=sym, side=side,
+                    status="blocked_disabled",
+                    detail={"volume": volume, "price": price,
+                            "cond": f"{d['cond_type']}{d['cond_value']}",
+                            "why": "engine.enabled=false"})
             return {"ok": False, "keep_armed": True,
                     "why": "引擎未启用（engine.enabled=false），不成交"}
         order = Order(symbol=sym, direction=sig.direction.value, volume=volume,

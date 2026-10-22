@@ -10,15 +10,17 @@ cron 只负责高频 tick（如每 15 分钟叫一次 `agent tick`），本模�
     plan     休盘做计划存着，开盘执行（不碰账本）
     trade    实盘决策，可下单（风控钳制不变）
 
-用户配置只写 gitignored 的 `strategy.local.yaml`（与投资方案同一文件）：
+用户配置只写 gitignored 的 `strategy.local.yaml`（与投资方案同一文件）。
+v0.6.2 推荐「休盘做下一交易日计划、早盘执行」：
     agent_schedule:
       queue:
-        - {time: "09:00", action: sync}
-        - {time: "13:00", action: plan}
-        - {time: "16:45", action: trade}
+        - {time: "09:35", action: trade}
+        - {time: "16:45", action: plan}
+        - {time: "10:00", action: sync}     # 可选
 
-缺省队列为 [{"time": "16:45", "action": "trade"}]（收盘 15:00 +
-数据源落定余量，保守时间）。
+缺省队列仍为 [{"time": "16:45", "action": "trade"}]（兼容旧部署；
+新部署建议用 `agent schedule set --entry 09:35=trade --entry 16:45=plan`
+改成推荐队列）。
 消费凭流水里的 slot 标记，不凭时间推断（双时钟错位已吃过亏）。
 """
 from __future__ import annotations

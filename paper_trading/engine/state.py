@@ -124,6 +124,20 @@ class EngineState:
                 (ts, day, rule_id, symbol, side, status,
                  json.dumps(detail, ensure_ascii=False, default=str)))
 
+    def log_trigger_once(self, key: str, ts: str, day: str, rule_id: str,
+                         symbol: str, side: str, status: str, detail: dict) -> bool:
+        """同一 key 每天只落一条（用于 enabled=false 拦截意图，防每分钟刷屏）。
+
+        返回是否真的写入了。开关关着时意图会持续出现，但面板只需要看到
+        “哪条规则/条件单本来要动”，不需要一分钟一条。
+        """
+        marker = f"trigger-once:{day}:{key}"
+        if self.get(marker):
+            return False
+        self.log_trigger(ts, day, rule_id, symbol, side, status, detail)
+        self.set(marker, ts)
+        return True
+
     def triggers_today(self, day: str | None = None, limit: int = 50) -> list[dict]:
         day = day or date.today().isoformat()
         with self._connect() as conn:
