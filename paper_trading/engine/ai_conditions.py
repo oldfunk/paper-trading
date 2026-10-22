@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json as _json
 import math
+from datetime import date, datetime
 from typing import Optional
 
 COND_RULES = """条件单规则（违反即作废该条）：
@@ -68,7 +69,8 @@ def build_prompt(pool: list[str], quotes: dict, positions: list[dict],
 
 def parse_conditions_verbose(raw: Optional[str], pool: list[str],
                              max_conds: int = 5, max_value: float = 20000.0,
-                             min_ticket: float = 1000.0
+                             min_ticket: float = 1000.0,
+                             max_days: int = 30
                              ) -> tuple[list[dict], list[dict]]:
     """解析并校验 LLM 条件单，返回 (合法条目, 被拒条目+原因)。
 
@@ -151,6 +153,18 @@ def parse_conditions_verbose(raw: Optional[str], pool: list[str],
         if ctype not in CONDITION_TYPES:
             _reject(c, "非法条件类型")
             continue
+        expiry = str(c.get("expiry") or "").strip()
+        if expiry:
+            try:
+                exp_date = datetime.fromisoformat(expiry[:10]).date()
+            except (TypeError, ValueError):
+                _reject(c, "expiry 不是 YYYY-MM-DD")
+                continue
+            if max_days and max_days > 0:
+                days = (exp_date - date.today()).days
+                if days > int(max_days):
+                    _reject(c, f"有效期 {days} 天超过上限 {int(max_days)} 天")
+                    continue
         if side == "buy":
             if vol and vol % 100 != 0:
                 _reject(c, "买入数量必须是 100 的整数倍")
@@ -170,7 +184,7 @@ def parse_conditions_verbose(raw: Optional[str], pool: list[str],
             continue
         out.append({"symbol": sym, "side": side, "cond_type": ctype,
                     "cond_value": cval, "volume": vol, "value": val,
-                    "expiry": str(c.get("expiry") or "").strip(),
+                    "expiry": expiry,
                     "note": str(c.get("reason") or "")[:200],
                     "source": "ai"})
     return out, rejected
@@ -178,9 +192,10 @@ def parse_conditions_verbose(raw: Optional[str], pool: list[str],
 
 def parse_conditions(raw: Optional[str], pool: list[str],
                      max_conds: int = 5, max_value: float = 20000.0,
-                     min_ticket: float = 1000.0) -> list[dict]:
+                     min_ticket: float = 1000.0,
+                     max_days: int = 30) -> list[dict]:
     """兼容旧调用：只要合法条目；需要审计原因时用 parse_conditions_verbose。"""
     valid, _rejected = parse_conditions_verbose(
         raw, pool, max_conds=max_conds, max_value=max_value,
-        min_ticket=min_ticket)
+        min_ticket=min_ticket, max_days=max_days)
     return valid

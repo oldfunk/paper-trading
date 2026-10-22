@@ -865,7 +865,8 @@ def design_conditions(bridge, orders, *, pool_from: str = "auto",
         return False, {}, f"模型调用失败：{type(e).__name__}: {e}"
     conds, parse_rejected = parse_conditions_verbose(
         raw, syms, max_conds=int(max_conds),
-        max_value=max_value, min_ticket=min_ticket)
+        max_value=max_value, min_ticket=min_ticket,
+        max_days=int(max_days))
     if dry_run:
         return True, {"dry_run": True, "parsed": conds,
                       "parse_rejected": parse_rejected,

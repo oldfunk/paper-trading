@@ -342,7 +342,8 @@ class AgentTrader:
                 raw, pool,
                 max_conds=int(self.cfg.max_conditions),
                 max_value=float(self.cfg.max_order_value),
-                min_ticket=self._engine_min_ticket())
+                min_ticket=self._engine_min_ticket(),
+                max_days=int(self.cfg.condition_max_days))
         except Exception as e:                # noqa: BLE001 - 条件单失败不阻断主决策
             return [], [{"why": f"解析异常：{type(e).__name__}: {e}"}]
 
@@ -435,7 +436,8 @@ class AgentTrader:
             return {"ok": False, "error": str(e), "pool": pool}
         conds, parse_rejected = parse_conditions_verbose(
             raw, pool, max_conds=int(max_conds or self.cfg.event_max_conditions),
-            max_value=max_value, min_ticket=min_ticket)
+            max_value=max_value, min_ticket=min_ticket,
+            max_days=int(self.cfg.condition_max_days))
         res = self._arm_conditions(conds, dry_run=dry_run)
         b.broker.log_operation(
             "ai:review", {"pool": pool, "event": event_txt[:300],
@@ -549,6 +551,7 @@ class AgentTrader:
                                {"plan_id": pid, "summary": summary,
                                 "n_actions": len(actions),
                                 "n_conditions": len(conditions),
+                                "n_conditions_rejected": len(conditions_rejected),
                                 "conditions_rejected": conditions_rejected,
                                 "picks": [{"symbol": p["symbol"],
                                            "name": p.get("name", "")} for p in picks],

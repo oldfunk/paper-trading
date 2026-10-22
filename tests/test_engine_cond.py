@@ -222,6 +222,19 @@ def test_condition_prompt_includes_ticket_floor():
     assert "5000~20000" in system
 
 
+def test_parse_conditions_rejects_expiry_over_limit():
+    from paper_trading.engine.ai_conditions import parse_conditions_verbose
+
+    exp = (datetime.now() + timedelta(days=10)).date().isoformat()
+    raw = ('{"conditions":[{"symbol":"600519","side":"buy",'
+           '"cond":{"type":"pct_below","value":3},"value":8000,'
+           f'"expiry":"{exp}","reason":"等回撤"}}]}}')
+    valid, rejected = parse_conditions_verbose(
+        raw, ["600519"], max_value=20000, min_ticket=5000, max_days=3)
+    assert valid == []
+    assert rejected and "有效期" in rejected[0]["why"]
+
+
 def test_walk_forward_splits_and_reports():
     """样本内选参数 → 样本外检验：两个区间必须不重叠，且都给出结果。"""
     from datetime import datetime as dt
