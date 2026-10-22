@@ -48,19 +48,23 @@ def test_norm_policy_first_dedup_and_limit():
          "发布日期": "2026-10-22", "发布时间": "09:01:00"},
         {"标题": "证监会就新规征求意见", "内容": "监管发布意见稿。",
          "发布日期": "2026-10-22", "发布时间": "09:02:00"},
+        {"标题": "港交所信息显示贝莱德减持H股", "内容": "持股比例由8%降至7%。",
+         "发布日期": "2026-10-22", "发布时间": "09:02:30"},   # 含“交易所”但不是政策
         {"标题": "央行宣布降准0.5个百分点", "内容": "央行决定下调存款准备金率。",
          "发布日期": "2026-10-22", "发布时间": "09:00:00"},   # 重复
         {"标题": "央行宣布降准0.5个百分点", "内容": "重复标题不同内容也不该出现。",
          "发布日期": "2026-10-22", "发布时间": "09:03:00"},
     ]
-    items = nw._norm_records(_DF(rows), limit=3)
-    assert len(items) == 3                       # limit 截断
+    items = nw._norm_records(_DF(rows), limit=4)
+    assert len(items) == 4                       # limit 截断
     assert items[0]["policy"] and items[1]["policy"]  # 政策类排前
     assert "降准" in items[0]["title"]
     assert not items[2]["policy"]                # 非政策排后
+    assert items[3]["policy"] is False           # “交易所”高频词不得误标政策
+    assert "港交所" in items[3]["title"]
     assert items[0]["time"].startswith("2026-10-22")
     assert len(items[0]["text"]) <= 150          # 截断，防 token 爆炸
-    assert len({i["title"] for i in items}) == 3  # 去重（按标题前40字）
+    assert len({i["title"] for i in items}) == 4  # 去重（按标题前40字）
 
 
 def test_norm_rejects_unknown_columns():
