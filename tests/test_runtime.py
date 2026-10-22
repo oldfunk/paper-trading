@@ -94,8 +94,9 @@ def test_sync_keeps_future_drops_history(tmp_path, monkeypatch):
     from paper_trading.utils import trading_calendar as tc
 
     today = date.today()
-    recent = (today - timedelta(days=3)).isoformat()   # 落在 7 天尾部内
-    future = (today + timedelta(days=300)).isoformat()  # 远期未来
+    recent = (today - timedelta(days=40)).isoformat()   # 落在 45 天尾部内
+    old = (today - timedelta(days=120)).isoformat()      # 超出尾部的历史
+    future = (today + timedelta(days=300)).isoformat()   # 远期未来
 
     class _Col:
         def __init__(self, vals):
@@ -115,15 +116,15 @@ def test_sync_keeps_future_drops_history(tmp_path, monkeypatch):
 
     fake = types.ModuleType("akshare")
     fake.tool_trade_date_hist_sina = lambda: _DF(
-        ["1990-12-19", "2026-01-05", recent, future])
+        ["1990-12-19", old, recent, future])
     monkeypatch.setitem(sys.modules, "akshare", fake)
 
     p = tmp_path / "cal.json"
     res = tc.sync_calendar(path=p)
     assert res["ok"] and res["history_tail_days"] == tc.HISTORY_TAIL_DAYS
     rows = set(json.loads(p.read_text(encoding="utf-8"))["dates"])
-    assert "1990-12-19" not in rows and "2026-01-05" not in rows  # 历史被裁掉
-    assert recent in rows and future in rows                        # 尾部+未来保留
+    assert "1990-12-19" not in rows and old not in rows  # 历史被裁掉
+    assert recent in rows and future in rows             # 尾部+未来保留
 
     monkeypatch.setenv(tc.CALENDAR_ENV, str(p))
     tc.clear_calendar_cache()

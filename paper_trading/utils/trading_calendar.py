@@ -24,8 +24,9 @@ from typing import Iterable, Optional, Set
 
 CALENDAR_ENV = "PAPER_TRADING_CALENDAR"
 DEFAULT_CALENDAR_REL = Path("var") / "trading_calendar.json"
-#: 同步时保留的最近历史天数（只为近况查询/覆盖判断兜底；主体是未来交易日）
-HISTORY_TAIL_DAYS = 7
+#: 同步时保留的最近历史天数：只为“最近一个假期/节后审计”这类近况查询兜底，
+#: 不是存历史档案；缓存主体是未来交易日（更早历史要查就查数据源，别信缓存）。
+HISTORY_TAIL_DAYS = 45
 _CACHE: dict = {"path": "", "mtime_ns": -1, "data": {}}
 
 
