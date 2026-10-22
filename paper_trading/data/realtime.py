@@ -1,7 +1,7 @@
 """腾讯实时行情（与 Stock Dashboard 同一数据源：qt.gtimg.cn，批量一次拉全池）。
 
 - 标准库实现，无额外依赖；失败一律回空，永不阻断主流程
-- 仅连续竞价时段拉取（9:30-11:30 / 13:00-15:00，周一至周五，UTC+8），其余返回空
+- 仅交易日连续竞价时段拉取（09:30-11:30 / 13:00-15:00，UTC+8），其余返回空
 - 解析行情时间戳：日期不是当天或距当前超过 QUOTE_MAX_AGE 的报价直接丢弃
   （节假日/午休/停牌返回的旧报价不会进入撮合与风控）
 - 用途：盘中展示现价 + LLM 上下文盘中快照；撮合/NAV 仍用收盘定稿口径
@@ -12,6 +12,8 @@ import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+from paper_trading.utils.market_time import is_trading_session as _is_trading_session
+
 CN = timezone(timedelta(hours=8))
 QUOTE_TTL = 60.0
 QUOTE_MAX_AGE = 180.0        # 报价距当前超过 3 分钟视为过期（秒）
@@ -20,17 +22,14 @@ QUOTE_MAX_AGE = 180.0        # 报价距当前超过 3 分钟视为过期（秒�
 _cache: dict = {"at": 0.0, "data": {}}
 
 
-def is_trading_session(now: datetime | None = None) -> bool:
-    """是否在连续竞价时段内：周一至周五 9:30-11:30 / 13:00-15:00（UTC+8）。
+def is_trading_session(now: datetime | None = None,
+                       holidays: set[str] | None = None) -> bool:
+    """是否在连续竞价时段内：交易日 09:30-11:30 / 13:00-15:00（UTC+8）。
 
-    节假日不在这里穷举：节假日通常没有当日新鲜报价，`get_quotes` 的时间戳
-    过滤会返回空。T+1 解冻跳节假日仍以 `config.yaml holidays` 为准。
+    交易日由 `utils.trading_calendar` 的缓存判断（周末/节假日），缓存不可用时
+    回退为工作日；节假日/延迟更新的旧报价仍由 `quote_fresh` 二次过滤。
     """
-    t = (now or datetime.now(CN)).astimezone(CN)
-    if t.weekday() >= 5:
-        return False
-    hm = t.hour * 60 + t.minute
-    return (9 * 60 + 30 <= hm < 11 * 60 + 30) or (13 * 60 <= hm < 15 * 60)
+    return _is_trading_session(now, holidays=holidays)
 
 
 def quote_fresh(quote: dict, now: datetime | None = None) -> bool:

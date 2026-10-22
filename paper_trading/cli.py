@@ -986,11 +986,27 @@ def main() -> None:
     llm_ask.add_argument("--system", default="")
     llm_ask.add_argument("--json", action="store_true")
 
+    # calendar（交易日历：akshare 同步 + 本地缓存）
+    calendar_parser = subparsers.add_parser(
+        "calendar", help="交易日历（可靠源同步/本地缓存状态）")
+    calendar_sub = calendar_parser.add_subparsers(dest="calendar_command")
+    calendar_sync_p = calendar_sub.add_parser(
+        "sync", help="从 akshare 同步交易日历到本地缓存")
+    calendar_sync_p.add_argument("--path", default=None,
+                                 help="缓存文件路径（缺省 var/trading_calendar.json）")
+    calendar_sync_p.add_argument("--json", action="store_true")
+    calendar_status_p = calendar_sub.add_parser(
+        "status", help="查看缓存覆盖范围与新鲜度")
+    calendar_status_p.add_argument("--path", default=None)
+    calendar_status_p.add_argument("--json", action="store_true")
+
     # agent
-    agent_parser = subparsers.add_parser("agent", help="AI 交易员（按定时触发决策，可自动下单）")
+    agent_parser = subparsers.add_parser(
+        "agent", help="AI 交易员（固定运行时刻 + 事件驱动；旧定时队列仅兼容）")
     agent_parser.add_argument("--json", action="store_true")
     agent_sub = agent_parser.add_subparsers(dest="agent_command")
-    agent_run = agent_sub.add_parser("run", help="执行一次 AI 决策（默认走配置池）")
+    agent_run = agent_sub.add_parser(
+        "run", help="手动执行一次 AI 决策（不再受旧定时队列限制）")
     agent_run.add_argument("--symbols", nargs="*", default=None)
     agent_run.add_argument("--pool-from", default="auto",
                            choices=["auto", "config", "watchlist", "screening", "all"],
@@ -1004,10 +1020,11 @@ def main() -> None:
     agent_run.add_argument("--no-picks", action="store_true",
                            help="关闭 AI 自主提名（只用程序候选池决策）")
     agent_run.add_argument("--ignore-schedule", action="store_true",
-                           help="忽略定时闸（时段/次数限制），立即执行")
+                           help="兼容旧参数；旧队列已停用，默认就不受队列限制")
     agent_run.add_argument("--plan-only", action="store_true",
                            help="休盘做计划存着，开盘执行（不碰账本）")
-    agent_tick = agent_sub.add_parser("tick", help="队列 tick：消费最早已到未跑的条目并执行")
+    agent_tick = agent_sub.add_parser(
+        "tick", help="运行时 tick：开盘执行计划 / 收盘后做计划（不读旧队列）")
     agent_tick.add_argument("--symbols", nargs="*", default=None)
     agent_tick.add_argument("--pool-from", default="auto",
                             choices=["auto", "config", "watchlist", "screening", "all"])
@@ -1017,7 +1034,7 @@ def main() -> None:
     agent_tick.add_argument("--no-picks", action="store_true",
                             help="关闭 AI 自主提名（只用程序候选池决策）")
     agent_tick.add_argument("--force", action="store_true",
-                            help="忽略已消费标记，执行最早已到条目")
+                            help="人工排障：越过时间窗口（仍拒绝休市日）")
     agent_event = agent_sub.add_parser(
         "event", help="事件驱动复盘：盘中异动才调 LLM 产出条件单")
     agent_event.add_argument("--symbols", nargs="*", default=None)
@@ -1030,7 +1047,8 @@ def main() -> None:
                              help="只让 AI 出条件，不挂单（仍会调用模型）")
     agent_event.add_argument("--force", action="store_true",
                              help="忽略交易时段/冷却/预算（人工排查用）")
-    agent_sched = agent_sub.add_parser("schedule", help="AI 定时队列查看与设置")
+    agent_sched = agent_sub.add_parser(
+        "schedule", help="旧版 AI 定时队列（已停用，仅兼容查看）")
     agent_sched_sub = agent_sched.add_subparsers(dest="agent_sched_command")
     agent_sched_list = agent_sched_sub.add_parser("list", help="查看当前定时队列与今日执行情况")
     agent_sched_list.add_argument("--json", action="store_true")
@@ -1358,6 +1376,23 @@ def main() -> None:
                     sys.exit(3)
             else:
                 emit(bridge.llm_status())
+
+        elif args.command == "calendar":
+            from paper_trading.utils.trading_calendar import (
+                calendar_status, sync_calendar,
+            )
+
+            cmd = getattr(args, "calendar_command", None)
+            if cmd == "sync":
+                res = sync_calendar(path=args.path)
+                emit(res, ok=res.get("ok", False), error=res.get("error"))
+                if not res.get("ok"):
+                    sys.exit(3)
+            elif cmd == "status":
+                emit(calendar_status(path=args.path))
+            else:
+                parser.print_help()
+                sys.exit(2)
 
         elif args.command == "agent":
             from paper_trading.agent import AgentTrader

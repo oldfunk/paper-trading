@@ -21,6 +21,9 @@ trading:
   slippage_fixed: 0.01
   slippage_pct: 0.001
   use_slippage_pct: false
+  # 交易时段固定为 09:30-11:30 / 13:00-15:00（代码写死，不在这里配置）。
+  # 节假日优先用 `calendar sync` 同步的本地缓存（var/trading_calendar.json）；
+  # 这里只作 T+1 解冻/计划目标日的手填兜底；行情另有“必须当天”的报价过滤。
   holidays: []
 
 strategy:

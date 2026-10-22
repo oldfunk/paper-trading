@@ -489,6 +489,11 @@ class ConditionRunner:
                "filled": [], "rejected": [], "held": [], "n_quotes": 0}
         if not pend:
             return out
+        # 生产 cron 传 quotes=None：休市/午休/节假日直接跳过，不拉过期报价。
+        # 单测可显式注入 quotes，不受真实时钟影响。
+        if quotes is None and not rt.is_trading_session(now):
+            out["skipped"] = "not-trading-session"
+            return out
         held_syms = [p.symbol for p in self.b.broker.get_all_positions()]
         syms = sorted({d["symbol"] for d in pend} | set(held_syms))
         q = quotes if quotes is not None else rt.get_quotes(syms, force=True)

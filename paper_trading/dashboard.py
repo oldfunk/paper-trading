@@ -144,17 +144,12 @@ tbody tr:hover{background:var(--bg-hover)}
 </section>
 
 <section>
-  <div class="section-header"><h2 class="section-title">AI 定时</h2><span class="section-count" id="c-sched"></span></div>
+  <div class="section-header"><h2 class="section-title">运行时刻</h2><span class="section-count" id="c-sched"></span></div>
   <div class="ai-panel">
-    <div class="s">队列按顺序消费：每条每天最多跑一次，时刻没到/队列跑完就空转记流水。默认 16:45 跑一次交易（收盘数据落定后的保守时间）。例如：09:00 同步 → 13:00 做计划 → 16:45 交易。</div>
+    <div class="s">交易时段和 AI 窗口由代码写死，不再按面板队列跑：交易日 09:30–11:30、13:00–15:00；09:30–10:00 只执行前一交易日计划；16:30–18:30 数据定稿后做下一交易日计划；盘中每分钟检查异动，只有异动才调 AI；规则/条件单由引擎每分钟执行。</div>
     <div class="ai-row" id="schedrows" style="flex-wrap:wrap"></div>
-    <div class="ai-row">
-      <button id="btn-sched-add">加一条</button>
-      <button id="btn-sched" class="primary">保存队列</button>
-      <span id="schedstat" class="mut" style="align-self:center"></span>
-    </div>
     <div class="s" id="schedtoday"></div>
-    <div class="s">每行末尾的“执行”立即跑该行（不占队列名额；交易会无视今日已决策闸，但风控钳制不变；完整决策+LLM 可能要等 1-3 分钟；有定时任务在跑时会拒绝并提示稍后再试）。</div>
+    <div class="s">旧版“AI 定时队列”已停用；需要人工补跑时用 CLI：`agent run --plan-only`、`agent event --force`。手动 run 不再被旧队列拦住。</div>
   </div>
 </section>
 
@@ -329,7 +324,7 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="ai:decide"){const sk=r.skipped||"";
     if(sk==="no-fresh-bars")return `无今日新行情（最新 ${r.latest||"未知"}），跳过（节假日或源未更新）`;
     if(sk==="already-decided")return "今日已决策，跳过";
-    if(sk==="not-in-schedule")return `定时未到或今日队列已跑完（队列 ${((r.queue||[]).map(q=>q.time?q.time+q.action:q)).join("、")||"未设"}），跳过`;
+    if(sk==="not-in-schedule")return "旧定时队列已停用；现在按代码运行时刻执行（见“运行时刻”）";
     if(sk==="drawdown-halt")return `回撤熔断（${(r.drawdown*100).toFixed(2)}%），停手`;
     if(sk==="daily-loss-halt")return `日亏熔断（${(r.pnl_pct*100).toFixed(2)}%），停手`;
     const ds=r.decisions||[],cs=r.conditions||{};
@@ -520,68 +515,21 @@ document.getElementById("btn-scheme").onclick=async()=>{
   await schemeStatus();refresh();
 };
 schemeStatus();
-const SCHED_ACTS=[["sync","同步"],["analyze","分析"],["plan","计划"],["trade","交易"]];
-function schedRow(t,a){
-  const w=document.createElement("span");
-  w.style.cssText="display:inline-flex;gap:4px;align-items:center;margin:2px 8px 2px 0";
-  w.innerHTML=`<input class="st" value="${esc(t||"")}" placeholder="16:45" style="width:70px">`+
-    `<select class="sa">${SCHED_ACTS.map(([v,l])=>`<option value="${v}"${v===(a||"trade")?" selected":""}>${l}</option>`).join("")}</select>`+
-    `<button class="sdel">删</button><button class="srun primary">执行</button>`;
-  w.querySelector(".sdel").onclick=()=>w.remove();
-  w.querySelector(".srun").onclick=()=>fireRow(w);
-  return w;
-}
-async function fireRow(w){
-  const btn=w.querySelector(".srun");
-  const tm=w.querySelector(".st").value.trim()||"(未设时刻)";
-  const act=w.querySelector(".sa").value;
-  const st=document.getElementById("schedstat");
-  const send=async(extra)=>await post("/api/agent/fire",
-    Object.assign({admin_token:tok(),action:act},extra||{}));
-  btn.disabled=true;st.textContent=`手动执行 ${tm}${act} 中（完整决策可能要 1-3 分钟）…`;
-  try{
-    let r=await send();
-    if(!r.ok&&r.error&&r.error.indexOf("口令")>=0){
-      const k=prompt("口令失效，输入 API Key 接管（仅本机使用）：");
-      if(k){r=await send({api_key:k});}
-    }
-    if(!r.ok){st.textContent="失败："+(r.error||"");btn.disabled=false;return}
-    if(r.data&&r.data.admin_token)localStorage.setItem("pt_adm",r.data.admin_token);
-    st.textContent=(r.data&&r.data.message)||"完成";
-  }catch(e){st.textContent="请求失败："+e}
-  btn.disabled=false;
-  await schedStatus();refresh();
-}
 async function schedStatus(){
   try{
-    const s=await get("/api/agent/schedule");const d=(s&&s.data)||{};
-    const q=d.entries||[];
-    document.getElementById("c-sched").textContent="每日 "+q.length+" 跑";
+    const s=await get("/api/agent/runtime");const d=(s&&s.data)||{};
+    const cal=d.calendar||{};
+    document.getElementById("c-sched").textContent=d.trading_day?"交易日":"休市";
     const box=document.getElementById("schedrows");
-    if(!box.children.length)q.forEach(e=>box.appendChild(schedRow(e.time,e.action)));
-    const t=d.today||{};
-    const cn=a=>({"sync":"同步","analyze":"分析","plan":"计划","trade":"交易"}[a]||a);
+    box.innerHTML=(d.windows||[]).map(w=>
+      `<span class="tag" title="${esc(w.note||"")}">${esc(w.time)}–${esc(w.end)} ${esc(w.label)}</span>`
+    ).join(" ");
+    const plan=d.pending_plan;
     document.getElementById("schedtoday").textContent=
-      `队列：${q.map(e=>e.time+cn(e.action)).join("、")}（${d.source==="local"?"已自定义":"默认"}）——今日已跑 ${t.runs??0}/${t.total??q.length} 次`+
-      ((t.fired||[]).length?`（已跑 ${t.fired.join("、")}）`:"");
+      `现在：${d.phase||"—"}；交易日历：${cal.available?`${cal.min_date} 至 ${cal.max_date}（${cal.source}）`:"未同步（回退周末+手填节假日）"}；`+
+      (plan?`待执行计划 #${plan.id}（${plan.plan_date}）：${plan.summary||"无摘要"}`:`下一计划目标日：${d.plan_target||"—"}，暂无待执行计划`);
   }catch(e){}
 }
-document.getElementById("btn-sched-add").onclick=()=>document.getElementById("schedrows").appendChild(schedRow("","trade"));
-document.getElementById("btn-sched").onclick=async()=>{
-  const box=document.getElementById("schedrows");
-  const entries=[...box.children].map(w=>({time:w.querySelector(".st").value,action:w.querySelector(".sa").value}));
-  const send=async(extra)=>await post("/api/agent/schedule",
-    Object.assign({admin_token:tok(),entries:entries},extra||{}));
-  let r=await send();
-  if(!r.ok&&r.error&&r.error.indexOf("口令")>=0){
-    const k=prompt("口令失效，输入 API Key 接管（仅本机使用）：");
-    if(k){r=await send({api_key:k});}
-  }
-  if(!r.ok){alert("保存失败："+(r.error||""));return}
-  if(r.data&&r.data.admin_token)localStorage.setItem("pt_adm",r.data.admin_token);
-  document.getElementById("schedstat").textContent=r.data.message;
-  await schedStatus();refresh();
-};
 schedStatus();
 llmStatus();
 
@@ -1063,26 +1011,23 @@ class Handler(BaseHTTPRequestHandler):
                     "instruction": custom_instruction(_root),
                     "schemes": _items,
                     "mother": mother_strategies()}})
-            elif u.path == "/api/agent/schedule":
-                from paper_trading.agent import AgentTrader as _AT
-                from paper_trading.agent import schedule as _sched
+            elif u.path in ("/api/agent/runtime", "/api/agent/schedule"):
+                from paper_trading.agent.runtime import snapshot as _runtime
 
-                from pathlib import Path as _P
-                _root = _P(__file__).resolve().parents[1]
-                cur = self._bridge()
-                sc = _sched.load_schedule(_root)
+                b = self._bridge()
+                today = datetime.now().date().isoformat()
                 try:
-                    _tr = _AT(cur)
-                    runs = _tr._live_runs_today()
-                    fired = sorted(_tr._fired_entries_today(sc["entries"]))
+                    pending = b.broker.get_pending_plan(today)
                 except Exception:
-                    runs, fired = [], []
-                self._json({"ok": True, "data": {
-                    "entries": sc["entries"],
-                    "source": sc["source"],
-                    "now": _sched._now().strftime("%H:%M"),
-                    "today": {"runs": len(runs), "total": len(sc["entries"]),
-                              "fired": fired}}})
+                    pending = None
+                try:
+                    data = _runtime(pending_plan=pending,
+                                    data_asof=b.data_db.get_data_asof(),
+                                    holidays=b.broker._holidays())
+                except Exception:
+                    data = _runtime(pending_plan=pending)
+                data["legacy_schedule"] = (u.path == "/api/agent/schedule")
+                self._json({"ok": True, "data": data})
             elif u.path == "/api/quotes":                # 盘中实时行情（60s 服务端缓存；非交易时段回空）
                 from paper_trading.data import realtime as _rt
 
@@ -1357,25 +1302,11 @@ class Handler(BaseHTTPRequestHandler):
                 r = self._bridge().llm_ask(body.get("prompt", ""), body.get("system", ""))
                 self._json(r, code=200 if r.get("ok") else 502)
             elif u.path == "/api/agent/schedule":
-                if not self._admin_ok(body):
-                    # 凭 Key 接管（与方案切换一致：换浏览器/首次使用时填 API Key）
-                    _tok_out = _takeover_token(body, self.secrets_path)
-                    if not _tok_out:
-                        self._json({"ok": False, "error": "口令错误（换了浏览器？先在模型设置里保存一次即接管）"}, code=403)
-                        return
-                else:
-                    _tok_out = ""
-                from paper_trading.agent import schedule as _sched
-
-                from pathlib import Path as _P
-                ok, msg = _sched.save_schedule(
-                    _P(__file__).resolve().parents[1], body.get("entries", ""))
-                _data = {"message": msg} if ok else None
-                if ok and _tok_out:
-                    _data["admin_token"] = _tok_out
-                self._json({"ok": ok, "data": _data,
-                            "error": None if ok else msg},
-                           code=200 if ok else 400)
+                # 旧的手动队列已由代码运行时接管：不再允许面板改写。
+                self._json({"ok": False,
+                            "error": "旧“AI 定时队列”已停用；运行时刻由代码写死，"
+                                     "请在“运行时刻”查看状态，人工补跑用 CLI。"},
+                           code=410)
             else:
                 self._send(404, b"not found", "text/plain")
         except ValueError as e:            # 请求体不合法：400 + 真实原因（不是 500）

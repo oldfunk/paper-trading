@@ -1,27 +1,14 @@
-"""AI 定时队列：时刻 → 动作，一天按顺序消费。
+"""旧版 AI 定时队列（兼容读取/查看；生产调度已改由代码运行时接管）。
 
-cron 只负责高频 tick（如每 15 分钟叫一次 `agent tick`），本模块在进程内
-判定“现在轮到哪条”：每条每天最多跑一次，时刻没到/队列跑完一律跳过
-（记流水，不问 LLM）。
+新部署/当前生产路径请看 `agent.runtime`：交易时段、开盘执行窗口、收盘计划
+窗口都写死在代码里，cron 调 `agent tick` 即可，不再读取本模块的队列。
 
-动作（每条固定一种）：
-    sync     只同步行情+名称，不决策不下单
-    analyze  走完整决策链但只分析不下单（dry-run，记流水）
-    plan     休盘做计划存着，开盘执行（不碰账本）
-    trade    实盘决策，可下单（风控钳制不变）
+本模块保留是为了：
+1. 老的 `strategy.local.yaml` 不会因升级报错；
+2. `agent schedule list/set` 仍能查看/导出历史配置；
+3. 旧流水里的 slot 标记仍可解析（审计用途）。
 
-用户配置只写 gitignored 的 `strategy.local.yaml`（与投资方案同一文件）。
-v0.6.2 推荐「休盘做下一交易日计划、早盘执行」：
-    agent_schedule:
-      queue:
-        - {time: "09:35", action: trade}
-        - {time: "16:45", action: plan}
-        - {time: "10:00", action: sync}     # 可选
-
-缺省队列仍为 [{"time": "16:45", "action": "trade"}]（兼容旧部署；
-新部署建议用 `agent schedule set --entry 09:35=trade --entry 16:45=plan`
-改成推荐队列）。
-消费凭流水里的 slot 标记，不凭时间推断（双时钟错位已吃过亏）。
+动作含义（旧队列）：sync 同步、analyze 试运行、plan 做计划、trade 交易。
 """
 from __future__ import annotations
 
