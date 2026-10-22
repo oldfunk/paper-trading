@@ -5,7 +5,7 @@
 > 迭代时不得遗忘这里的事项；未完成的 P0 不进入下一里程碑。
 
 - 当前里程碑：**M1 — 正确性与口径统一**（M1 验收通过；v0.6.5 把 AI 调度改成固定交易时段运行时并接入交易日历，待 Pi dry-run 观察；`engine.enabled` 仍为 `false`）
-- 当前版本：v0.6.5（固定 09:30–11:30/13:00–15:00 + 开盘执行计划 + 收盘计划 + 事件复盘 + 日历缓存；本地 192 项全绿）
+- 当前版本：v0.6.5（固定 09:30–11:30/13:00–15:00 + 开盘执行计划 + 收盘计划 + 事件复盘 + 未来优先日历缓存；本地 193 项全绿）
 - 纪律：**M1 全部验收通过前，`engine.enabled` 保持 `false`**（只看不买，允许 `--dry-run`）
 - 相关：`README.md`（用法）、`AGENTS.md`（Agent 硬约束）、`docs/`（本文档）
 
@@ -196,3 +196,4 @@
 | 2026-10-22 | v0.6.4 | 部署/运维 | Pi `git pull` 到 `7e69bd2`，`pytest` 187 项全绿；dashboard active、HTTP 200、版本 0.6.4；`engine.enabled=false`。cron 对齐队列：tick 改 `5,20,35,50 9-15`（09:35 精确消费计划），event 改 `2,7,12,… 9-15`（错开 tick，避免 `run_lock` 冲突）。 |
 | 2026-10-22 | v0.6.4 | 事件复盘验证 | 13:02 真实事件复盘（300390/600989/002192）模型输出 3 条买入条件：`parsed=3`、`parse_rejected=[]`、`created=3`（id 7–9，`value=10000`，expiry 10-24，status=armed）；`engine.enabled=false` 下无新 orders/fills，条件保持待触发。12:17 另用合成行情干跑同一 prompt，同样 `parsed=3`、无拒单。 |
 | 2026-10-22 | v0.6.5 | M1.6/运维 | AI 调度重构为固定运行时：新增 `utils/market_time.py`（09:30–11:30/13:00–15:00、开盘 09:30–10:00、计划 16:30–18:30）与 `agent/runtime.py`；`agent tick` 不再读 `agent_schedule`，无到点动作不写 `ai:decide` 噪音流水；手动 `agent run` 摘掉旧队列闸；面板“AI 定时”改为只读“运行时刻”。新增交易日历缓存 `calendar sync/status`（akshare → `var/trading_calendar.json`，失败回退周末+`config.holidays`），实时交易时段/条件单执行接入缓存。重写运行时/日历测试，本地 192 项全绿。 |
+| 2026-10-22 | v0.6.5 | 部署/验证 | Pi `git pull` 到 `8fff43c`（tag `v0.6.5`），双端 `pytest` 193 项全绿；dashboard active/HTTP 200，`engine.enabled=false`。按用户反馈改日历**未来优先**：同步只留最近 45 天（近况/节后审计兜底）+ 全部未来，缓存 `n=8797→78`（`2026-09-07~12-31`，`future_days=50`、`lookahead=70 天`、`needs_sync=false`），抽查 10-01/10-07 休市、10-08/10-23 交易日、`next(09-30)=10-08` 全对。cron 切新运行时（旧 cron 备份 `crontab.v0.6.4.bak`），切换后 `not-in-schedule` 噪音归零。16:30 计划窗口实测：16:30 行情未定稿 → 静默 `no-fresh-data` 重试；16:35 定稿后问模型遇 glm 429 过载 → fail-closed 记 `ai:plan ok=0`、不落计划；16:40 重试成功生成计划 #12（`plan_date=2026-10-23`、`asof=2026-10-22`、7 动作+2 条件、条件 expiry 10-25 未超 3 天上限）；16:44 再 tick 命中 `plan-exists` 幂等零调用。手动 tick 撞锁时礼貌退出，不双跑。明早 09:30 是新“开盘执行”路径首次实盘（计划 #12 为首个 `plan_date=当天` 的精确消费）。 |
