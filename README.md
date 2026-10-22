@@ -473,7 +473,7 @@ python -m paper_trading.cli cond tick --dry-run --json
 # MA 规则交易（工作日 16:45；等数据源今日线落定后再结算，保守时间）
 (crontab -l 2>/dev/null; echo "45 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli cron-run --json >> run.log 2>&1") | crontab -
 
-# AI 交易员（v0.6.3 推荐：休盘 16:45 做下一交易日计划，早盘 09:35 消费计划；
+# AI 交易员（v0.6.4 推荐：休盘 16:45 做下一交易日计划，早盘 09:35 消费计划；
 # tick 只是高频轮询，进程内按定时队列消费，时刻未到/队列跑完就空转记流水）
 (crontab -l 2>/dev/null; echo "*/15 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
 (crontab -l 2>/dev/null; echo "*/15 16-18 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
