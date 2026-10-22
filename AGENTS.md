@@ -52,7 +52,7 @@ python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20
 (crontab -l 2>/dev/null; echo "1-59 9-11,13-14 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent event --json >> agent.log 2>&1") | crontab -
 # 规则引擎 + 条件单（每分钟单轮；engine.enabled=false 时只判定并落 blocked_disabled）
 (crontab -l 2>/dev/null; echo "* 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.engine --once --json >> engine.log 2>&1") | crontab -
-# 交易日历（每周同步一次未来交易日到 var/trading_calendar.json，只留最近 7 天+未来；失败回退周末）
+# 交易日历（每周同步一次未来交易日到 var/trading_calendar.json，只留最近 45 天+未来；失败回退周末）
 (crontab -l 2>/dev/null; echo "0 10 * * 6 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli calendar sync --json >> calendar.log 2>&1") | crontab -
 ```
 
