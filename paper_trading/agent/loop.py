@@ -790,7 +790,8 @@ class AgentTrader:
             conditions_rejected=conditions_rejected)
 
     def _execute_plan(self, pending: dict, all_bars: dict,
-                      latest: dict, slot: Optional[str] = None) -> dict:
+                      latest: dict, slot: Optional[str] = None,
+                      exec_day: Optional[str] = None) -> dict:
         """执行今日待执行计划（休盘计划开盘执行；计划标的自动补数，缺价 fail-closed）。"""
         from paper_trading.utils import get_logger
 
@@ -806,6 +807,19 @@ class AgentTrader:
         conditions_rejected = plan.get("conditions_rejected", [])
         if not isinstance(conditions_rejected, list):
             conditions_rejected = []
+        # 计划条件的有效期必须覆盖执行日：跨周末计划里 expiry 可能落在
+        # 周六/周日（执行日前就过期，等于条件白挂）。以执行日为基准复核，
+        # 不足则顺延到执行日当天 23:59——意图明确，顺延比作废更合理，
+        # 调整写进 note 可审计（原计划 JSON 保留原始值）。
+        exec_day = exec_day or today_str()
+        for c in conditions:
+            if not isinstance(c, dict):
+                continue
+            exp = str(c.get("expiry") or "")[:10]
+            if exp and exp < exec_day:
+                c["expiry"] = f"{exec_day}T23:59"
+                c["note"] = (f"[有效期顺延至执行日{exec_day}] "
+                             f"{str(c.get('note') or '')}")[:200]
         summary = str(plan.get("summary", ""))[:200]
         syms = [s for s in str(pending.get("symbols", "")).split(",") if s]
         # 计划可能包含本轮运行股票池之外的新增标的（AI 提名等）。

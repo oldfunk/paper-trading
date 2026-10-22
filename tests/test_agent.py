@@ -180,6 +180,31 @@ def test_agent_plan_conditions_arm_on_execute(monkeypatch, tmp_path):
     assert co.list_all(5)[0]["status"] == "armed"
 
 
+def test_plan_condition_expiry_bumped_to_execution_day(monkeypatch, tmp_path):
+    """跨周计划：条件 expiry 落在执行日前（如周六）→ 顺延到执行日并留痕。"""
+    from paper_trading.engine.conditional import ConditionalOrders
+    from paper_trading.llm import provider as prov
+
+    exp = (datetime.now() + timedelta(days=1)).date().isoformat()
+    plan = {"actions": [], "conditions": [{
+        "symbol": "600519", "side": "buy",
+        "cond": {"type": "price_below", "value": 10.5},
+        "value": 8000, "expiry": exp, "reason": "回踩"}],
+        "summary": "跨周计划"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(picks_enabled=False))
+    r = t.run(["600519"], plan_only=True)
+    pend = b.broker.get_pending_plan(r["plan_date"])
+    assert pend["plan"]["conditions"][0]["expiry"] == exp  # 存档保留原始值
+    res = t._execute_plan(pend, {"600519": b.data_db.get_bars("600519", limit=30)},
+                          b.price_map(["600519"]), exec_day="2026-10-26")
+    assert res["conditions"]["n_created"] == 1
+    o = ConditionalOrders(b.account_db_path).list_all(5)[0]
+    assert o["expiry"].startswith("2026-10-26")      # 顺延到执行日
+    assert "顺延" in (o["note"] or "")                # 调整留痕可审计
+
+
 def test_arm_rejects_sell_condition_without_holding(tmp_path):
     """挂单层兜底：给非持仓挂卖出条件必须拒（计划 #12 暴露的口子）。
 
