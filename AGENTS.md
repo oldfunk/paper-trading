@@ -40,7 +40,7 @@ python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20
 ### Cron Integration
 
 ```bash
-# v0.6.2 推荐：休盘做次日计划，早盘消费计划；事件复盘只在异动时叫 LLM
+# v0.6.3 推荐：休盘做次日计划，早盘消费计划；事件复盘只在异动时叫 LLM
 # 早盘/盘中 tick（09:00-15:59 每 15 分钟；09:35 的 trade 消费前一日计划）
 (crontab -l 2>/dev/null; echo "*/15 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
 # 休盘 plan（16:00-18:59 每 15 分钟；16:45 做下一交易日计划）
@@ -119,7 +119,7 @@ python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20
 7. dry-run 不碰账本（不解冻不下单不记 NAV），只走校验链。
 8. **休盘计划、下一交易日开盘执行**：`--plan-only` 基于最新定稿数据做计划存 `agent_plans`；计划 `plan_date` 写**下一个交易日**（不是当晚），开盘 `agent run` 用 `get_executable_plan` 消费今天及更早、最近 7 天内的 pending 计划（价格沿用计划基准，风控重验），消费后标记 done。开盘 gap 与定稿价的差异是已知简化。
 9. **Stock Dashboard 连接只读**：`paper_trading/integration/` 是唯一允许碰母库的地方，且只能 SQLite 只读打开；母库缺失/异常时静默回退本地，永不阻断交易。`--pool-from`（auto/config/watchlist/screening/all）是唯一的池来源开关，缺省 `auto`。
-10. **AI 条件单（实时执行层）**：决策 JSON 的 `conditions` 只挂条件、现在不成交；校验后落 `conditional_orders(source=ai)`，由 `ConditionRunner` 每轮盯价触发，复用同一套 `RiskManager` / `PaperBroker` / 日内预算 / `engine.enabled` 总开关。与直接动作、已有 pending 条件重复的条目必须跳过，禁止同一标的同方向双重下单。计划里的条件在目标交易日执行计划时才挂。
+10. **AI 条件单（实时执行层）**：决策 JSON 的 `conditions` 只挂条件、现在不成交；校验后落 `conditional_orders(source=ai)`，由 `ConditionRunner` 每轮盯价触发，复用同一套 `RiskManager` / `PaperBroker` / 日内预算 / `engine.enabled` 总开关。与直接动作、已有 pending 条件重复的条目必须跳过，禁止同一标的同方向双重下单。计划里的条件在目标交易日执行计划时才挂。解析失败（低于 `min_ticket_cny`、池外、非法类型等）必须进 `parse_rejected` 流水和面板，禁止静默丢弃；显式 `volume` 在触发时也按成交价再过一次手续费地板（卖出清仓不拦）。
 11. **事件驱动复盘（不是逐笔 LLM）**：`agent event` 由价格异动（默认 ±3%）或持仓自峰值回撤（默认 5%）触发；必须遵守全局最小间隔（15 分钟）、单标冷却（30 分钟）、每日调用预算（默认 6 次）。事件复盘只产出/更新条件单，不直接下单；无事件/冷却/预算用完时零 LLM 调用。阈值与预算在 `config.yaml` 的 `agent.event_*`。
 
 ## 规则引擎纪律（量化执行层）
