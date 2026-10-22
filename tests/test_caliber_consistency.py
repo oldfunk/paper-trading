@@ -16,7 +16,7 @@
 本文件锁死「代码里的默认口径 == config.yaml 口径」，让分叉在 CI 变红。
 
 自证它会失败（故意让代码默认 != config.yaml）：
-    python -m pytest tests/test_caliber_consistency.py -q   # 基线：3 passed
+    python -m pytest tests/test_caliber_consistency.py -q   # 基线：12 passed
     # 临时改 types.py commission_rate 默认 0.00025 -> 0.0003
     python -m pytest tests/test_caliber_consistency.py -q   # 变红，点名 commission_rate
 """
