@@ -561,6 +561,11 @@ class ConditionRunner:
                 volume = size_for_value(price, value)
             if volume % 100 != 0:
                 volume = (volume // 100) * 100
+            # 显式 volume 也要过手续费地板：100 股低价股可能只有几百元，
+            # 不拦就会绕过 min_ticket_cny（卖出不拦，清仓优先）。
+            if self.min_ticket > 0 and volume > 0 and volume * price < self.min_ticket:
+                return {"ok": False,
+                        "why": f"买入金额 {volume * price:.0f} 低于最小金额 {self.min_ticket:.0f}"}
         if volume <= 0:
             return {"ok": False, "why": "手数为 0"}
         sig = Signal(symbol=sym, direction=(SignalType.BUY if side == "buy"

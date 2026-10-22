@@ -830,7 +830,8 @@ def design_conditions(bridge, orders, *, pool_from: str = "auto",
     """
     from paper_trading.agent.loop import AgentTrader, _ask_llm
     from paper_trading.data import realtime as rt
-    from paper_trading.engine.ai_conditions import build_prompt, parse_conditions
+    from paper_trading.engine.ai_conditions import (build_prompt,
+                                                     parse_conditions_verbose)
     from paper_trading.integration import resolve_pool
 
     try:
@@ -848,10 +849,13 @@ def design_conditions(bridge, orders, *, pool_from: str = "auto",
         note = f"{note}；实时价获取失败（{type(e).__name__}）"
     ctx = bridge.llm_context(max_ops=3, max_nav=2, closes_n=3, symbols=syms)
     trader = AgentTrader(bridge, bridge.agent_cfg)
+    min_ticket = engine_min_ticket(config_path)
+    max_value = float(bridge.agent_cfg.max_order_value)
     sys_p, user_p = build_prompt(syms, quotes, ctx.get("positions", []),
                                  trader._scheme_txt(),
                                  str(ctx.get("account", {}).get("data_asof") or ""),
-                                 max_conds=int(max_conds), max_days=int(max_days))
+                                 max_conds=int(max_conds), max_days=int(max_days),
+                                 min_ticket=min_ticket, max_value=max_value)
     try:
         raw = _ask_llm(bridge._llm_config(), user_p, sys_p,
                        bridge.agent_cfg.llm_timeout, 1,
@@ -859,17 +863,21 @@ def design_conditions(bridge, orders, *, pool_from: str = "auto",
                        bridge.agent_cfg.llm_thinking)
     except Exception as e:                 # noqa: BLE001
         return False, {}, f"模型调用失败：{type(e).__name__}: {e}"
-    conds = parse_conditions(raw, syms, max_conds=int(max_conds),
-                             max_value=float(bridge.agent_cfg.max_order_value),
-                             min_ticket=engine_min_ticket(config_path))
+    conds, parse_rejected = parse_conditions_verbose(
+        raw, syms, max_conds=int(max_conds),
+        max_value=max_value, min_ticket=min_ticket)
     if dry_run:
-        return True, {"dry_run": True, "parsed": conds, "pool": syms,
-                      "pool_source": note, "raw": str(raw)[:600]}, ""
-    res = orders.create_many(conds, min_ticket=engine_min_ticket(config_path))
+        return True, {"dry_run": True, "parsed": conds,
+                      "parse_rejected": parse_rejected,
+                      "pool": syms, "pool_source": note,
+                      "raw": str(raw)[:600]}, ""
+    res = orders.create_many(conds, min_ticket=min_ticket)
     bridge.broker.log_operation("cond:design", {"pool": syms, "n": res["n_created"]},
                                 True, {"created": res["created"],
-                                       "rejected": res["rejected"]}, None, None)
-    data = {**res, "pool": syms, "pool_source": note, "raw": str(raw)[:400]}
+                                       "rejected": res["rejected"],
+                                       "parse_rejected": parse_rejected}, None, None)
+    data = {**res, "parse_rejected": parse_rejected,
+            "pool": syms, "pool_source": note, "raw": str(raw)[:400]}
     if not res["n_created"]:
         why = ("模型没给出符合条件的条件单" if not conds
                else "模型给的条件全部未通过校验（见 rejected）")

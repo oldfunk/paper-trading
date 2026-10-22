@@ -27,7 +27,11 @@ price 为 null 表示按最新收盘价成交；hold 也要写一行（说明为
 引用股票用“名称(代码)”格式，全部中文回复。
 8. conditions 是可选的“条件单”：现在不成交，由引擎盘中盯价触发；最多 {max_conditions} 条，
    有效期最长 {condition_max_days} 天。触发条件必须是可验证的数字，且与现价保持合理距离。
-   条件单与 actions 不要对同一标的方向重复；卖出条件必须对应真实持仓。
+   price_below/price_above 是绝对价格；pct_below/pct_above 是当日涨跌幅%（相对昨收），
+   不是从峰值回撤。条件单与 actions 不要对同一标的方向重复；卖出条件必须对应真实持仓。
+   买入条件用 value（人民币元）时必须在 {min_ticket}~{max_order_value} 元之间
+   （低于 {min_ticket} 元会因手续费地板被拒）；也可给 volume（100 股整数倍，
+   按触发价估算金额也要 ≥{min_ticket} 元）。
    没有需要等待价格触发的情况时，conditions 输出空数组 []。
 """
 

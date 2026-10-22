@@ -128,6 +128,28 @@ def test_condition_runner_triggers_and_fills(tmp_path):
     assert pos.total_volume % 100 == 0 and pos.total_volume == 2000
 
 
+def test_condition_runner_rejects_small_explicit_volume(tmp_path):
+    """显式 volume 也不能绕过手续费地板（低价股 100 股 <5000 元）。"""
+    from paper_trading.engine.runner import ConditionRunner
+    from paper_trading.models import Bar
+
+    b = _bridge(str(tmp_path))
+    b.data_db.upsert_bars([Bar(symbol="000001",
+                               timestamp=datetime.now() - timedelta(days=10000 + i),
+                               open=10.0, high=10.2, low=9.8,
+                               close=10.0, volume=100) for i in range(30)])
+    co = ConditionalOrders(str(tmp_path / "acct-small.db"))
+    co.create({"symbol": "000001", "side": "buy", "cond_type": "price_below",
+               "cond_value": 10.0, "volume": 100,
+               "expiry": (datetime.now() + timedelta(days=2)).date().isoformat()})
+    quotes = {"000001": {"code": "000001", "price": 9.95, "prev_close": 10.0,
+                         "high": 10.0, "low": 9.9, "volume": 1e6,
+                         "change_pct": -0.5}}
+    r = ConditionRunner(b, co, min_ticket_cny=5000).tick(quotes)
+    assert not r["filled"] and r["rejected"]
+    assert co.list_all(1)[0]["status"] == "rejected"
+
+
 def test_condition_runner_skips_untriggered(tmp_path):
     from paper_trading.engine.runner import ConditionRunner
     from paper_trading.models import Bar
@@ -172,6 +194,32 @@ def test_parse_conditions_filters_bad():
     assert buy["source"] == "ai" and "回踩" in buy["note"]
     assert parse_conditions("not json", ["600519"]) == []
     assert parse_conditions('{"conditions":"x"}', ["600519"]) == []
+
+
+def test_parse_conditions_reports_rejection_reason():
+    """低于手续费地板的买入不能被静默丢弃，必须给出可审计原因。"""
+    from paper_trading.engine.ai_conditions import parse_conditions_verbose
+
+    raw = ('{"conditions":['
+           '{"symbol":"600519","side":"buy","cond":{"type":"pct_below",'
+           '"value":10},"value":2000,"expiry":"2026-10-24","reason":"回撤"},'
+           '{"symbol":"600519","side":"buy","cond":{"type":"price_below",'
+           '"value":10},"volume":100,"expiry":"2026-10-24","reason":"一手"}]}')
+    valid, rejected = parse_conditions_verbose(
+        raw, ["600519"], max_value=20000, min_ticket=5000)
+    assert valid == []
+    assert len(rejected) == 2 and rejected[0]["symbol"] == "600519"
+    assert "5000" in rejected[0]["why"] and "2000" in rejected[0]["why"]
+    assert "低于最小金额" in rejected[1]["why"]
+
+
+def test_condition_prompt_includes_ticket_floor():
+    from paper_trading.engine.ai_conditions import build_prompt
+
+    system, _user = build_prompt(
+        ["600519"], {"600519": {"price": 12.9, "change_pct": 1.0}},
+        [], "方案", "2026-10-22", min_ticket=5000, max_value=20000)
+    assert "5000~20000" in system
 
 
 def test_walk_forward_splits_and_reports():

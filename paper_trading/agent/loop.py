@@ -327,20 +327,24 @@ class AgentTrader:
         except Exception:                      # noqa: BLE001 - 配置缺失不阻断决策
             return 0.0
 
-    def _conditions_from_raw(self, raw: Optional[str], pool: list[str]) -> list[dict]:
-        """从决策 JSON 里取 conditions；坏输出/池外/非法项由解析器丢弃。"""
+    def _conditions_from_raw(self, raw: Optional[str],
+                             pool: list[str]) -> tuple[list[dict], list[dict]]:
+        """从决策 JSON 里取 conditions，返回 (合法条目, 被拒原因)。
+
+        坏输出/池外/金额越界不能静默消失；原因要进 ai:decide / ai:plan 流水。
+        """
         if not self.cfg.conditions_enabled:
-            return []
-        from paper_trading.engine.ai_conditions import parse_conditions
+            return [], []
+        from paper_trading.engine.ai_conditions import parse_conditions_verbose
 
         try:
-            return parse_conditions(
+            return parse_conditions_verbose(
                 raw, pool,
                 max_conds=int(self.cfg.max_conditions),
                 max_value=float(self.cfg.max_order_value),
                 min_ticket=self._engine_min_ticket())
-        except Exception:                      # noqa: BLE001 - 条件单失败不阻断主决策
-            return []
+        except Exception as e:                # noqa: BLE001 - 条件单失败不阻断主决策
+            return [], [{"why": f"解析异常：{type(e).__name__}: {e}"}]
 
     def _arm_conditions(self, conditions: list, *, actions: Optional[list] = None,
                         dry_run: bool = False) -> dict:
@@ -399,7 +403,8 @@ class AgentTrader:
         这样异动时 AI 可以介入，但不会变成逐笔 LLM 调用。
         """
         from paper_trading.data import realtime as rt
-        from paper_trading.engine.ai_conditions import build_prompt, parse_conditions
+        from paper_trading.engine.ai_conditions import (build_prompt,
+                                                         parse_conditions_verbose)
 
         b = self.bridge
         pool = self._decision_symbols(symbols)[:20]
@@ -410,11 +415,14 @@ class AgentTrader:
         except Exception:                      # noqa: BLE001 - 无实时价时仍可用收盘上下文
             quotes = {}
         ctx = b.llm_context(max_ops=3, max_nav=2, closes_n=3, symbols=pool)
+        min_ticket = self._engine_min_ticket()
+        max_value = float(self.cfg.max_order_value)
         sys_p, user_p = build_prompt(
             pool, quotes, ctx.get("positions", []), self._scheme_txt(),
             str(ctx.get("account", {}).get("data_asof") or ""),
             max_conds=int(max_conds or self.cfg.event_max_conditions),
-            max_days=int(self.cfg.condition_max_days), event_txt=event_txt)
+            max_days=int(self.cfg.condition_max_days), event_txt=event_txt,
+            min_ticket=min_ticket, max_value=max_value)
         from paper_trading.llm import LLMError
 
         try:
@@ -425,16 +433,17 @@ class AgentTrader:
             b.broker.log_operation("ai:review", {"pool": pool, "event": event_txt[:300]},
                                    False, {"error": str(e)}, None, None)
             return {"ok": False, "error": str(e), "pool": pool}
-        conds = parse_conditions(
+        conds, parse_rejected = parse_conditions_verbose(
             raw, pool, max_conds=int(max_conds or self.cfg.event_max_conditions),
-            max_value=float(self.cfg.max_order_value),
-            min_ticket=self._engine_min_ticket())
+            max_value=max_value, min_ticket=min_ticket)
         res = self._arm_conditions(conds, dry_run=dry_run)
         b.broker.log_operation(
             "ai:review", {"pool": pool, "event": event_txt[:300],
                           "dry_run": bool(dry_run)}, True,
-            {"parsed": len(conds), **res, "raw": str(raw or "")[:800]}, None, None)
-        return {"ok": True, "pool": pool, "parsed": len(conds), **res,
+            {"parsed": len(conds), "parse_rejected": parse_rejected,
+             **res, "raw": str(raw or "")[:800]}, None, None)
+        return {"ok": True, "pool": pool, "parsed": len(conds),
+                "parse_rejected": parse_rejected, **res,
                 "raw": str(raw or "")[:600]}
 
     def _plan(self, symbols: list[str], candidates: Optional[list] = None,
@@ -478,7 +487,8 @@ class AgentTrader:
             max_order_value=int(self.cfg.max_order_value),
             max_orders=self.cfg.max_orders_per_run,
             max_conditions=int(self.cfg.max_conditions),
-            condition_max_days=int(self.cfg.condition_max_days))
+            condition_max_days=int(self.cfg.condition_max_days),
+            min_ticket=int(self._engine_min_ticket()))
             + f"\n注意：当前为休盘，最新定稿数据截至 {asof}。"
               "你的决策将在下一个开盘执行。")
         from paper_trading.llm import LLMError
@@ -498,7 +508,7 @@ class AgentTrader:
             return {"ok": False, "error": "LLM 输出非 JSON 计划，已作废",
                     "timestamp": now, "symbols": symbols}
         summary = str((plan or {}).get("summary", ""))[:200]
-        conditions = self._conditions_from_raw(raw, symbols)
+        conditions, conditions_rejected = self._conditions_from_raw(raw, symbols)
         # 计划基准价：买/卖动作一律回填定稿收盘价（prompt 约定 null=最新收盘）。
         # 不采信 LLM 自报价格；带 price_source 的基准价才允许在执行缺价时兜底。
         for a in actions:
@@ -525,6 +535,7 @@ class AgentTrader:
         pid = b.broker.save_plan(plan_date, symbols,
                                  {"actions": actions, "summary": summary, "asof": asof,
                                   "conditions": conditions,
+                                  "conditions_rejected": conditions_rejected,
                                   "pool_source": pool_source,
                                   "picks": [{k: p.get(k) for k in ("symbol", "name", "reason")}
                                             for p in picks]})
@@ -533,10 +544,12 @@ class AgentTrader:
                                            "pool_source": pool_source,
                                            "n_picks": len(picks),
                                            "n_conditions": len(conditions),
+                                           "n_conditions_rejected": len(conditions_rejected),
                                            **({"slot": slot} if slot else {})}, True,
                                {"plan_id": pid, "summary": summary,
                                 "n_actions": len(actions),
                                 "n_conditions": len(conditions),
+                                "conditions_rejected": conditions_rejected,
                                 "picks": [{"symbol": p["symbol"],
                                            "name": p.get("name", "")} for p in picks],
                                 "raw": str(raw or "")[:1500]}, None, None)
@@ -544,7 +557,9 @@ class AgentTrader:
         return {"ok": True, "mode": "plan", "plan_id": pid, "plan_date": plan_date,
                 "asof": asof, "timestamp": now, "symbols": symbols,
                 "pool_source": pool_source, "actions": actions,
-                "conditions": conditions, "summary": summary}
+                "conditions": conditions,
+                "conditions_rejected": conditions_rejected,
+                "summary": summary}
 
     def tick(self, symbols: list[str], candidates: Optional[list] = None,
              pool_source: str = "config", force: bool = False,
@@ -757,7 +772,8 @@ class AgentTrader:
             max_order_value=int(self.cfg.max_order_value),
             max_orders=self.cfg.max_orders_per_run,
             max_conditions=int(self.cfg.max_conditions),
-            condition_max_days=int(self.cfg.condition_max_days))
+            condition_max_days=int(self.cfg.condition_max_days),
+            min_ticket=int(self._engine_min_ticket()))
         if picks:
             # AI 提名的股票已由程序校验并补齐数据，可直接决策（仍在风控钳制内）
             system += ("\n本轮额外纳入以下 AI 自主提名标的（程序已校验为合法 A 股并补齐数据）："
@@ -782,7 +798,7 @@ class AgentTrader:
         if not isinstance(actions, list):
             actions = []
         summary = str((plan or {}).get("summary", ""))[:200] if plan else ""
-        conditions = self._conditions_from_raw(raw, symbols)
+        conditions, conditions_rejected = self._conditions_from_raw(raw, symbols)
 
         # 7. 逐条钳制执行（现决与计划执行共用实现）
         return self._execute_actions(
@@ -792,7 +808,8 @@ class AgentTrader:
             dry_run=dry_run, mode=mode, now=now, from_plan=False,
             pool_source=pool_source, slot=_slot_s,
             picks=[{"symbol": p["symbol"], "name": p.get("name", "")}
-                   for p in picks], conditions=conditions)
+                   for p in picks], conditions=conditions,
+            conditions_rejected=conditions_rejected)
 
     def _execute_plan(self, pending: dict, all_bars: dict,
                       latest: dict, slot: Optional[str] = None) -> dict:
@@ -808,6 +825,9 @@ class AgentTrader:
         conditions = plan.get("conditions", [])
         if not isinstance(conditions, list):
             conditions = []
+        conditions_rejected = plan.get("conditions_rejected", [])
+        if not isinstance(conditions_rejected, list):
+            conditions_rejected = []
         summary = str(plan.get("summary", ""))[:200]
         syms = [s for s in str(pending.get("symbols", "")).split(",") if s]
         # 计划可能包含本轮运行股票池之外的新增标的（AI 提名等）。
@@ -832,7 +852,8 @@ class AgentTrader:
             positions=positions, nav_total=nav.total_value,
             dry_run=False, mode="live", now=datetime.now().isoformat(),
             from_plan=True, pool_source=str(plan.get("pool_source", "config")),
-            slot=slot, conditions=conditions)
+            slot=slot, conditions=conditions,
+            conditions_rejected=conditions_rejected)
         b.broker.mark_plan_done(int(pending["id"]))
         logger.info(f"AI plan {pending['id']} executed")
         return res
@@ -844,7 +865,8 @@ class AgentTrader:
                          pool_source: str = "config",
                          slot: Optional[str] = None,
                          picks: Optional[list] = None,
-                         conditions: Optional[list] = None) -> dict:
+                         conditions: Optional[list] = None,
+                         conditions_rejected: Optional[list] = None) -> dict:
         """逐条钳制执行（dry_run 不碰账本；from_plan 仅标记来源）。"""
         from paper_trading.models import Order, OrderType, Signal, SignalType
         from paper_trading.utils import get_logger
@@ -935,6 +957,7 @@ class AgentTrader:
         # AI 条件单：现在不成交，交给引擎盘中每分钟盯价；与直接动作重复的跳过。
         cond_res = self._arm_conditions(conditions or [], actions=actions,
                                         dry_run=dry_run)
+        cond_res["parse_rejected"] = conditions_rejected or []
         if not dry_run:
             b.portfolio.record_nav(latest)
         nav2 = b.broker.get_nav(latest)
@@ -943,6 +966,7 @@ class AgentTrader:
                           "pool_source": pool_source, "summary": summary,
                           "n_picks": len(picks or []),
                           "n_conditions": len(conditions or []),
+                          "n_conditions_rejected": len(conditions_rejected or []),
                           **({"slot": slot} if slot else {})}, True,
             {"decisions": decided, "picks": picks or [], "conditions": cond_res},
             nav2.cash, nav2.total_value)

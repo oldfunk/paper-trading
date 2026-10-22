@@ -334,20 +334,23 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
     if(sk==="daily-loss-halt")return `日亏熔断（${(r.pnl_pct*100).toFixed(2)}%），停手`;
     const ds=r.decisions||[],cs=r.conditions||{};
     const nc=(cs.created||[]).length,nr=(cs.rejected||[]).length;
-    const ctail=(nc||nr)?`；条件单 ${nc} 条${nr?`（${nr} 条被拒）`:""}`:"";
+    const np=(cs.parse_rejected||[]).length;
+    const ctail=(nc||nr||np)?`；条件单 ${nc} 条${nr?`（${nr} 条被拒）`:""}${np?`（解析未通过 ${np} 条）`:""}`:"";
     if(!ds.length)return nc?`挂条件单 ${nc} 条`:"无动作";
     return ds.map(d=>{const dir=d.action==="buy"?"买入":d.action==="sell"?"卖出":"持有";
       return `${dir}${sym(d.symbol)}${d.volume||""}股(${d.status||""})`}).join("；")+ctail;}
   if(a==="ai:review"){const n=(r.created||[]).length,bad=(r.rejected||[]).length;
-    return `解析 ${r.parsed??0} 条，挂上 ${n} 条${bad?`，${bad} 条被拒`:""}${r.skipped&&r.skipped.length?`，跳过 ${r.skipped.length} 条重复`:""}`;}
+    const pr=r.parse_rejected||[];
+    return `解析 ${r.parsed??0} 条，挂上 ${n} 条${bad?`，${bad} 条被拒`:""}${pr.length?`，解析未通过 ${pr.length} 条（${pr[0].why||""}）`:""}${r.skipped&&r.skipped.length?`，跳过 ${r.skipped.length} 条重复`:""}`;}
   if(a==="ai:event")return `触发 ${(r.events||[]).length} 个异动，复盘 ${(r.selected||[]).map(sym).join("、")||"无"}${r.dry_run?"（试运行）":""}`;
   if(a==="llm:config")return `已保存（${r.base_url||""}）`;
   if(a==="cond:design"){const n=(r.created||[]).length,bad=(r.rejected||[]).length;
-    return bad?`挂上 ${n} 条，${bad} 条未通过校验`:(n?`挂上 ${n} 条条件单`:"没有符合条件的条件单");}
+    const pr=(r.parse_rejected||[]).length;
+    return (bad||pr)?`挂上 ${n} 条，${bad+pr} 条未通过校验`:(n?`挂上 ${n} 条条件单`:"没有符合条件的条件单");}
   if(a==="engine:buy"||a==="engine:sell"||a==="cond:buy"||a==="cond:sell"){
     const fee=(Number(r.commission)||0)+(Number(r.stamp_duty)||0)+(Number(r.transfer_fee)||0);
     return `成交价 ${fmt(r.filled_price)} 元，手续费 ${fmt(fee)} 元`;}
-  if(a==="ai:plan")return `计划#${r.plan_id??""}：${r.summary||""}（${r.n_actions??0}条动作、${r.n_conditions??0}条条件，${r.plan_date?r.plan_date+"开盘": "下一交易日开盘"}执行）`;
+  if(a==="ai:plan")return `计划#${r.plan_id??""}：${r.summary||""}（${r.n_actions??0}条动作、${r.n_conditions??0}条条件${r.n_conditions_rejected?`、${r.n_conditions_rejected}条解析未过`:""}，${r.plan_date?r.plan_date+"开盘": "下一交易日开盘"}执行）`;
   if(a==="sync"){const u=r.updated||{};const ks=Object.keys(u);
     if(!ks.length)return "无更新";
     return ks.map(s=>`${sym(s)}${u[s]<0?"同步失败":`新增 ${u[s]} 根K线`}`).join("、");}
