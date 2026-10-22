@@ -229,6 +229,73 @@ def test_agent_executes_plan_on_stale_bars(monkeypatch, tmp_path):
     assert res["decisions"][0]["status"].startswith("已成交")
 
 
+def test_agent_plan_backfills_price_from_last_close(monkeypatch, tmp_path):
+    """计划里的 buy/sell 必须落定稿收盘价，不能把 null 留给执行链。"""
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                         "price": None, "reason": "计划买"}],
+            "summary": "计划"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(picks_enabled=False))
+    r = t.run(["600519"], plan_only=True)
+    assert r["ok"] and r["mode"] == "plan"
+    pend = b.broker.get_pending_plan(datetime.now().date().isoformat())
+    act = pend["plan"]["actions"][0]
+    assert act["price"] == 12.9
+    assert act["price_source"] == "last_close"
+
+
+def test_execute_plan_covers_plan_only_symbol_and_applies_cap(monkeypatch, tmp_path):
+    """计划新增标的必须在执行上下文补价；否则 0 价会绕过单笔金额上限。"""
+    b = _bridge(str(tmp_path),
+                [mkbar("600519", 10_000 + i, 1309.69) for i in range(30)])
+    today = datetime.now().date().isoformat()
+    b.broker.save_plan(today, ["600519"], {
+        "actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                     "price": None, "reason": "计划新增"}],
+        "summary": "计划新增"})
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3,
+                                   max_order_value=20000.0,
+                                   picks_enabled=False))
+    res = t.run(["000001"])  # 本轮运行池不含 600519
+    assert res["ok"] and res.get("from_plan") is True
+    assert "超单笔上限" in res["decisions"][0]["status"]
+    assert b.broker.get_order_history(10) == []
+
+
+def test_execute_plan_rejects_missing_price(monkeypatch, tmp_path):
+    """无最新价、无可信计划价时必须显式拒单，不能把 0 传给撮合。"""
+    b = _bridge(str(tmp_path),
+                [mkbar("000001", i, 10.0) for i in range(5)])
+    today = datetime.now().date().isoformat()
+    b.broker.save_plan(today, ["600519"], {
+        "actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                     "price": None, "reason": "无价"}],
+        "summary": "无价"})
+    t = AgentTrader(b, AgentConfig(max_order_value=20000.0))
+    res = t.run(["000001"])
+    assert res["decisions"][0]["status"] == "拒绝：无有效价格"
+    assert b.broker.get_order_history(10) == []
+
+
+def test_execute_plan_uses_verified_basis_when_latest_missing(monkeypatch, tmp_path):
+    """只有 price_source=last_close 的计划价允许在缺最新价时兜底。"""
+    b = _bridge(str(tmp_path),
+                [mkbar("000001", i, 10.0) for i in range(5)])
+    today = datetime.now().date().isoformat()
+    b.broker.save_plan(today, ["600519"], {
+        "actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                     "price": 10.0, "price_source": "last_close",
+                     "reason": "定稿基准价"}],
+        "summary": "基准价"})
+    t = AgentTrader(b, AgentConfig(max_order_value=20000.0))
+    res = t.run(["000001"])
+    assert res["decisions"][0]["status"].startswith("已成交")
+    assert b.broker.get_position("600519").total_volume == 100
+
+
 def test_stock_pool_yaml_octal_guard(tmp_path):
     """000333 这类全小数字 YAML 会吞成八进制 int；引号+归一化必须保住原码。"""
     from paper_trading.utils.config import load_config

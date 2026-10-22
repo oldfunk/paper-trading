@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json as _json
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
@@ -351,6 +352,21 @@ class AgentTrader:
             return {"ok": False, "error": "LLM 输出非 JSON 计划，已作废",
                     "timestamp": now, "symbols": symbols}
         summary = str((plan or {}).get("summary", ""))[:200]
+        # 计划基准价：买/卖动作一律回填定稿收盘价（prompt 约定 null=最新收盘）。
+        # 不采信 LLM 自报价格；带 price_source 的基准价才允许在执行缺价时兜底。
+        for a in actions:
+            if not isinstance(a, dict):
+                continue
+            if str(a.get("action", "")).lower() not in ("buy", "sell"):
+                continue
+            bars = all_bars.get(str(a.get("symbol", ""))) or []
+            if not bars:
+                continue
+            try:
+                a["price"] = round(float(bars[-1].close), 2)
+                a["price_source"] = "last_close"
+            except (TypeError, ValueError):
+                continue
         pid = b.broker.save_plan(today_str(), symbols,
                                  {"actions": actions, "summary": summary, "asof": asof,
                                   "pool_source": pool_source,
@@ -614,7 +630,7 @@ class AgentTrader:
 
     def _execute_plan(self, pending: dict, all_bars: dict,
                       latest: dict, slot: Optional[str] = None) -> dict:
-        """执行今日待执行计划（开盘执行休盘计划；价格沿用计划基准防盘中污染）。"""
+        """执行今日待执行计划（休盘计划开盘执行；计划标的自动补数，缺价 fail-closed）。"""
         from paper_trading.utils import get_logger
 
         logger = get_logger(__name__)
@@ -625,6 +641,19 @@ class AgentTrader:
             actions = []
         summary = str(plan.get("summary", ""))[:200]
         syms = [s for s in str(pending.get("symbols", "")).split(",") if s]
+        # 计划可能包含本轮运行股票池之外的新增标的（AI 提名等）。
+        # 执行上下文必须覆盖计划自身标的，否则 latest 缺价会按 0 参与风控，
+        # 单笔金额上限被绕过，最终只得到一句误导性的“无价格”拒单。
+        all_bars = dict(all_bars)
+        latest = dict(latest)
+        for sym in syms:
+            bars = all_bars.get(sym)
+            if not bars:
+                bars = b.data_db.get_bars(sym, limit=30)
+                if bars:
+                    all_bars[sym] = bars
+            if not latest.get(sym) and bars:
+                latest[sym] = float(bars[-1].close)
         cash = b.broker.get_cash()
         positions = {p.symbol: p for p in b.broker.get_all_positions()}
         nav = b.broker.get_nav(latest)
@@ -674,11 +703,25 @@ class AgentTrader:
                 vol = int(vraw or 0)
             except (TypeError, ValueError):
                 vol = 0
-            px = latest.get(sym, 0.0)
+            px = 0.0
+            try:
+                px = float(latest.get(sym) or 0.0)
+            except (TypeError, ValueError):
+                px = 0.0
+            # 计划价只允许作为“定稿收盘价”来源的缺价兜底；
+            # 来源不明的价格不采信，防止低价绕过金额上限。
+            if (not math.isfinite(px) or px <= 0) and from_plan \
+                    and a.get("price_source") == "last_close":
+                try:
+                    px = float(a.get("price") or 0.0)
+                except (TypeError, ValueError):
+                    px = 0.0
             if sym not in allow:
                 rec["status"] = "拒绝：不在股票池"
             elif vol <= 0 or vol % 100 != 0:
                 rec["status"] = "拒绝：数量须为100倍数"
+            elif not math.isfinite(px) or px <= 0:
+                rec["status"] = "拒绝：无有效价格"
             elif vol * px > self.cfg.max_order_value:
                 rec["status"] = f"拒绝：超单笔上限{int(self.cfg.max_order_value)}元"
             elif n_orders >= self.cfg.max_orders_per_run:

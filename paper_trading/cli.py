@@ -196,7 +196,11 @@ class TradingBridge:
         )
 
     def sync_data(self, symbols: list[str]) -> dict:
-        """只同步行情+名称，不发信号、不下单、不记 NAV（供日内补数/定时任务用）。"""
+        """同步行情+名称（本轮标的 ∪ 全部持仓），不发信号、不下单、不记 NAV。"""
+        # 持仓可能已退出本轮筛选池。若只同步传入标的，持仓日线会长期停滞，
+        # 收盘 NAV、日亏/回撤检查和 AI 上下文都会静默使用旧价（2026-10-22 巡检）。
+        held = sorted({p.symbol for p in self.broker.get_all_positions()})
+        symbols = list(dict.fromkeys([*(symbols or []), *held]))
         try:
             Fetcher = _get_fetcher()
         except Exception as e:
