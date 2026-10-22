@@ -4,8 +4,8 @@
 > **每次迭代开始前先读本文件，完成后回来勾选复选框并补一行进度记录。**
 > 迭代时不得遗忘这里的事项；未完成的 P0 不进入下一里程碑。
 
-- 当前里程碑：**M1 — 正确性与口径统一**（M1 验收通过；v0.6.4 补齐 AI 实时执行层、条件单拒单审计与有效期上限，待 Pi dry-run 观察；`engine.enabled` 仍为 `false`）
-- 当前版本：v0.6.4（AI 条件单 + 事件驱动复盘 + 计划次日开盘 + 拒单原因/有效期审计；本地 187 项全绿）
+- 当前里程碑：**M1 — 正确性与口径统一**（M1 验收通过；v0.6.5 把 AI 调度改成固定交易时段运行时并接入交易日历，待 Pi dry-run 观察；`engine.enabled` 仍为 `false`）
+- 当前版本：v0.6.5（固定 09:30–11:30/13:00–15:00 + 开盘执行计划 + 收盘计划 + 事件复盘 + 日历缓存；本地 192 项全绿）
 - 纪律：**M1 全部验收通过前，`engine.enabled` 保持 `false`**（只看不买，允许 `--dry-run`）
 - 相关：`README.md`（用法）、`AGENTS.md`（Agent 硬约束）、`docs/`（本文档）
 
@@ -119,14 +119,14 @@
 - [x] 历史 `nav_history` 失真核对：2026-10-21 行含 000858/600036 的 10-15 旧价；补数后核对为
       旧 100282.636 → 100346.636（+64.0，+0.064%），落 `op_log` `nav:revision`，不回写历史。
 - [x] AI 决策范围并入全部持仓；池外持仓可卖，买入仍受股票池/风控限制（v0.6.2）。
-- [x] 计划目标日改为下一交易日；早盘 trade 消费前一日计划，17:15 不再提前消费（v0.6.2）。
+- [x] 计划目标日改为下一交易日；开盘运行时执行当天 pending 计划，其他时间不消费（v0.6.2 → v0.6.5 收口）。
 - [x] 被 `enabled=false` 拦下的规则/条件意图落 `engine_triggers(status=blocked_disabled)`，同 key 每天一条（v0.6.2）。
 
 ### M1.5 — 除权除息自动化（M1 之后、M2 之前）
 
 - [ ] 用 akshare 分红送配数据自动生成调整建议（只建议，人工确认后落账）。
 - [ ] 前复权数据源切换检测 + 数据快照对比，自动触发复核流程。
-- [ ] 自动交易日历（akshare 缓存 + 本地回退），T+1 解冻不再依赖手填 `holidays`。
+- [x] 自动交易日历（akshare 缓存 + 本地回退），T+1 解冻不再依赖手填 `holidays`（v0.6.5：`calendar sync/status`，缓存 `var/trading_calendar.json`，失败回退周末+`config.holidays`）。
 - [ ] 分红税口径（持股 1 个月内 20%、1 月–1 年 10%、超 1 年免税）建模。
 
 ### M1.6 — AI 实时执行层（v0.6.2–v0.6.4，提前于 M1.5 落地）
@@ -140,7 +140,9 @@
 - [x] 计划阶段保存条件，目标交易日执行计划时挂单；直接盘中决策立即挂单。
 - [x] `ConditionRunner` 每轮执行 AI 条件，复用 `RiskManager` / `PaperBroker` / 日内预算与总开关。
 - [x] 事件驱动复盘 `agent event`：价格异动 / 持仓峰值回撤才调 LLM；全局最小间隔 + 单标冷却 + 每日预算；只产条件单，不直接下单。
-- [x] 计划目标日 = 下一交易日；`get_executable_plan` 只消费最近 7 天 pending；早盘 trade 消费前一日计划。
+- [x] 计划目标日 = 下一交易日；运行时开盘只消费 `plan_date=今天` 的 pending；手动 run 保留 `get_executable_plan`（最近 7 天）兜底。
+- [x] v0.6.5 固定运行时：交易时段写死 09:30–11:30 / 13:00–15:00；`agent tick` 只在 09:30–10:00 执行计划、16:30–18:30 做计划，其余时间静默且不写 `ai:decide` 噪音流水；旧 `agent_schedule` 仅兼容读取，面板改为只读“运行时刻”。
+- [x] 交易日历缓存：`calendar sync` 从 akshare 拉交易所交易日到本地，`is_trading_day/next_trading_day/实时交易时段` 优先读缓存，缓存未覆盖才回退周末+`config.holidays`；缓存覆盖范围进面板与 CLI。
 - [x] `engine.enabled=false` 时规则/条件被拦下的意图落 `engine_triggers(status=blocked_disabled)`，同 key 每天一条，便于 dry-run 观察。
 - [x] 条件单解析失败不再静默：低于 `min_ticket_cny`、池外代码、非法类型等返回 `parse_rejected` 原因，进 `ai:decide` / `ai:plan` / `ai:review` 流水和面板（v0.6.3）。
 - [x] 条件单 prompt 显式约束买入 `value` 在 `min_ticket_cny`~单笔上限之间，且 `volume` 按触发价估算也要过地板；条件类型语义（绝对价 vs 当日涨跌幅）写清，减少无效输出。
@@ -193,3 +195,4 @@
 | 2026-10-22 | v0.6.4 | 收口 | 条件单有效期不再只靠 prompt：`condition_max_days` 超限或非法日期进 `parse_rejected`；`ai:plan` 流水补 `n_conditions_rejected`，面板能看到计划条件被拒数量。新增 1 项回归测试，本地 187 全绿。 |
 | 2026-10-22 | v0.6.4 | 部署/运维 | Pi `git pull` 到 `7e69bd2`，`pytest` 187 项全绿；dashboard active、HTTP 200、版本 0.6.4；`engine.enabled=false`。cron 对齐队列：tick 改 `5,20,35,50 9-15`（09:35 精确消费计划），event 改 `2,7,12,… 9-15`（错开 tick，避免 `run_lock` 冲突）。 |
 | 2026-10-22 | v0.6.4 | 事件复盘验证 | 13:02 真实事件复盘（300390/600989/002192）模型输出 3 条买入条件：`parsed=3`、`parse_rejected=[]`、`created=3`（id 7–9，`value=10000`，expiry 10-24，status=armed）；`engine.enabled=false` 下无新 orders/fills，条件保持待触发。12:17 另用合成行情干跑同一 prompt，同样 `parsed=3`、无拒单。 |
+| 2026-10-22 | v0.6.5 | M1.6/运维 | AI 调度重构为固定运行时：新增 `utils/market_time.py`（09:30–11:30/13:00–15:00、开盘 09:30–10:00、计划 16:30–18:30）与 `agent/runtime.py`；`agent tick` 不再读 `agent_schedule`，无到点动作不写 `ai:decide` 噪音流水；手动 `agent run` 摘掉旧队列闸；面板“AI 定时”改为只读“运行时刻”。新增交易日历缓存 `calendar sync/status`（akshare → `var/trading_calendar.json`，失败回退周末+`config.holidays`），实时交易时段/条件单执行接入缓存。重写运行时/日历测试，本地 192 项全绿。 |
