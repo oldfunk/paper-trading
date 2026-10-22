@@ -38,7 +38,7 @@ paper-trading/
 ├── secrets.local.json         # 本机密钥（0600，gitignored，不提交）
 ├── requirements.txt
 ├── MERGE_GUIDE.md             # 与 Stock Dashboard 合并契约
-├── tests/                     # 离线回归单测（core/agent/llm/schemes/schedule/integration/realtime/dashboard）
+├── tests/                     # 离线回归单测（core/agent/runtime/calendar/llm/schemes/schedule/integration/realtime/dashboard）
 └── paper_trading/
     ├── __init__.py
     ├── main.py                    # 独立入口：自动化调度与结算
