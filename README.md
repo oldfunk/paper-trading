@@ -475,10 +475,10 @@ python -m paper_trading.cli cond tick --dry-run --json
 
 # AI 交易员（v0.6.4 推荐：休盘 16:45 做下一交易日计划，早盘 09:35 消费计划；
 # tick 只是高频轮询，进程内按定时队列消费，时刻未到/队列跑完就空转记流水）
-(crontab -l 2>/dev/null; echo "*/15 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "5,20,35,50 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
 (crontab -l 2>/dev/null; echo "*/15 16-18 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
-# 事件驱动复盘（5 分钟轮询；无异动/冷却/预算用完时零 LLM 调用）
-(crontab -l 2>/dev/null; echo "*/5 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent event --json >> agent.log 2>&1") | crontab -
+# 事件驱动复盘（5 分钟轮询，错开 tick 的整 5 分钟；无异动/冷却/预算用完时零 LLM 调用）
+(crontab -l 2>/dev/null; echo "2,7,12,17,22,27,32,37,42,47,52,57 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent event --json >> agent.log 2>&1") | crontab -
 
 # 或单次版（先用 agent schedule set --entry 09:35=trade 把队列改成早盘）
 # (crontab -l 2>/dev/null; echo "35 9 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -

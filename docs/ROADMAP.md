@@ -190,3 +190,4 @@
 | 2026-10-22 | v0.6.2 | M1.6 | AI 实时执行层落地：决策范围并入全部持仓；AI JSON 增加 conditions 并挂条件单；计划保存为下一交易日、早盘执行；新增 `agent event` 事件驱动复盘（异动/回撤触发，冷却+每日预算）；`enabled=false` 拦截意图落 `engine_triggers`。新增 8 项回归测试，本地 183 全绿。 |
 | 2026-10-22 | v0.6.3 | 巡检修复 | Pi 首次事件复盘发现：模型给出 3 条合理条件（300390/002192/600989），但买入 `value=2000` 低于 5000 手续费地板，解析器静默丢弃，流水只显示 `parsed=0`。已修：`parse_conditions_verbose` 返回 `parse_rejected`（含代码/金额/原因）并进流水与面板；条件单 prompt 明确 `value` 必须 5000~20000 元或改用 100 股倍数 volume；条件执行器补显式 volume 的手续费地板（低价股 100 股 <5000 元直接拒绝，卖出清仓不拦）。新增 3 项回归测试，本地 186 全绿。 |
 | 2026-10-22 | v0.6.4 | 收口 | 条件单有效期不再只靠 prompt：`condition_max_days` 超限或非法日期进 `parse_rejected`；`ai:plan` 流水补 `n_conditions_rejected`，面板能看到计划条件被拒数量。新增 1 项回归测试，本地 187 全绿。 |
+| 2026-10-22 | v0.6.4 | 部署/运维 | Pi `git pull` 到 `7e69bd2`，`pytest` 187 项全绿；dashboard active、HTTP 200、版本 0.6.4；`engine.enabled=false`。cron 对齐队列：tick 改 `5,20,35,50 9-15`（09:35 精确消费计划），event 改 `2,7,12,… 9-15`（错开 tick，避免 `run_lock` 冲突）。 |

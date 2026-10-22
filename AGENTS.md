@@ -41,12 +41,12 @@ python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20
 
 ```bash
 # v0.6.4 推荐：休盘做次日计划，早盘消费计划；事件复盘只在异动时叫 LLM
-# 早盘/盘中 tick（09:00-15:59 每 15 分钟；09:35 的 trade 消费前一日计划）
-(crontab -l 2>/dev/null; echo "*/15 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
+# 早盘/盘中 tick（09:05、09:20、09:35、09:50…；09:35 的 trade 消费前一日计划）
+(crontab -l 2>/dev/null; echo "5,20,35,50 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
 # 休盘 plan（16:00-18:59 每 15 分钟；16:45 做下一交易日计划）
 (crontab -l 2>/dev/null; echo "*/15 16-18 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
-# 事件驱动复盘（5 分钟轮询；无异动/冷却/预算用完时零 LLM 调用）
-(crontab -l 2>/dev/null; echo "*/5 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent event --json >> agent.log 2>&1") | crontab -
+# 事件驱动复盘（5 分钟轮询，错开 tick 的整 5 分钟；无异动/冷却/预算用完时零 LLM 调用）
+(crontab -l 2>/dev/null; echo "2,7,12,17,22,27,32,37,42,47,52,57 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent event --json >> agent.log 2>&1") | crontab -
 # 规则引擎 + 条件单（每分钟单轮；engine.enabled=false 时只判定并落 blocked_disabled）
 (crontab -l 2>/dev/null; echo "* 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.engine --once --json >> engine.log 2>&1") | crontab -
 ```
