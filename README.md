@@ -293,7 +293,7 @@ python -m paper_trading.cli agent run --json
 # 运行时 tick（cron 调这个）：09:30–10:00 执行当天计划；
 # 16:30–18:30 数据定稿后做下一交易日计划；其他时间静默跳过
 python -m paper_trading.cli agent tick --json
-# 交易日历（节假日以 akshare 同步缓存为准，失败回退周末+手填 holidays）
+# 交易日历（同步“未来交易日”优先：只留最近 7 天 + 未来全部；失败回退周末+手填 holidays）
 python -m paper_trading.cli calendar sync --json
 python -m paper_trading.cli calendar status --json
 # 旧版 AI 定时队列（已停用，仅兼容查看/导出）
@@ -484,7 +484,7 @@ python -m paper_trading.cli cond tick --dry-run --json
 (crontab -l 2>/dev/null; echo "*/5 16-18 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
 # 事件驱动复盘（盘中每分钟检查，错开整点 tick；无异动/冷却/预算用完时零 LLM 调用）
 (crontab -l 2>/dev/null; echo "1-59 9-11,13-14 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent event --json >> agent.log 2>&1") | crontab -
-# 交易日历同步（每周六 10:00；失败回退周末+config.holidays）
+# 交易日历同步（每周六 10:00；同步未来交易日，只留最近 7 天+未来；失败回退周末+holidays）
 (crontab -l 2>/dev/null; echo "0 10 * * 6 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli calendar sync --json >> calendar.log 2>&1") | crontab -
 
 # 规则引擎守护（盘中每分钟一轮：判规则 + 检查条件单，触发才过风控下单）。

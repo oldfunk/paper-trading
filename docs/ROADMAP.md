@@ -142,7 +142,7 @@
 - [x] 事件驱动复盘 `agent event`：价格异动 / 持仓峰值回撤才调 LLM；全局最小间隔 + 单标冷却 + 每日预算；只产条件单，不直接下单。
 - [x] 计划目标日 = 下一交易日；运行时开盘只消费 `plan_date=今天` 的 pending；手动 run 保留 `get_executable_plan`（最近 7 天）兜底。
 - [x] v0.6.5 固定运行时：交易时段写死 09:30–11:30 / 13:00–15:00；`agent tick` 只在 09:30–10:00 执行计划、16:30–18:30 做计划，其余时间静默且不写 `ai:decide` 噪音流水；旧 `agent_schedule` 仅兼容读取，面板改为只读“运行时刻”。
-- [x] 交易日历缓存：`calendar sync` 从 akshare 拉交易所交易日到本地，`is_trading_day/next_trading_day/实时交易时段` 优先读缓存，缓存未覆盖才回退周末+`config.holidays`；缓存覆盖范围进面板与 CLI。
+- [x] 交易日历缓存：`calendar sync` 从 akshare 拉交易所交易日到本地，`is_trading_day/next_trading_day/实时交易时段` 优先读缓存，缓存未覆盖才回退周末+`config.holidays`；缓存是**未来优先**的窗口——只留最近 7 天（近况兜底）+ 源里全部未来交易日，不存历史全量（`HISTORY_TAIL_DAYS`）；状态/面板优先展示“未来可看到哪天”。
 - [x] `engine.enabled=false` 时规则/条件被拦下的意图落 `engine_triggers(status=blocked_disabled)`，同 key 每天一条，便于 dry-run 观察。
 - [x] 条件单解析失败不再静默：低于 `min_ticket_cny`、池外代码、非法类型等返回 `parse_rejected` 原因，进 `ai:decide` / `ai:plan` / `ai:review` 流水和面板（v0.6.3）。
 - [x] 条件单 prompt 显式约束买入 `value` 在 `min_ticket_cny`~单笔上限之间，且 `volume` 按触发价估算也要过地板；条件类型语义（绝对价 vs 当日涨跌幅）写清，减少无效输出。
