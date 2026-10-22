@@ -40,8 +40,15 @@ python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20
 ### Cron Integration
 
 ```bash
-# AI 定时 tick（工作日 16:00-18:00 每 15 分钟；时刻未到/队列跑完空转，默认 16:45 跑一次交易）
+# v0.6.2 推荐：休盘做次日计划，早盘消费计划；事件复盘只在异动时叫 LLM
+# 早盘/盘中 tick（09:00-15:59 每 15 分钟；09:35 的 trade 消费前一日计划）
+(crontab -l 2>/dev/null; echo "*/15 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
+# 休盘 plan（16:00-18:59 每 15 分钟；16:45 做下一交易日计划）
 (crontab -l 2>/dev/null; echo "*/15 16-18 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
+# 事件驱动复盘（5 分钟轮询；无异动/冷却/预算用完时零 LLM 调用）
+(crontab -l 2>/dev/null; echo "*/5 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent event --json >> agent.log 2>&1") | crontab -
+# 规则引擎 + 条件单（每分钟单轮；engine.enabled=false 时只判定并落 blocked_disabled）
+(crontab -l 2>/dev/null; echo "* 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.engine --once --json >> engine.log 2>&1") | crontab -
 ```
 
 ## Database
@@ -101,22 +108,24 @@ python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20
 5. **本地接口免令牌**：Ollama / LM Studio / vLLM / 局域网网关只填接口地址即可（`TOKENLESS_PRESETS`）；空 Key 时**不发** `Authorization` 头（空 Bearer 反而会被拒）。切到这类预设会清掉已存的云端 Key，避免把 Key 发到别的机器。无令牌接口没有 Key 可用来"换浏览器接管"，只能原浏览器改或删 `secrets.local.json` 重配。
 6. **模型差异不能打死链路**：`thinking=disabled` 是默认（省预算），但始终思考的模型（GLM 5.3 系列回 HTTP 400 / 1210）要自动降档 `enabled/low` 并把输出预算抬到至少 4096；答案被思考吃光时必须报"只输了思考过程"，禁止静默返回空串。
 
-## AI 交易员自治规则（P2，定时队列）
+## AI 交易员自治规则（P2，定时队列 + 事件复盘）
 
 1. **定时闸（时刻 → 动作队列）**：cron 高频 tick 调 `agent tick`，进程内按 `strategy.local.yaml` 的 `agent_schedule.queue` 消费——动作仅 sync（同步）/analyze（试运行分析）/plan（做计划）/trade（实盘交易）四种，每条每天最多跑一次，保序。时刻未到/队列跑完记 `not-in-schedule` 跳过，不问 LLM。直接 `agent run` = 跑一次 trade，只看 trade 条目。`--ignore-schedule` 仅手动补跑用。
 2. **单交易员原则**：同一账户同一天只跑 `run`（MA）或 `agent run`（AI）其一，cron 二选一；默认每日 1 次时沿用 `already-decided` 幂等（`--force` 除外）。
 3. **三道闸**：单子数上限（`agent.max_orders_per_run`，默认 3）+ 单笔金额上限（默认 2 万）+ 日亏熔断（默认 -5%，另有回撤熔断 20% 兜底）。
 4. **fail-closed**：LLM 输出非严格 JSON / 标的不在池 / 非 100 倍数 / 超限 / 风控拒绝 → 整单作废，只记 `ai:decide` 流水，不下单。坏输出永不重试下单。
 5. **可审计**：每次决策记原文摘要 + 逐条处置（已成交/拒绝原因）+ 决策后资产；面板“AI 决策”中文渲染。
-5. **全市场选股漏斗（程序 + AI 共同选）**：`--pool-from auto`（缺省）= 母项目全市场量化筛选→ 观察池 → 手填 config 池逐级降级（手填只兜底、不叠加，`all` 也不含手填池）。随后 pass1 让 AI 在候选之外**自主提名任意 A 股**（写名称或 6 位代码），程序用母库全市场代码表（`stock_snapshot`，约 5500 只，只读）解析+校验 A 股前缀、过滤指数/ETF、去重、上限 `agent.picks_max`（默认 5），补齐 K 线后并入本轮决策范围；提名进 `ai:decide` 流水可审计。pass1 任何失败（坏 JSON/库不可读/全不合法）一律降级为“只用候选池”，绝不阻断；新鲜守卫拦下时不浪费提名调用。`--no-picks` 或 `agent.picks_enabled=false` 关闭。
-6. dry-run 不碰账本（不解冻不下单不记 NAV），只走校验链。
-7. **休盘计划开盘执行**：`--plan-only` 基于最新定稿数据做计划存 `agent_plans`（不碰账本、不锁日）；开盘 `agent run` 优先消费当日待执行计划（价格沿用计划基准，风控重验），消费后标记 done。开盘 gap 与定稿价的差异是已知简化。
-8. **Stock Dashboard 连接只读**：`paper_trading/integration/` 是唯一允许碰母库的地方，且只能 SQLite 只读打开；母库缺失/异常时静默回退本地，永不阻断交易。`--pool-from`（auto/config/watchlist/screening/all）是唯一的池来源开关，缺省 `auto`。
+6. **全市场选股漏斗（程序 + AI 共同选）**：`--pool-from auto`（缺省）= 母项目全市场量化筛选→ 观察池 → 手填 config 池逐级降级（手填只兜底、不叠加，`all` 也不含手填池）。随后 pass1 让 AI 在候选之外**自主提名任意 A 股**（写名称或 6 位代码），程序用母库全市场代码表（`stock_snapshot`，约 5500 只，只读）解析+校验 A 股前缀、过滤指数/ETF、去重、上限 `agent.picks_max`（默认 5），补齐 K 线后并入本轮决策范围；提名进 `ai:decide` 流水可审计。pass1 任何失败（坏 JSON/库不可读/全不合法）一律降级为“只用候选池”，绝不阻断；新鲜守卫拦下时不浪费提名调用。`--no-picks` 或 `agent.picks_enabled=false` 关闭。
+7. dry-run 不碰账本（不解冻不下单不记 NAV），只走校验链。
+8. **休盘计划、下一交易日开盘执行**：`--plan-only` 基于最新定稿数据做计划存 `agent_plans`；计划 `plan_date` 写**下一个交易日**（不是当晚），开盘 `agent run` 用 `get_executable_plan` 消费今天及更早、最近 7 天内的 pending 计划（价格沿用计划基准，风控重验），消费后标记 done。开盘 gap 与定稿价的差异是已知简化。
+9. **Stock Dashboard 连接只读**：`paper_trading/integration/` 是唯一允许碰母库的地方，且只能 SQLite 只读打开；母库缺失/异常时静默回退本地，永不阻断交易。`--pool-from`（auto/config/watchlist/screening/all）是唯一的池来源开关，缺省 `auto`。
+10. **AI 条件单（实时执行层）**：决策 JSON 的 `conditions` 只挂条件、现在不成交；校验后落 `conditional_orders(source=ai)`，由 `ConditionRunner` 每轮盯价触发，复用同一套 `RiskManager` / `PaperBroker` / 日内预算 / `engine.enabled` 总开关。与直接动作、已有 pending 条件重复的条目必须跳过，禁止同一标的同方向双重下单。计划里的条件在目标交易日执行计划时才挂。
+11. **事件驱动复盘（不是逐笔 LLM）**：`agent event` 由价格异动（默认 ±3%）或持仓自峰值回撤（默认 5%）触发；必须遵守全局最小间隔（15 分钟）、单标冷却（30 分钟）、每日调用预算（默认 6 次）。事件复盘只产出/更新条件单，不直接下单；无事件/冷却/预算用完时零 LLM 调用。阈值与预算在 `config.yaml` 的 `agent.event_*`。
 
 ## 规则引擎纪律（量化执行层）
 
 1. **分工**：AI 负责选股与策略设计（慢、贵，一天几次）；规则引擎负责择时执行（快、免费、每分钟）。两者共用同一个 `RiskManager` + `PaperBroker`，任何引擎/条件单的下单都必须过同一把尺子。
-1.1 **总开关只有一处语义**：`engine.enabled=false` = 不自动交易，**无论谁调**（守护进程、cron 单轮 `--once`、CLI `engine run`、面板按钮）都只判定不成交；试运行 `--dry-run` 例外（只看意图）。条件单在开关关着时触发 → 保持"待触发"，不标"已拒绝"。
+1.1 **总开关只有一处语义**：`engine.enabled=false` = 不自动交易，**无论谁调**（守护进程、cron 单轮 `--once`、CLI `engine run`、面板按钮）都只判定不成交；试运行 `--dry-run` 例外（只看意图）。条件单在开关关着时触发 → 保持"待触发"，不标"已拒绝"；规则/条件被拦下的意图落 `engine_triggers(status=blocked_disabled)`，同 key 每天一条，供 dry-run 观察。
 2. **唯一判定源**：`engine/rules.py` 里的规则是纯函数，回测（`engine/backtest.py`）与盘中守护（`engine/runner.py`）调用**同一个** `evaluate()`，禁止任何一侧另写一套判定。
 3. **无未来函数**：日线规则 T 日收盘判定、最早 T+1 开盘成交；日内规则只用**当日已走完**的分钟线（`ts > now` 的分钟必须丢弃），单测锁定。回测与实盘的 T+1 冻结、最低金额 5000、日内笔数/金额上限口径一致。
 4. **费用地板**：`min_ticket_cny` 默认 5000——100 股最小单位下，2 千以下单子往返费率 >50bp，提高频率不等于下更多小单。
@@ -167,6 +176,8 @@ After any trading operation, verify:
 - [ ] All state changes are persisted to SQLite
 - [ ] 条件单触发后状态已从 `armed` 变为 `filled`/`rejected`（不是停在 armed）
 - [ ] 日内规则只用了当日分钟线（`engine_triggers` 里的 `ts` 不晚于触发时点）
+- [ ] `engine.enabled=false` 期间只有 `blocked_disabled` 意图，没有新增成交；同 key 未重复刷屏
+- [ ] AI 条件单与直接动作没有重复下单（`ai:decide` / `ai:event` 的 conditions 有 created/skipped 记录）
 
 ## Pi Deployment Sync
 

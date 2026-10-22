@@ -18,7 +18,7 @@
 - **本地 SQLite 持久化**：行情数据（`data.db`）与账户账本（`paper_account.db`）分离
 - **双数据源**：优先新浪财经（稳定），自动重试机制
 - **风控管理**：单笔限额、仓位上限、最大回撤止损
-- **AI 交易员**：面板/CLI 自定时队列触发（默认 16:45 跑一次交易，保守时间），日内 LLM 决策（JSON 钳制执行+幂等闸+日亏熔断），休盘做计划、开盘执行
+- **AI 交易员**：低频决策（JSON 钳制执行+幂等闸+日亏熔断），休盘做下一交易日计划、早盘执行；决策同时可输出**条件单**，盘中由规则引擎每分钟盯价执行；另有 `agent event` 在价格异动/持仓回撤时触发复盘（冷却+每日预算），不逐笔调用 LLM
 - **规则引擎（量化执行层）**：9 种规则（均线交叉 / RSI 区间 / 价格档位 / 涨跌幅阈值 / 移动止损 / 时间止损 / 偏离当日均价 / 日内冲高回落 / 分钟均线交叉），盘中守护进程每 60 秒判一次，**与 AI 走同一把风控尺子和同一个撮合口径**
 - **回测纪律**：T 日收盘信号最早 T+1 成交、真实费率（含最低 5 元佣金）、最低单 5000 元、日内买入当天不可卖；回测与实盘共用 `rules.py` 同一套判定，杜绝未来函数
 - **参数网格**：批量回测参数变体，按**超额收益**（对比等权买入持有）排序；配套**样本外检验**（前 60% 选参数、后 40% 检验）做过度拟合体检，掉下来的参数不进生产规则集
@@ -53,7 +53,7 @@ paper-trading/
     │   ├── base_strategy.py       # BaseStrategy 抽象基类
     │   ├── ma_cross_strategy.py   # 仅最后一根交叉才发信号（防重复）
     │   └── schemes.py             # 投资方案三选一（母价值/通用/自定义）
-    ├── agent/                     # AI 交易员（决策环+计划表+定时闸+钳制执行）
+    ├── agent/                     # AI 交易员（决策环+计划表+定时闸+事件复盘+钳制执行）
     ├── engine/                    # 规则引擎（9 种规则/回测/参数网格/条件单/盘中守护）
     │   ├── rules.py               # 纯函数判定（日线 6 种 + 日内 3 种）
     │   ├── backtest.py            # 回测器（真实费率/基准买入持有/T+1/分钟重放）
@@ -144,6 +144,16 @@ agent:
   llm_thinking: disabled      # 格式受限决策默认关 thinking
   picks_enabled: true         # AI 自主提名（候选之外点名全市场个股）
   picks_max: 5                # 单轮最多提名几只（1-10）
+  conditions_enabled: true    # AI 可输出条件单（现在不成交，由引擎盯价）
+  max_conditions: 5           # 单轮最多几条条件单
+  condition_max_days: 3       # 条件单最长有效天数
+  event_enabled: true         # 价格异动/回撤触发 AI 复盘
+  event_price_move_pct: 3.0   # 日内涨跌幅阈值（绝对值）
+  event_drawdown_pct: 5.0     # 持仓自峰值回撤阈值
+  event_cooldown_min: 30      # 同标的复盘冷却
+  event_min_interval_min: 15  # 任意两次复盘最小间隔
+  event_max_calls_per_day: 6  # 每日模型调用预算
+  event_max_conditions: 3     # 单次事件复盘最多几条条件单
 ```
 
 > `stock_pool` 只是兜底（母项目缺席且无观察池时才用）。默认 `--pool-from auto`：
@@ -283,10 +293,13 @@ python -m paper_trading.cli agent run --json
 python -m paper_trading.cli agent tick --json
 # 定时队列查看与设置（写 gitignored 的 strategy.local.yaml；每条 TIME=ACTION）
 python -m paper_trading.cli agent schedule list --json
-python -m paper_trading.cli agent schedule set --entry 09:00=sync --entry 13:00=plan --entry 16:45=trade --json
+python -m paper_trading.cli agent schedule set --entry 09:35=trade --entry 16:45=plan --json
+# 事件驱动复盘：只有异动/回撤才调 LLM，产出条件单（不直接下单）
+python -m paper_trading.cli agent event --json
+python -m paper_trading.cli agent event --dry-run --json
 # 忽略定时闸立即执行一次交易（手动补跑用）
 python -m paper_trading.cli agent run --ignore-schedule --json
-# 休盘做计划（存着，开盘自动执行；不碰账本）
+# 休盘做计划（存下一交易日，开盘自动执行；不碰账本）
 python -m paper_trading.cli agent run --plan-only --json
 # 股票池来源（auto=全市场筛选优先→观察池→手填池兜底；需 Stock Dashboard 在同一台机器）
 python -m paper_trading.cli agent run --pool-from screening --pool-limit 20 --json
@@ -460,19 +473,21 @@ python -m paper_trading.cli cond tick --dry-run --json
 # MA 规则交易（工作日 16:45；等数据源今日线落定后再结算，保守时间）
 (crontab -l 2>/dev/null; echo "45 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli cron-run --json >> run.log 2>&1") | crontab -
 
-# AI 交易员（工作日 16:00-18:00 每 15 分钟 tick 一次；进程内按定时队列消费，
-# 时刻未到/队列跑完就空转记流水。默认队列只有 16:45 跑一次交易，
-# 收盘 15:00 + 数据源落定余量，保守时间；队列在面板“AI 定时”或 CLI 改）
+# AI 交易员（v0.6.2 推荐：休盘 16:45 做下一交易日计划，早盘 09:35 消费计划；
+# tick 只是高频轮询，进程内按定时队列消费，时刻未到/队列跑完就空转记流水）
+(crontab -l 2>/dev/null; echo "*/15 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
 (crontab -l 2>/dev/null; echo "*/15 16-18 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
+# 事件驱动复盘（5 分钟轮询；无异动/冷却/预算用完时零 LLM 调用）
+(crontab -l 2>/dev/null; echo "*/5 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent event --json >> agent.log 2>&1") | crontab -
 
-# 或单次版（只要默认 16:45 交易一次，不用 tick；改队列后 cron 时间要跟着改）
-# (crontab -l 2>/dev/null; echo "45 16 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -
+# 或单次版（先用 agent schedule set --entry 09:35=trade 把队列改成早盘）
+# (crontab -l 2>/dev/null; echo "35 9 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent run --json >> agent.log 2>&1") | crontab -
 
 # 规则引擎守护（盘中每分钟一轮：判规则 + 检查条件单，触发才过风控下单）。
-# 规则集 enabled: true 才会真下单，否则守护拒绝启动（想只看不买加 --dry-run）。
+# 规则集 enabled: true 才会真下单；engine.enabled=false 时只判定并落 blocked_disabled。
 # 前台常驻：venv/bin/python -m paper_trading.engine --interval 60
 # cron 每分钟单轮（推荐，与 run_lock 天然互斥）：
-# (crontab -l 2>/dev/null; echo "* 9-11,13-14 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.engine --once --json >> engine.log 2>&1") | crontab -
+# (crontab -l 2>/dev/null; echo "* 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.engine --once --json >> engine.log 2>&1") | crontab -
 ```
 
 说明：`run` 内含增量补数（自动从库中断点续拉，失败次日自愈，无需重试 cron）；
