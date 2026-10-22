@@ -526,7 +526,7 @@ async function schedStatus(){
     ).join(" ");
     const plan=d.pending_plan;
     document.getElementById("schedtoday").textContent=
-      `现在：${d.phase||"—"}；交易日历：${cal.available?`${cal.min_date} 至 ${cal.max_date}（${cal.source}）`:"未同步（回退周末+手填节假日）"}；`+
+      `现在：${d.phase||"—"}；交易日历：${cal.available?`未来可看到 ${cal.max_date}（${cal.future_days??0} 个交易日，${cal.source}${cal.needs_sync?"，需重新同步":""}）`:"未同步（按周末回退）"}；`+
       (plan?`待执行计划 #${plan.id}（${plan.plan_date}）：${plan.summary||"无摘要"}`:`下一计划目标日：${d.plan_target||"—"}，暂无待执行计划`);
   }catch(e){}
 }
