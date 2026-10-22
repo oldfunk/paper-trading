@@ -235,6 +235,37 @@ def test_parse_conditions_rejects_expiry_over_limit():
     assert rejected and "有效期" in rejected[0]["why"]
 
 
+def test_sell_condition_requires_holding():
+    """卖出条件只许挂真实持仓；holdings=None 保持旧行为（纯兼容调用）。"""
+    from paper_trading.engine.ai_conditions import parse_conditions_verbose
+
+    exp = (datetime.now() + timedelta(days=2)).date().isoformat()
+    raw = ('{"conditions":['
+           '{"symbol":"600519","side":"sell","cond":{"type":"price_above",'
+           f'"value":13.5}},"volume":100,"expiry":"{exp}","reason":"止盈"}},'
+           '{"symbol":"000858","side":"sell","cond":{"type":"price_below",'
+           f'"value":70}},"volume":100,"expiry":"{exp}","reason":"止损"}},'
+           '{"symbol":"000858","side":"buy","cond":{"type":"price_below",'
+           f'"value":70}},"value":8000,"expiry":"{exp}","reason":"回踩"}}]}}')
+    valid, rejected = parse_conditions_verbose(
+        raw, ["600519", "000858"], max_value=20000, min_ticket=1000,
+        max_days=3, holdings=["600519"])
+    got = [(c["symbol"], c["side"]) for c in valid]
+    assert ("600519", "sell") in got and ("000858", "buy") in got
+    assert len(rejected) == 1 and rejected[0]["symbol"] == "000858"
+    assert rejected[0]["side"] == "sell" and "持仓" in rejected[0]["why"]
+    # 不传 holdings：不校验（兼容旧行为，手动调用不因此变行为）
+    valid2, _ = parse_conditions_verbose(
+        raw, ["600519", "000858"], max_value=20000, min_ticket=1000, max_days=3)
+    assert len(valid2) == 3
+
+
+def test_cond_prompt_requires_holdings_for_sell():
+    """事件复盘/设计条件的提示词同步写明持仓约束（提示词与校验双保险）。"""
+    from paper_trading.engine.ai_conditions import COND_RULES
+    assert "卖出条件" in COND_RULES and "当前持仓" in COND_RULES
+
+
 def test_walk_forward_splits_and_reports():
     """样本内选参数 → 样本外检验：两个区间必须不重叠，且都给出结果。"""
     from datetime import datetime as dt

@@ -180,6 +180,40 @@ def test_agent_plan_conditions_arm_on_execute(monkeypatch, tmp_path):
     assert co.list_all(5)[0]["status"] == "armed"
 
 
+def test_arm_rejects_sell_condition_without_holding(tmp_path):
+    """挂单层兜底：给非持仓挂卖出条件必须拒（计划 #12 暴露的口子）。
+
+    计划是过夜保存的：解析时点的持仓可能到执行时点已变化，所以
+    `_arm_conditions` 是最后一道闸——宁可拒掉也绝不挂必然失败的卖单。
+    """
+    from paper_trading.engine.conditional import ConditionalOrders
+
+    exp = (datetime.now() + timedelta(days=2)).date().isoformat()
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(picks_enabled=False))
+    conds = [{"symbol": "600519", "side": "sell", "cond_type": "price_below",
+              "cond_value": 10.0, "volume": 100, "value": 0,
+              "expiry": f"{exp}T23:59", "note": "非持仓卖出", "source": "ai"}]
+    res = t._arm_conditions(conds)
+    assert res["n_created"] == 0 and res["n_rejected"] == 1
+    assert "持仓" in res["rejected"][0]["why"]
+    assert ConditionalOrders(b.account_db_path).list_all(5) == []
+
+
+def test_trader_prompt_has_exit_playbook():
+    """离场三件套（止损/放飞/清仓）必须写进系统提示，且不破坏 JSON 占位符。"""
+    from paper_trading.agent.prompts import TRADER_SYSTEM
+
+    system = TRADER_SYSTEM.format(
+        max_order_value=20000, max_orders=3, max_conditions=5,
+        condition_max_days=3, min_ticket=5000)
+    for kw in ("离场纪律", "止损", "放飞", "清仓", "什么情况就卖",
+               "卖出条件只能挂在当前持仓", "price_below 卖出条件",
+               "price_above 卖出条件"):
+        assert kw in system, kw
+    assert '"actions"' in system          # JSON 模板完好
+
+
 def test_agent_garbage_output_safe(monkeypatch, tmp_path):
     from paper_trading.llm import provider as prov
 

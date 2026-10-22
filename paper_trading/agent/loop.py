@@ -49,6 +49,9 @@ class AgentConfig:
     event_min_interval_min: int = 15
     event_max_calls_per_day: int = 6
     event_max_conditions: int = 3
+    # 要闻/政策快讯：给模型判断“催化”用（外部原文，仅作信息；失败回空）
+    news_enabled: bool = True
+    news_limit: int = 12        # 进 prompt 的条数上限（政策类排前）
 
 
 def _ask_llm(cfg, prompt: str, system: str, timeout: float, retries: int,
@@ -295,10 +298,13 @@ class AgentTrader:
             return 0.0
 
     def _conditions_from_raw(self, raw: Optional[str],
-                             pool: list[str]) -> tuple[list[dict], list[dict]]:
+                             pool: list[str],
+                             holdings: Optional[list] = None
+                             ) -> tuple[list[dict], list[dict]]:
         """从决策 JSON 里取 conditions，返回 (合法条目, 被拒原因)。
 
-        坏输出/池外/金额越界不能静默消失；原因要进 ai:decide / ai:plan 流水。
+        坏输出/池外/金额越界/卖出无持仓 不能静默消失；原因要进
+        ai:decide / ai:plan 流水。`holdings`=真实持仓代码（卖出条件只许挂持仓）。
         """
         if not self.cfg.conditions_enabled:
             return [], []
@@ -310,7 +316,8 @@ class AgentTrader:
                 max_conds=int(self.cfg.max_conditions),
                 max_value=float(self.cfg.max_order_value),
                 min_ticket=self._engine_min_ticket(),
-                max_days=int(self.cfg.condition_max_days))
+                max_days=int(self.cfg.condition_max_days),
+                holdings=holdings)
         except Exception as e:                # noqa: BLE001 - 条件单失败不阻断主决策
             return [], [{"why": f"解析异常：{type(e).__name__}: {e}"}]
 
@@ -339,13 +346,24 @@ class AgentTrader:
                 (str(d.get("symbol") or ""), str(d.get("side") or ""))
                 for d in orders.pending()
             }
+            # 挂单时的持仓兜底：解析层已按计划时点校验过，但计划可能过夜、
+            # 持仓可能已变（例：计划里的卖出条件标的根本不是持仓）。
+            # 这里是最后一道闸，宁可拒掉也绝不挂一条必然失败的卖单。
+            held_now = {str(p.symbol)
+                        for p in self.bridge.broker.get_all_positions()}
             filtered: list[dict] = []
             skipped: list[dict] = []
+            arm_rejected: list[dict] = []
             for c in conditions:
                 if not isinstance(c, dict):
                     continue
                 sym = str(c.get("symbol") or "")
                 side = str(c.get("side") or "")
+                if side == "sell" and sym not in held_now:
+                    arm_rejected.append(
+                        {"id": 0, "symbol": sym,
+                         "why": "卖出条件必须对应真实持仓（挂单时无持仓，未挂）"})
+                    continue
                 if (sym, side) in direct:
                     skipped.append({"symbol": sym, "side": side,
                                     "why": "与直接动作重复，避免双重下单"})
@@ -357,6 +375,8 @@ class AgentTrader:
                 seen.add((sym, side))
                 filtered.append(c)
             res = orders.create_many(filtered, min_ticket=self._engine_min_ticket())
+            res["rejected"] = list(res.get("rejected") or []) + arm_rejected
+            res["n_rejected"] = len(res["rejected"])
             res["skipped"] = skipped
             return res
         except Exception as e:                # noqa: BLE001 - 条件单故障不能回滚已成交动作
@@ -404,7 +424,8 @@ class AgentTrader:
         conds, parse_rejected = parse_conditions_verbose(
             raw, pool, max_conds=int(max_conds or self.cfg.event_max_conditions),
             max_value=max_value, min_ticket=min_ticket,
-            max_days=int(self.cfg.condition_max_days))
+            max_days=int(self.cfg.condition_max_days),
+            holdings=[p.symbol for p in b.broker.get_all_positions()])
         res = self._arm_conditions(conds, dry_run=dry_run)
         b.broker.log_operation(
             "ai:review", {"pool": pool, "event": event_txt[:300],
@@ -500,7 +521,9 @@ class AgentTrader:
             return {"ok": False, "error": "LLM 输出非 JSON 计划，已作废",
                     "timestamp": now, "symbols": symbols}
         summary = str((plan or {}).get("summary", ""))[:200]
-        conditions, conditions_rejected = self._conditions_from_raw(raw, symbols)
+        held_syms = [p.symbol for p in b.broker.get_all_positions()]
+        conditions, conditions_rejected = self._conditions_from_raw(
+            raw, symbols, holdings=held_syms)
         # 计划基准价：买/卖动作一律回填定稿收盘价（prompt 约定 null=最新收盘）。
         # 不采信 LLM 自报价格；带 price_source 的基准价才允许在执行缺价时兜底。
         for a in actions:
@@ -752,7 +775,8 @@ class AgentTrader:
         if not isinstance(actions, list):
             actions = []
         summary = str((plan or {}).get("summary", ""))[:200] if plan else ""
-        conditions, conditions_rejected = self._conditions_from_raw(raw, symbols)
+        conditions, conditions_rejected = self._conditions_from_raw(
+            raw, symbols, holdings=set(positions))
 
         # 7. 逐条钳制执行（现决与计划执行共用实现）
         return self._execute_actions(

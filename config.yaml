@@ -63,6 +63,9 @@ agent:
   event_min_interval_min: 15  # 任意两次复盘最小间隔
   event_max_calls_per_day: 6  # 每日模型调用预算
   event_max_conditions: 3     # 单次复盘最多挂几条条件单
+  # 要闻/政策快讯：给模型判断“催化”用（akshare 财联社/同花顺，15 分钟缓存）
+  news_enabled: true
+  news_limit: 12              # 进 prompt 最多几条（政策类排前；失败回空不阻断）
 
 # 规则引擎（盘中量化执行层；与 LLM 分工：引擎负责择时执行，LLM 负责选股与策略）
 engine:
