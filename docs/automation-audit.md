@@ -97,4 +97,6 @@
 
 1. **Key 泄露静态扫描**（§2.7）：低成本，扫追踪文件里的 `sk-...` 模式。
 2. **cron 行与 market_time.py 的一致性校验**（§2.3 风险）：只读校验，不装 cron。
-3. **回测 `trades_detail` rule id 互换**（ROADMAP 待办）：展示层 bug，不阻塞观察日。
+3. ~~回测 `trades_detail` rule id 互换（ROADMAP 待办）~~ —— **已结（2026-10-23）**：
+   非展示层 bug，是方向型规则语义（`ma_cross` 由信号定方向，`action.side` 只作默认）。
+   Pi 旧规则把金叉/死叉拆两条会双向重复触发，已合并为每标的一条并写进文档口径。
