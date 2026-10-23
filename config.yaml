@@ -80,6 +80,10 @@ engine:
   # 规则集（9 种类型：日线 6 种 + 日内 3 种；示例见 AGENTS.md）
   # 本机覆盖写 engine.local.yaml（gitignored，不进仓库）
   rules: []
+  #   # 方向型规则（ma_cross / rsi_zone / pct_change / vwap_dev …）：
+  #   # 方向由信号决定（金叉=买、死叉=卖），action.side 只作默认、不覆盖信号。
+  #   # 同一标的的"金叉买+死叉卖"用**一条**规则即可（buy + value），
+  #   # 拆成金叉/死叉两条 → 每条都会双向触发（曾致回测里同向重复成交）。
   #   - id: trail-002192
   #     type: trailing_stop          # 日线：移动止损
   #     symbol: "002192"

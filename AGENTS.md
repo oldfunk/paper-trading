@@ -135,6 +135,7 @@ python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20
 1.1 **总开关只有一处语义**：`engine.enabled=false` = 不自动交易，**无论谁调**（守护进程、cron 单轮 `--once`、CLI `engine run`、面板按钮）都只判定不成交；试运行 `--dry-run` 例外（只看意图）。条件单在开关关着时触发 → 保持"待触发"，不标"已拒绝"；规则/条件被拦下的意图落 `engine_triggers(status=blocked_disabled)`，同 key 每天一条，供 dry-run 观察。
 2. **唯一判定源**：`engine/rules.py` 里的规则是纯函数，回测（`engine/backtest.py`）与盘中守护（`engine/runner.py`）调用**同一个** `evaluate()`，禁止任何一侧另写一套判定。
 3. **无未来函数**：日线规则 T 日收盘判定、最早 T+1 开盘成交；日内规则只用**当日已走完**的分钟线（`ts > now` 的分钟必须丢弃），单测锁定。回测与实盘的 T+1 冻结、最低金额 5000、日内笔数/金额上限口径一致。
+3.1 **方向型规则的方向由信号决定**：`ma_cross` / `rsi_zone` / `pct_change` / `vwap_dev` 等（`rules.py` 的 `_DIRECTIONAL`）金叉=买、死叉=卖，`action.side` 只作默认、不覆盖信号方向（单测锁定）。同一标的的“金叉买 + 死叉卖”用**一条**规则（`action: {side: buy, value: …}`）即可；拆成金叉/死叉两条会让每条都双向触发、重复成交（10-23 核对 Pi 旧规则集时发现并合并）。
 4. **费用地板**：`min_ticket_cny` 默认 5000——100 股最小单位下，2 千以下单子往返费率 >50bp，提高频率不等于下更多小单。
 5. **条件单语义**：条件单**只挂条件、现在不成交**；触发时过同一套风控与撮合。校验 fail-closed（非 A 股代码/非法条件类型/金额越界/有效期 ≤0 或 >30 天一律不入库），每条状态可审计（armed/filled/cancelled/expired/rejected）。
 6. **分钟线诚实边界**：分钟线默认 5 分钟粒度（新浪源，数月历史）；东财 1 分钟接口在部分网络环境直接断连，不要依赖它。没有分钟数据时回测必须在 `skipped` 里写明"未触发"，禁止假装跑过。面板与 CLI 都要显示这个提示。
