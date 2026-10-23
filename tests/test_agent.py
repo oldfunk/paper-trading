@@ -205,6 +205,21 @@ def test_plan_condition_expiry_bumped_to_execution_day(monkeypatch, tmp_path):
     assert "顺延" in (o["note"] or "")                # 调整留痕可审计
 
 
+def test_close_nav_snapshot_once_per_day(tmp_path):
+    """收盘计划窗口记一条收盘 NAV（nav:close 幂等），避免 NAV 序列空洞。"""
+    import json as _json
+
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(picks_enabled=False))
+    t._snapshot_close_nav(["600519"], "2026-10-23")
+    t._snapshot_close_nav(["600519"], "2026-10-23")     # 同日重复调用不重复记
+    navs = b.get_nav_history()
+    assert len(navs) == 1
+    ops = [o for o in b.broker.get_op_log(10) if o["action"] == "nav:close"]
+    assert len(ops) == 1
+    assert _json.loads(ops[0]["params"])["symbols"] == 1
+
+
 def test_arm_rejects_sell_condition_without_holding(tmp_path):
     """挂单层兜底：给非持仓挂卖出条件必须拒（计划 #12 暴露的口子）。
 

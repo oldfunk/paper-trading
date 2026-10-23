@@ -436,6 +436,30 @@ class AgentTrader:
                 "parse_rejected": parse_rejected, **res,
                 "raw": str(raw or "")[:600]}
 
+    def _snapshot_close_nav(self, symbols: list[str],
+                            day: Optional[str] = None) -> None:
+        """收盘后记一条 NAV（每天一次）：NAV 序列不留空洞。
+
+        只在运行时收盘计划窗口调用（此时最新日线已定稿，是收盘口径）。
+        用 op_log 的 ``nav:close`` 标记保证幂等；快照失败只告警、不阻断计划。
+        背景：nav_history 此前只在有交易/决策时才写，没有交易的交易日
+        整天没有一行，逐日收益与回撤基线会因此失真。
+        """
+        from paper_trading.utils import get_logger
+
+        logger = get_logger(__name__)
+        b = self.bridge
+        day = day or today_str()
+        try:
+            if b.broker.has_operation("nav:close", day):
+                return
+            snap = b.portfolio.record_nav(b.price_map(symbols))
+            b.broker.log_operation("nav:close", {"symbols": len(symbols)}, True,
+                                   {"date": day, "nav": round(snap.total_value, 2)},
+                                   snap.cash, snap.total_value)
+        except Exception as e:      # noqa: BLE001 - 快照失败不能拖垮计划
+            logger.warning(f"close nav snapshot failed: {e}")
+
     def _plan(self, symbols: list[str], candidates: Optional[list] = None,
               pool_source: str = "config",
               slot: Optional[str] = None, *,
@@ -481,6 +505,10 @@ class AgentTrader:
         if require_today and not force and asof != base_now.date().isoformat():
             return {"ok": True, "skipped": "no-fresh-data", "asof": asof,
                     "plan_date": plan_date, "timestamp": now, "symbols": symbols}
+        # 只有运行时收盘计划窗口（require_today 且数据已定稿到今天）才记收盘
+        # NAV：无交易的交易日也要有一行，否则逐日收益/回撤基线出现空洞。
+        if require_today:
+            self._snapshot_close_nav(symbols, base_now.date().isoformat())
 
         ref = b.strategy.generate_signals(all_bars)
         ref_txt = "无" if not ref else "、".join(
