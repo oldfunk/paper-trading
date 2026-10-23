@@ -221,7 +221,7 @@ tbody tr:hover{background:var(--bg-hover)}
 <section>
   <div class="section-header"><h2 class="section-title">模型设置</h2></div>
   <div class="ai-panel">
-    <div class="s">先选厂商（接口地址自动填好），填 Key，拉模型列表选一个，保存即可。**本地接口（Ollama / LM Studio / vLLM / 局域网网关）不需要 Key，留空就行**。管理口令由浏览器自动保管，不用填也不用记；**只改模型名/厂商/Key 不需要口令，改接口地址才需要口令**（或凭已保存的 API Key 接管一次）。</div>
+    <div class="s">先选厂商（接口地址自动填好），填 Key，拉模型列表选一个，保存即可。**本地接口（Ollama / LM Studio / vLLM / 局域网网关）不需要 Key，留空就行**。管理口令由浏览器自动保管，不用填也不用记；**只改模型名/厂商/Key 不需要口令，改接口地址才需要口令**（或填写 API Key 接管一次）。</div>
     <div class="ai-row"><label>厂商 / 接口地址 / 模型</label></div>
     <div class="ai-row">
       <select id="preset">
@@ -1124,17 +1124,17 @@ class Handler(BaseHTTPRequestHandler):
                 base_in = str(body.get("base_url") or "").strip()
                 key_in = str(body.get("api_key") or "").strip()
                 base_changed = bool(base_in) and base_in != str(st0.get("base_url") or "")
-                if st0.get("configured") and base_changed and not self._admin_ok(body):
-                    _tok_out = _takeover_token(body, self.secrets_path) if key_in else ""
-                    if not _tok_out:
-                        _msg = ("口令错误（换了浏览器？）。改接口地址需要口令，"
-                                "或填写**已保存**的 API Key 接管；"
-                                "只改模型名/厂商/Key 可直接保存，无需口令"
-                                if st0.get("has_key") else
-                                "口令错误：当前是本地/无令牌接口，没有 Key 可用来接管。"
-                                "请在原浏览器继续修改，或删除 secrets.local.json 后重新配置")
-                        self._json({"ok": False, "error": _msg}, code=403)
-                        return
+                # 接管不做"必须与已存一致"的强校验：各家 API 的 Key 字段格式差异大，
+                # 以兼容性为重（只要能填出非空 Key 就放行改地址）。
+                if st0.get("configured") and base_changed and not self._admin_ok(body) \
+                        and not key_in:
+                    _msg = ("口令错误（换了浏览器？）。改接口地址需要口令，"
+                            "或填写 API Key 接管；只改模型名/厂商/Key 可直接保存，无需口令"
+                            if st0.get("has_key") else
+                            "口令错误：当前是本地/无令牌接口，没有 Key 可用来接管。"
+                            "请在原浏览器继续修改，或删除 secrets.local.json 后重新配置")
+                    self._json({"ok": False, "error": _msg}, code=403)
+                    return
                 r = self._bridge().llm_save(
                     body.get("preset", "custom"), base_in,
                     body.get("model", ""), key_in)

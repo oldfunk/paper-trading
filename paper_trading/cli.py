@@ -689,8 +689,8 @@ class TradingBridge:
             saved = str(p.get("model") or "")
             if saved and saved not in models:
                 out["warning"] = (f"当前保存的模型 {saved} 不在厂商列表里"
-                                  f"（可能已下线）；系统不会自动更换，"
-                                  f"调用失败时会如实报错")
+                                  f"（部分厂商列表不全，模型可能仍可用）；"
+                                  f"系统不会自动更换，若调用失败会如实报错")
             return out
         except LLMError as e:
             return {"ok": False, "error": str(e)}
