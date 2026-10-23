@@ -4,8 +4,8 @@
 > **还有哪些步骤是手工的 + 为什么决定不自动化**，供下一个 agent 接手。
 > 不是进度真相源——进度看 `docs/ROADMAP.md`。
 
-- 最后更新：2026-10-22
-- 当前里程碑：M1（`engine.enabled` 仍为 `false`，见 ROADMAP）
+- 最后更新：2026-10-23
+- 当前里程碑：M1 已验收（2026-10-23）；Pi 本机 `engine.local.yaml` 开启引擎；tag `v0.6.7` 已发布（发布版 `config.yaml` 默认仍 `enabled: false`）
 
 ---
 
@@ -14,6 +14,8 @@
 | 项 | 机制 | 位置 |
 |----|------|------|
 | 撮合口径只许有一份 | 断言代码 dataclass 默认值 == config.yaml，分叉即 CI 红 | `tests/test_caliber_consistency.py` |
+| 同标的止损后不当日回补（离场优先） | 单测锁定买入条件作废+拒因 | `tests/test_engine_cond.py` |
+| 每日收盘 NAV 一条（无交易也记） | 单测锁定 `nav:close` 幂等 | `tests/test_agent.py` |
 | 回测-实盘口径一致 | 对照测试锁定成交/成交日/价/T+1 一致 | `tests/test_m1_correctness.py` |
 | Key 不进错误信息 / 掩码回显 | 单测锁定 | `tests/test_llm.py` |
 | 对外 JSON 严格合法（无 Infinity/NaN） | 单测锁定 | `tests/test_json_safety.py` |
@@ -36,6 +38,8 @@
 - **现状**：手工 `git tag v0.6.x && git push --tags`。母项目 `git subtree pull --prefix=paper_trading paper-upstream <tag>` 只跟 tag。
 - **为什么不自动化**：审计明令"不自动打 tag"。tag 是发布决策，需人确认
   M1 门禁 / Pi 验收已过；自动打 tag 会把未验收的 commit 变成母项目可消费的接口。
+  **2026-10-23**：M1 验收通过后已发 `v0.6.7`（观察日全绿 + Pi 217 项验收；开关走 Pi 本机
+  `engine.local.yaml`，发布版 `config.yaml` 保持 `enabled: false`，母项目拉取不会自动开引擎）。
 
 ### 2.2 ROADMAP.md 勾选与进度记录
 - **现状**：每次迭代手工勾复选框 + 补一行「进度记录」。
