@@ -775,7 +775,9 @@ class TradingBridge:
                 from paper_trading.data.news import fetch_market_news
 
                 news = fetch_market_news(
-                    limit=int(getattr(ag, "news_limit", 12) or 12))
+                    limit=int(getattr(ag, "news_limit", 12) or 12),
+                    timeout_sec=float(getattr(ag, "news_timeout_sec", 15.0)
+                                      or 15.0))
                 if news.get("available"):
                     out["news"] = news
         except Exception:

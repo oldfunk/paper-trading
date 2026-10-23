@@ -52,6 +52,7 @@ class AgentConfig:
     # 要闻/政策快讯：给模型判断“催化”用（外部原文，仅作信息；失败回空）
     news_enabled: bool = True
     news_limit: int = 12        # 进 prompt 的条数上限（政策类排前）
+    news_timeout_sec: float = 15.0  # 抓取硬超时：连不上的源按超时回空，不挂死
 
 
 def _ask_llm(cfg, prompt: str, system: str, timeout: float, retries: int,
