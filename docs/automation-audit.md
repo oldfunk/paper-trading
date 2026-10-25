@@ -5,7 +5,7 @@
 > 不是进度真相源——进度看 `docs/ROADMAP.md`。
 
 - 最后更新：2026-10-23
-- 当前里程碑：M1 已验收（2026-10-23）；Pi 本机 `engine.local.yaml` 开启引擎；tag `v0.6.7` 已发布（发布版 `config.yaml` 默认仍 `enabled: false`）
+- 当前里程碑：M1 已验收（2026-10-23）；Pi 本机 `engine.local.yaml` 开启引擎；tag `v0.6.8` 已发布（发布版 `config.yaml` 默认仍 `enabled: false`）
 
 ---
 

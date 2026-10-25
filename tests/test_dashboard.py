@@ -99,17 +99,30 @@ def cloud_panel(tmp_path):
 
 
 def test_llm_config_model_only_needs_no_token(cloud_panel):
-    """"换模型不用口令"：只改模型名直接保存成功，已存 Key 沿用、口令顺带领回。
+    """"换模型不用口令"：只改模型名直接保存成功，已存 Key 沿用。
 
     真实痛点：口令只存浏览器 localStorage，换浏览器/换访问地址就丢；
     旧逻辑连改个模型名都要口令 → 反复要求重输已保存的 Key。
+    但免口令保存**不回传** admin_token：否则一次改模型就能拿到全部写权限。
     """
     _, call, sec = cloud_panel
     st, r = call({"preset": "glm", "base_url": "https://open.bigmodel.cn/api/paas/v4",
                   "model": "glm-5.3-flash", "api_key": ""})
     assert st == 200 and r["ok"] and r["model"] == "glm-5.3-flash"
     assert r["key_masked"] == "****-KEY"      # 已存 Key 没被洗掉（掩码只露末 4 位）
-    assert r["admin_token"]                    # 浏览器存下它，下次改地址也不用再输 Key
+    assert "admin_token" not in r             # 未鉴权的保存不泄露写入口令
+
+
+def test_llm_config_model_only_with_valid_token_returns_it(cloud_panel):
+    """调用方本来就持有口令时，回传不增加权限（前端可继续刷新 localStorage）。"""
+    import json as _json
+
+    _, call, sec = cloud_panel
+    tok = _json.loads(Path(sec).read_text(encoding="utf-8"))["admin_token"]
+    st, r = call({"admin_token": tok, "preset": "glm",
+                  "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                  "model": "glm-4.5-flash", "api_key": ""})
+    assert st == 200 and r["ok"] and r["admin_token"] == tok
 
 
 def test_llm_config_base_url_change_requires_token(cloud_panel):
