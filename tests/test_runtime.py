@@ -1,9 +1,11 @@
 """运行时窗口、交易日历缓存、计划幂等与开盘执行（全离线）。"""
 import json
+import logging
 import sys
 import tempfile
+import time as _time
 import types
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -136,6 +138,39 @@ def test_sync_keeps_future_drops_history(tmp_path, monkeypatch):
     tc.clear_calendar_cache()
 
 
+def test_sync_calendar_hard_timeout(tmp_path, monkeypatch):
+    """日历同步也不能被 akshare stall 挂死（否则 cron 长期持锁）。"""
+    from paper_trading.utils import trading_calendar as tc
+
+    fake = types.ModuleType("akshare")
+    fake.tool_trade_date_hist_sina = lambda: _time.sleep(10)
+    monkeypatch.setitem(sys.modules, "akshare", fake)
+
+    t0 = _time.time()
+    res = tc.sync_calendar(path=tmp_path / "cal.json", timeout_sec=0.2)
+    assert res["ok"] is False and "TimeoutError" in res["error"]
+    assert _time.time() - t0 < 3
+
+
+def test_calendar_beyond_horizon_warns_not_silent(tmp_path, monkeypatch, caplog):
+    """2027 源未发布时按工作日回退，但必须告警一次（禁止无声）。"""
+    from paper_trading.utils import trading_calendar as tc
+
+    p = tmp_path / "cal.json"
+    tc.save_calendar(["2026-12-31"], source="test", path=p)
+    monkeypatch.setenv(tc.CALENDAR_ENV, str(p))
+    tc.clear_calendar_cache()
+    tc._HORIZON_WARNED.clear()
+    try:
+        caplog.set_level(logging.WARNING,
+                        logger="paper_trading.utils.trading_calendar")
+        assert tc.is_trading_day("2027-01-01")      # 周五 → 回退口径
+        assert any("只覆盖到" in r.getMessage() for r in caplog.records)
+    finally:
+        tc._HORIZON_WARNED.clear()
+        tc.clear_calendar_cache()
+
+
 def test_calendar_cache_drives_realtime_session(tmp_path, monkeypatch):
     from paper_trading.data import realtime as rt
     from paper_trading.utils.trading_calendar import (
@@ -170,21 +205,20 @@ def test_tick_open_without_plan_does_not_call_llm(tmp_path):
                 if o["action"].startswith("ai:")]
 
 
-def test_tick_open_executes_today_plan(tmp_path, monkeypatch):
-    today = datetime.now().date()
-    if not mt.is_trading_day(today):
-        pytest.skip("今天不是交易日")
-    day = datetime.combine(today, time(9, 30))
+def test_tick_open_executes_today_plan(tmp_path):
+    """开盘执行窗口消费当天 pending 计划（固定交易日，不依赖运行日）。"""
+    day = datetime(2026, 10, 22, 9, 30)
+    assert mt.is_trading_day(day.date())
     b = _bridge(str(tmp_path), _bars(day))
     plan = {"actions": [{"action": "buy", "symbol": "600519",
                          "volume": 100, "price": 10.0, "reason": "计划买"}],
             "summary": "开盘计划"}
-    b.broker.save_plan(today.isoformat(), ["600519"], plan)
+    b.broker.save_plan("2026-10-22", ["600519"], plan)
     t = AgentTrader(b, AgentConfig(picks_enabled=False))
     r = t.tick(["600519"], now=day)
     assert r.get("runtime_action") == "open_exec"
     assert b.broker.get_position("600519") is not None
-    assert b.broker.get_pending_plan(today.isoformat()) is None
+    assert b.broker.get_pending_plan("2026-10-22") is None
 
 
 def test_tick_plan_window_is_idempotent(tmp_path, monkeypatch):
