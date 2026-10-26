@@ -31,10 +31,10 @@
 
 ## P2 — AI 决策 schema 细化（向后兼容）
 
-- [ ] action 支持 `thesis / catalyst / risk_stop / confidence / expected_hold_days / position_size_reason`
-- [ ] `basis` 字段名校验（fail-closed：字段必须真实存在于上下文）
-- [ ] 显式止损条件优先（卖出条件必填或给 `risk_stop`）
-- [ ] 事件复盘复用同一富化上下文
+- [x] action 支持 `thesis / catalyst / risk_stop / confidence / expected_hold_days / position_size_reason`
+- [x] `basis` 字段名校验（fail-closed：前缀必须是上下文真实存在的数据域）
+- [ ] 显式止损条件优先（买入必给 `risk_stop` 或卖出条件）—— 待 opt-in 开关，避免打断现有输出
+- [x] 事件复盘复用同一富化上下文（`review_conditions` 走 `llm_context`，自动带富化+provenance）
 
 ## P3 — 上下文压缩技术
 
@@ -45,7 +45,7 @@
 ## P4 — 文档（供母项目对齐）
 
 - [x] `docs/mother-interface.md`：接口契约表、来源标注、降级规则、性能约束
-- [ ] `docs/ROADMAP.md` / `AGENTS.md` 同步
+- [x] `docs/ROADMAP.md` / `AGENTS.md` 同步
 
 ## 性能约束（Pi 实机）
 

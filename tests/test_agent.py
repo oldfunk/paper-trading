@@ -72,6 +72,74 @@ def test_agent_buy_fills_and_logs(monkeypatch, tmp_path):
     assert ops[0]["action"] == "ai:decide" and ops[0]["ok"] == 1
 
 
+def test_agent_basis_and_audit_fields_recorded(monkeypatch, tmp_path):
+    """决策可审计：basis/论点/止损/置信度/持有期被记录进流水。"""
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                         "price": None, "reason": "低估",
+                         "basis": ["recent_closes", "financial_summary.roe_5y_avg"],
+                         "thesis": "估值低于历史中枢", "catalyst": "业绩改善",
+                         "risk_stop": 1450.0, "confidence": 72,
+                         "expected_hold_days": 20, "position_size_reason": "小仓位"}],
+            "summary": "买"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    res = t.run(["600519"])
+    d = res["decisions"][0]
+    assert d["status"].startswith("已成交")
+    assert d["basis"] == ["recent_closes", "financial_summary.roe_5y_avg"]
+    assert d["risk_stop"] == 1450.0 and d["confidence"] == 72
+    assert d["expected_hold_days"] == 20 and d["thesis"] == "估值低于历史中枢"
+    ops = [o for o in b.broker.get_op_log(5) if o["action"] == "ai:decide"]
+    assert "basis" in (ops[0]["result"] or "")
+
+
+def test_agent_require_basis_rejects_missing(monkeypatch, tmp_path):
+    """require_basis=True：buy/sell 缺 basis 直接拒单（数据判断不可绕过）。"""
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                         "price": None, "reason": "感觉会涨"}], "summary": "买"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0,
+                                   require_basis=True))
+    res = t.run(["600519"])
+    d = res["decisions"][0]
+    assert "basis" in d["status"]
+    assert b.broker.get_position("600519") is None
+
+
+def test_agent_basis_unknown_field_rejected(monkeypatch, tmp_path):
+    """basis 引用不存在的字段 → 拒绝（防编造数据）。"""
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                         "price": None, "reason": "编造",
+                         "basis": ["不存在的字段"]}], "summary": "买"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    res = t.run(["600519"])
+    assert "未知数据字段" in res["decisions"][0]["status"]
+
+
+def test_agent_basis_bad_type_rejected(monkeypatch, tmp_path):
+    """basis 类型非法 → 拒绝（fail-closed）。"""
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                         "price": None, "reason": "坏类型", "basis": 123}],
+            "summary": "买"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    res = t.run(["600519"])
+    assert "basis" in res["decisions"][0]["status"]
+
+
 def test_agent_rejects_bad_actions(monkeypatch, tmp_path):
     from paper_trading.llm import provider as prov
 

@@ -39,6 +39,9 @@ class AgentConfig:
     llm_thinking: str = "disabled"  # 格式受限决策默认关 thinking，又快又省又稳
     picks_enabled: bool = True   # AI 自主提名池外标的（候选之外也允许它选股）
     picks_max: int = 5           # 单轮最多提名多少只（1-10）
+    # 决策可审计：每条 buy/sell 必须引用上下文里真实存在的数据字段（basis）
+    require_basis: bool = False  # True=缺 basis 直接拒单（fail-closed）；False=只记录
+    context_budget: int = 8000   # 上下文 token 预算（压缩用；当前仅记录，P3 启用）
     # AI 条件单：LLM 只出触发条件，引擎盘中每分钟执行（实时层）
     conditions_enabled: bool = True
     max_conditions: int = 5
@@ -55,6 +58,49 @@ class AgentConfig:
     news_enabled: bool = True
     news_limit: int = 12        # 进 prompt 的条数上限（政策类排前）
     news_timeout_sec: float = 15.0  # 抓取硬超时：连不上的源按超时回空，不挂死
+
+
+#: basis 允许引用的上下文顶层字段（前缀校验，防止 AI 编造数据字段）
+_BASIS_PREFIXES = frozenset({
+    "account", "positions", "recent_closes", "recent_nav", "recent_ops",
+    "value_view", "stock_cards", "financial_summary", "dividend", "outcomes",
+    "thesis", "fundamentals", "screening", "market_regime", "data_provenance",
+    "news", "intraday",
+})
+
+
+def _normalize_basis(raw) -> tuple[list, str]:
+    """把 basis 规范化成字段名列表；类型非法时返回 ( [], 错误信息 )。"""
+    if raw is None:
+        return [], ""
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return [], "basis 须为字段名数组"
+    out = []
+    for x in raw:
+        s = str(x or "").strip()
+        if s:
+            out.append(s[:80])
+    return out[:10], ""
+
+
+def _basis_known(name: str) -> bool:
+    """basis 字段是否引用了上下文里真实存在的数据域。"""
+    return str(name).split(".", 1)[0] in _BASIS_PREFIXES
+
+
+def _as_float(v) -> Optional[float]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _as_int(v) -> Optional[int]:
+    f = _as_float(v)
+    return int(f) if f is not None else None
 
 
 def _ask_llm(cfg, prompt: str, system: str, timeout: float, retries: int,
@@ -937,6 +983,17 @@ class AgentTrader:
             reason = str(a.get("reason", ""))[:120]
             rec: dict[str, Any] = {"action": act, "symbol": sym,
                                    "volume": a.get("volume"), "reason": reason}
+            # 决策可审计字段：数据依据(basis) + 论点/催化/止损/置信度/持有期
+            basis, basis_err = _normalize_basis(a.get("basis"))
+            rec.update({
+                "basis": basis,
+                "thesis": str(a.get("thesis") or "")[:200],
+                "catalyst": str(a.get("catalyst") or "")[:120],
+                "risk_stop": _as_float(a.get("risk_stop")),
+                "confidence": _as_float(a.get("confidence")),
+                "expected_hold_days": _as_int(a.get("expected_hold_days")),
+                "position_size_reason": str(a.get("position_size_reason") or "")[:120],
+            })
             if act == "hold" or not sym:
                 rec["status"] = "持有不动" if act == "hold" else "拒绝：无代码"
                 decided.append(rec)
@@ -962,6 +1019,12 @@ class AgentTrader:
                     px = 0.0
             if act not in ("buy", "sell"):
                 rec["status"] = "拒绝：未知动作"
+            elif basis_err:
+                rec["status"] = f"拒绝：{basis_err}"
+            elif self.cfg.require_basis and not basis:
+                rec["status"] = "拒绝：缺 basis（未说明依据的数据字段）"
+            elif any(not _basis_known(x) for x in basis):
+                rec["status"] = "拒绝：basis 含未知数据字段"
             elif act == "buy" and sym not in allow_buy:
                 rec["status"] = "拒绝：不在股票池"
             elif act == "sell" and sym not in allow_sell:

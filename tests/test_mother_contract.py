@@ -140,7 +140,7 @@ def test_news_mother_preferred_then_local(sd):
     assert out["source"] == "mother:news_item"
     assert out["data"][0]["title"] == "测试标题"
     # 母库无该表时回退本地
-    empty = tmp = sd.parent / "empty-sd"
+    empty = sd.parent / "empty-sd"
     (empty / "src").mkdir(parents=True)
     (empty / "data" / "db").mkdir(parents=True)
     sqlite3.connect(empty / "data" / "db" / "stock_dashboard.db").close()
