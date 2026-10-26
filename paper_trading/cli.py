@@ -893,6 +893,15 @@ class TradingBridge:
                     }
         except Exception:
             pass
+        try:
+            # 上下文压缩：超预算才分级截断（provenance 永不被截断）
+            from paper_trading.agent.context import compress_context
+
+            budget = int(getattr(getattr(self, "agent_cfg", None),
+                                 "context_budget", 8000) or 8000)
+            out = compress_context(out, budget)
+        except Exception:                       # noqa: BLE001
+            pass
         return out
 
     def llm_ask(self, prompt: str, system: str = "") -> dict:

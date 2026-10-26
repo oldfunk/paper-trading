@@ -38,9 +38,10 @@
 
 ## P3 — 上下文压缩技术
 
-- [ ] `agent/context.py`：预算感知装配（token 估算 + 分级截断）
-- [ ] 富化块按"决策相关度"排序，超预算先截长文本
-- [ ] 保留 provenance 元数据不被截断
+- [x] `agent/context.py`：预算感知装配（token 估算 + 分级截断）
+- [x] 富化块按决策相关度截断（长文本→财务摘要白名单→股息/追踪条数→收盘根数）
+- [x] 保留 provenance 元数据不被截断
+- [x] `llm_context` 接入（`agent.context_budget`，默认 8000，超预算才压缩）
 
 ## P4 — 文档（供母项目对齐）
 
