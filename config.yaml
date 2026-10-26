@@ -13,6 +13,13 @@ stock_pool:
 account:
   initial_cash: 100000.0
 
+# 行情数据源（执行侧：引擎/AI 信号/计价）
+# auto  = 母库优先、缺该标的回退本地（默认；母库覆盖更全更新）
+# local = 只用本地 akshare 前复权（独立运行/排障）
+# mother= 只用母库日线（注意复权口径为后复权/不复权，见 docs/mother-interface.md）
+data:
+  daily_source: auto
+
 trading:
   commission_rate: 0.00025
   commission_min: 5.0

@@ -114,6 +114,7 @@ class TradingBridge:
         strat_kwargs: dict = {"short_window": 5, "long_window": 20}
         stock_pool: list[str] = []
         agent_kwargs: dict = {}
+        data_source = "auto"          # auto=母库优先/本地兜底；local=只用本地；mother=只用母库
         if config is None:
             try:
                 from paper_trading.utils.config import load_config
@@ -125,6 +126,8 @@ class TradingBridge:
                     strat_kwargs = cfg.get("strategy", {})
                     stock_pool = [str(s) for s in cfg.get("stock_pool", [])]
                     agent_kwargs = cfg.get("agent", {})
+                    data_source = str((cfg.get("data") or {}).get("daily_source")
+                                      or "auto")
             except Exception:
                 config = TradingConfig()
         from pathlib import Path as _Path
@@ -162,6 +165,9 @@ class TradingBridge:
                     except (TypeError, ValueError):
                         pass
         self.data_db = DataDBManager(data_db)
+        from paper_trading.data.source import BarSource
+        self.bar_source = BarSource(self.data_db, source=data_source)
+        self.daily_source = data_source
         self.broker = PaperBroker(account_db, config)
         self.account_db_path = str(getattr(self.broker, "db_path", account_db))
         self.data_db_path = str(self.data_db.db_path)
@@ -282,17 +288,21 @@ class TradingBridge:
                                 "pct": round(delta / prev * 100, 3)})
         return out
 
+    def get_bars(self, symbol: str, limit: int = 30) -> list:
+        """执行侧统一取数：母库优先、缺该标的回退本地（见 config `data.daily_source`）。"""
+        return self.bar_source.get_bars(symbol, limit=limit)
+
     def price_map(self, symbols: list[str]) -> dict[str, float]:
         """最新价表：run 标的 ∪ 全部持仓（持仓不在池中时也必须计价，
         否则 NAV 把持仓算成 0 并误触发熔断）。"""
         out: dict[str, float] = {}
         for sym in symbols:
-            bars = self.data_db.get_bars(sym, limit=1)
+            bars = self.bar_source.get_bars(sym, limit=1)
             if bars:
                 out[sym] = bars[-1].close
         for p in self.broker.get_all_positions():
             if p.symbol not in out:
-                bars = self.data_db.get_bars(p.symbol, limit=1)
+                bars = self.bar_source.get_bars(p.symbol, limit=1)
                 if bars:
                     out[p.symbol] = bars[-1].close
         return out
@@ -315,7 +325,7 @@ class TradingBridge:
         # 2. 获取最新K线并生成信号
         all_bars: dict[str, list] = {}
         for sym in symbols:
-            bars = self.data_db.get_bars(sym, limit=30)
+            bars = self.bar_source.get_bars(sym, limit=30)
             if bars:
                 all_bars[sym] = bars
         # 计价用全口径（run 标的 ∪ 持仓），持仓按 0 算会误触发熔断

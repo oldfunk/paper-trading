@@ -57,7 +57,7 @@ def price_map(bridge, quotes: dict, symbols: list[str]) -> dict[str, float]:
         if q and float(q.get("price") or 0.0) > 0:
             out[s] = float(q["price"])
             continue
-        bars = bridge.data_db.get_bars(s, limit=1)
+        bars = bridge.bar_source.get_bars(s, limit=1)
         if bars:
             out[s] = float(bars[-1].close)
     return out
@@ -144,7 +144,7 @@ class EngineRunner:
         entry = str(pos.entry_day or "")
         if not entry:
             return 0
-        hist = bars_excluding_today(self.b.data_db.get_bars(sym, limit=120),
+        hist = bars_excluding_today(self.b.bar_source.get_bars(sym, limit=120),
                                     datetime.now())
         return len([b for b in hist
                     if b.timestamp.date().isoformat() > entry])
@@ -159,7 +159,7 @@ class EngineRunner:
         if quote:
             peak = max(peak, float(quote.get("price") or 0.0),
                        float(quote.get("high") or 0.0))
-        hist = bars_excluding_today(self.b.data_db.get_bars(sym, limit=120), now)
+        hist = bars_excluding_today(self.b.bar_source.get_bars(sym, limit=120), now)
         for b in hist:
             if not entry or b.timestamp.date().isoformat() >= entry:
                 peak = max(peak, float(b.high or 0.0))
@@ -253,7 +253,7 @@ class EngineRunner:
 
     def _context(self, sym: str, q: dict, now, day: str) -> RuleContext:
         # 排除当日未收盘日线：只用最近已收盘交易日的收盘序列（防 T+0/未来函数）
-        bars = bars_excluding_today(self.b.data_db.get_bars(sym, limit=61), now)
+        bars = bars_excluding_today(self.b.bar_source.get_bars(sym, limit=61), now)
         closes = [b.close for b in bars]
         prev_close = float(q.get("prev_close") or 0.0)
         price = float(q.get("price") or 0.0)

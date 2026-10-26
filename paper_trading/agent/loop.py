@@ -568,7 +568,7 @@ class AgentTrader:
         symbols, picks = self._enrich(symbols, candidates)
         all_bars: dict[str, list] = {}
         for sym in symbols:
-            bars = b.data_db.get_bars(sym, limit=30)
+            bars = b.bar_source.get_bars(sym, limit=30)
             if bars:
                 all_bars[sym] = bars
         if not all_bars:
@@ -772,7 +772,7 @@ class AgentTrader:
         # 2. 取数（执行计划不需要新鲜 K 线：计划本就是基于定稿数据做的）
         all_bars: dict[str, list] = {}
         for sym in symbols:
-            bars = b.data_db.get_bars(sym, limit=30)
+            bars = b.bar_source.get_bars(sym, limit=30)
             if bars:
                 all_bars[sym] = bars
         # 计价用全口径（run 标的 ∪ 持仓），持仓按 0 算会误触发熔断
@@ -838,7 +838,7 @@ class AgentTrader:
             symbols, picks = self._enrich(symbols, candidates)
             if picks:
                 for sym in (p["symbol"] for p in picks):
-                    bars = b.data_db.get_bars(sym, limit=30)
+                    bars = b.bar_source.get_bars(sym, limit=30)
                     if bars:
                         all_bars[sym] = bars
                 latest = b.price_map(symbols)
@@ -945,7 +945,7 @@ class AgentTrader:
         for sym in set(syms) | set(positions):
             bars = all_bars.get(sym)
             if not bars:
-                bars = b.data_db.get_bars(sym, limit=30)
+                bars = b.bar_source.get_bars(sym, limit=30)
                 if bars:
                     all_bars[sym] = bars
             if not latest.get(sym) and bars:
