@@ -18,6 +18,7 @@
 - [x] P6.2 覆盖度监控：每接口 coverage/stale 汇总，CLI `data coverage`（面板 provenance 面板待做）
 - [x] P6.3 母库行情口径：`close_adj` 为后复权、本地为前复权；`data compare` 量化差异
 - [x] P6.4 契约测试扩展：`instrument`/`trading_calendar` 列校验
+- [x] P6.5 执行侧切库：`config.data.daily_source` + `BarSource`（引擎日线规则/AI 信号/`price_map` 母库优先、缺标的回退本地）；`data compare` 量化口径差异
 
 ## P7 — 可观测/审计/跨仓协作
 
@@ -31,3 +32,16 @@
 1. `data compare`：同标的本地 qfq vs 母库 hfq 的 MA5/MA20 交叉差异 → 量化口径影响。
 2. `agent run --dry-run --data-source mother`：用母库日线喂信号，与本地结果对照（默认仍本地，开关式）。
 3. 差异写入 `op_log`（`data:compare`）与 `docs/mother-interface.md` 结论；接缝问题提母库 Issue。
+
+## 母库 Issue（本轮已提交，`oldfunk/stock-dashboard`）
+
+- #4 `kline_daily` 缺 qfq 口径（`close_adj` 有 NULL）→ 执行信号不可比
+- #5 `benchmark_daily` 指数代码约定不一致（sh000300/sh000922）
+- #6 `trading_calendar` 未回填、`market_index` 过期、`market_state_daily` 未落库
+- #7 `kline_daily` 覆盖不全（959/5527，如 000858 缺失）
+
+## 执行侧验证结果（2026-10-27，Pi）
+
+- `daily_source=auto`：002215/600989/000792/002192/300390 → `mother:kline_daily`（最新 10-26）；
+  000858 母库缺失 → 回退 `local:akshare`。
+- 本地日线此前对部分持仓滞后（000858 曾停在 2025-10-14），母库优先后执行信号不再受本地同步滞后影响。

@@ -68,6 +68,23 @@ AI 上下文里的 `data_provenance` 汇总每个接口的 `source/asof/stale`�
 - 母库整个不可读（未部署/路径不存在）→ 所有接口 `unavailable`/本地兜底，交易链照常运行。
 - 母库 `financial_summary` 未覆盖某标的 → 该标的 `unavailable`，AI 看到"缺失"，不臆测。
 
+## 5.1 执行侧（引擎/AI 信号/计价）
+
+- `TradingBridge.bar_source`（`paper_trading/data/source.py`）统一取数：**母库优先、缺该标的回退本地**。
+- 开关在 `config.yaml`：`data.daily_source = auto|local|mother`（缺省 `auto`）。
+- 引擎日线规则、AI 信号、`price_map`（NAV/风控计价）都走 `bar_source.get_bars`。
+- 复权口径：母库 `close_adj` 为**后复权/不复权**，本地为**前复权**。绝对价位不可比，
+  均线交叉/收益相关性可比（见 `data compare`）。切库前请确认口径（见下方 Issue）。
+
+## 5.2 本轮切库验证发现（已给母库提 Issue）
+
+| 现象 | 子项目影响 | 母库 Issue |
+|---|---|---|
+| `kline_daily` 无 `qfq` 列；`close_adj` 有 NULL（002215） | 执行信号口径不可比 | #4 |
+| `benchmark_daily` 代码为 `sh000300`/`sh000922`，子项目按 `000001` 查不到 | 相对基准不可用 | #5 |
+| `trading_calendar` 空；`market_index` 停在 2026-07-03；`market_state_daily` 未落库 | 日历/大盘只能本地 | #6 |
+| `kline_daily` 仅 959/5527 只（如 000858 缺失） | 覆盖不均，逐标的回退 | #7 |
+
 ## 6. 性能约束（Pi 实机）
 
 - 母库 363MB 且正在回填：子项目**不新增常驻进程、不触发回填、不 `SELECT *`**。
