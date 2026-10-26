@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
@@ -182,7 +183,10 @@ def daily_bars(codes: Iterable[str], days: int = 250,
                     adj = "qfq"
             out[code] = {
                 "available": bool(bars), "source": source, "asof": asof,
-                "adj": adj, "bars": bars,
+                "adj": adj,
+                "stale": bool(_stale(asof, 3, date.today().isoformat()))
+                         if asof else False,
+                "bars": bars,
             }
     finally:
         if conn is not None:
@@ -222,7 +226,7 @@ def financial_summary(codes: Iterable[str], mother: Optional[Path] = None,
         for r in rows:
             c = str(r["stock_code"]).zfill(6)
             out[c] = block(r, mother_source("financial_summary"),
-                           asof=_as_date(r.get("updated_at")))
+                           asof=_as_date(r.get("updated_at")), max_age_days=30)
         return out
     finally:
         try:
@@ -262,7 +266,8 @@ def dividend(codes: Iterable[str], mother: Optional[Path] = None,
         out = {c: unavailable("母库未覆盖该标的股息") for c in codes}
         for c, items in grouped.items():
             out[c] = block(items, mother_source("dividend_annual"),
-                           asof=_as_date(items[0]["report_date"]))
+                           asof=_as_date(items[0]["report_date"]),
+                           max_age_days=400)
         return out
     finally:
         try:
@@ -304,7 +309,7 @@ def benchmark(codes: Iterable[str], days: int = 60,
             items = items[:int(days)]
             out[c] = block([{"date": _as_date(x["trade_date"]), "close": x["close"]}
                             for x in items], mother_source("benchmark_daily"),
-                           asof=_as_date(items[0]["trade_date"]))
+                           asof=_as_date(items[0]["trade_date"]), max_age_days=3)
         return out
     finally:
         try:
@@ -345,7 +350,8 @@ def news(codes: Optional[Iterable[str]] = None, limit: int = 20,
                 rows = []
             if rows:
                 asof = _as_date(max(str(r.get("published_at") or "") for r in rows))
-                return block(rows, mother_source("news_item"), asof=asof)
+                return block(rows, mother_source("news_item"), asof=asof,
+                             max_age_days=7)
         finally:
             try:
                 conn.close()
@@ -394,7 +400,7 @@ def screening_detail(local_pool: Optional[list] = None,
                 run = None
             if run and run.get("rows"):
                 return block(run, mother_source("screening_result"),
-                             asof=run.get("run_date"))
+                             asof=run.get("run_date"), max_age_days=7)
         finally:
             try:
                 conn.close()
@@ -480,7 +486,8 @@ def outcomes(codes: Iterable[str], mother: Optional[Path] = None,
             out[c] = block(items, mother_source("analysis_outcome"),
                            asof=_as_date(items[0]["analysis_date"]),
                            note=f"{len(judged)}/{len(items)} 条有 verdict"
-                                if judged else "verdict 未落全（母库回填中）")
+                                if judged else "verdict 未落全（母库回填中）",
+                           max_age_days=180)
         return out
     finally:
         try:
@@ -516,7 +523,8 @@ def regime(mother: Optional[Path] = None,
         if not rows:
             return unavailable("母库大盘数据为空")
         asof = max(_as_date(r.get("date")) for r in rows if r.get("date"))
-        return block(rows, mother_source("market_index"), asof=asof)
+        return block(rows, mother_source("market_index"), asof=asof,
+                     max_age_days=7)
     finally:
         try:
             conn.close()

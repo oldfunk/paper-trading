@@ -3,6 +3,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from datetime import date
+
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,12 +92,23 @@ def _local_bar(code, days):
             for i in range(1, 4)]
 
 
+def test_block_marks_stale_by_asof():
+    from paper_trading.integration.sources import block
+
+    old = block({"x": 1}, "mother:t", asof="2020-01-01", max_age_days=7)
+    assert old["stale"] is True
+    fresh = block({"x": 1}, "mother:t",
+                  asof=date.today().isoformat(), max_age_days=7)
+    assert fresh["stale"] is False
+
+
 def test_daily_bars_mother_first_then_local(sd):
     out = mother.daily_bars(["600519", "000001"], days=5,
                             local_bars=_local_bar, mother=sd)
     assert out["600519"]["source"] == "mother:kline_daily"
     assert out["600519"]["available"] and out["600519"]["asof"] == "2026-10-26"
     assert out["600519"]["bars"][0]["close"] == 1505
+    assert out["600519"]["stale"] is False
     assert out["000001"]["source"] == SRC_LOCAL_AKSHARE
     assert out["000001"]["available"]
 

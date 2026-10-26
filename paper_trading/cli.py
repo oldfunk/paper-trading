@@ -805,8 +805,10 @@ class TradingBridge:
                 elif isinstance(value, dict):
                     srcs = sorted({v.get("source") for v in value.values()
                                    if isinstance(v, dict) and v.get("source")})
+                    has_stale = any(isinstance(v, dict) and v.get("stale")
+                                    for v in value.values())
                     if srcs:
-                        prov[name] = {"sources": srcs}
+                        prov[name] = {"sources": srcs, "has_stale": has_stale}
                 return value
 
             cards = read_stock_cards(symbols)      # 旧卡片：快照/分析/笔记/论点

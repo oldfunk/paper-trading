@@ -26,12 +26,18 @@ def mother_source(table: str) -> str:
 
 
 def block(data: Any, source: str, asof: Optional[str] = None,
-          stale: bool = False, note: str = "") -> dict:
+          stale: bool = False, note: str = "", max_age_days: Optional[int] = None) -> dict:
     """把一份数据包装成带来源的块。
 
     ``available`` 只表示"有没有数据"，不代表新鲜；新鲜度看 ``asof``/``stale``。
+    ``max_age_days`` 给定时按 ``asof`` 自动判旧（超过即 ``stale=True``），
+    避免把过期数据当新鲜喂给 AI。
     """
+    from datetime import date
+
     has = bool(data) if not isinstance(data, (dict, list)) else bool(data)
+    if max_age_days is not None and asof and not stale:
+        stale = _is_stale(asof, max_age_days, date.today().isoformat())
     return {
         "available": has,
         "source": source,
@@ -40,6 +46,15 @@ def block(data: Any, source: str, asof: Optional[str] = None,
         "note": note,
         "data": data,
     }
+
+
+def _is_stale(asof: str, max_age_days: int, today: str) -> bool:
+    from datetime import date
+
+    try:
+        return (date.fromisoformat(today) - date.fromisoformat(asof)).days > max_age_days
+    except ValueError:
+        return False
 
 
 def unavailable(note: str = "") -> dict:
