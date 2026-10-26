@@ -41,6 +41,7 @@ class AgentConfig:
     picks_max: int = 5           # 单轮最多提名多少只（1-10）
     # 决策可审计：每条 buy/sell 必须引用上下文里真实存在的数据字段（basis）
     require_basis: bool = False  # True=缺 basis 直接拒单（fail-closed）；False=只记录
+    require_stop: bool = False   # True=买入必须有 risk_stop 或卖出条件，否则拒单
     context_budget: int = 8000   # 上下文 token 预算（压缩用；当前仅记录，P3 启用）
     # AI 条件单：LLM 只出触发条件，引擎盘中每分钟执行（实时层）
     conditions_enabled: bool = True
@@ -65,7 +66,7 @@ _BASIS_PREFIXES = frozenset({
     "account", "positions", "recent_closes", "recent_nav", "recent_ops",
     "value_view", "stock_cards", "financial_summary", "dividend", "outcomes",
     "thesis", "fundamentals", "screening", "market_regime", "data_provenance",
-    "news", "intraday",
+    "news", "intraday", "portfolio",
 })
 
 
@@ -88,6 +89,15 @@ def _normalize_basis(raw) -> tuple[list, str]:
 def _basis_known(name: str) -> bool:
     """basis 字段是否引用了上下文里真实存在的数据域。"""
     return str(name).split(".", 1)[0] in _BASIS_PREFIXES
+
+
+def _has_sell_condition(conditions, sym: str) -> bool:
+    """该标的是否已有卖出条件单（用于买入止损门禁）。"""
+    for c in conditions or []:
+        if (isinstance(c, dict) and str(c.get("symbol", "")) == sym
+                and str(c.get("side", "")).lower() == "sell"):
+            return True
+    return False
 
 
 def _as_float(v) -> Optional[float]:
@@ -1025,6 +1035,10 @@ class AgentTrader:
                 rec["status"] = "拒绝：缺 basis（未说明依据的数据字段）"
             elif any(not _basis_known(x) for x in basis):
                 rec["status"] = "拒绝：basis 含未知数据字段"
+            elif (self.cfg.require_stop and act == "buy"
+                  and rec.get("risk_stop") is None
+                  and not _has_sell_condition(conditions, sym)):
+                rec["status"] = "拒绝：买入缺止损安排（risk_stop 或卖出条件）"
             elif act == "buy" and sym not in allow_buy:
                 rec["status"] = "拒绝：不在股票池"
             elif act == "sell" and sym not in allow_sell:

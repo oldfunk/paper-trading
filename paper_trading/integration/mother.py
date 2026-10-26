@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import itertools
 import sqlite3
 import time
 from datetime import date
@@ -33,6 +34,189 @@ TTL_SCREENING = 600.0
 
 _CACHE: dict = {}
 _COLUMNS: dict = {}
+_CONN_SEQ = itertools.count()
+_CONN_IDS: dict = {}
+
+
+def instrument_map(codes: Optional[Iterable[str]] = None,
+                   mother: Optional[Path] = None,
+                   ttl: float = TTL_FUNDAMENTAL) -> dict:
+    """母库 `instrument` 表：symbol → instrument_id/market/exchange/name。
+
+    母库研究 OS 以 instrument 为主键；子项目仍按 6 位代码，这里做映射。
+    """
+    codes = [str(c).strip().zfill(6) for c in (codes or [])]
+    conn = _conn(mother)
+    if conn is None or not _has(conn, "instrument", ("symbol",)):
+        if conn is not None:
+            conn.close()
+        return {c: unavailable("母库无 instrument 或不可读") for c in codes}
+    try:
+        def _fetch():
+            if codes:
+                q = ",".join("?" * len(codes))
+                return [dict(r) for r in conn.execute(
+                    f"""SELECT symbol, instrument_id, market_id, exchange, name, status
+                        FROM instrument WHERE symbol IN ({q})""",
+                    codes).fetchall()]
+            return [dict(r) for r in conn.execute(
+                """SELECT symbol, instrument_id, market_id, exchange, name, status
+                   FROM instrument LIMIT 5000""").fetchall()]
+
+        try:
+            rows = _cached(f"instr:{_seq(conn)}:{','.join(codes)}", ttl, _fetch)
+        except Exception:                   # noqa: BLE001
+            rows = []
+        out = {c: unavailable("母库未覆盖该标的 instrument") for c in codes}
+        for r in rows:
+            out[str(r["symbol"]).zfill(6)] = block(r, mother_source("instrument"))
+        return out
+    finally:
+        try:
+            conn.close()
+        except Exception:                   # noqa: BLE001
+            pass
+
+
+def trading_calendar(market: str = "CN", mother: Optional[Path] = None,
+                     ttl: float = TTL_FUNDAMENTAL) -> dict:
+    """母库 `trading_calendar`（市场交易日历）。空则 unavailable（调用方回退本地）。"""
+    conn = _conn(mother)
+    if conn is None or not _has(conn, "trading_calendar",
+                                ("market_id", "trade_date", "is_open")):
+        if conn is not None:
+            conn.close()
+        return unavailable("母库 trading_calendar 不可用")
+    try:
+        def _fetch():
+            return [dict(r) for r in conn.execute(
+                """SELECT market_id, trade_date, is_open, source
+                   FROM trading_calendar WHERE market_id = ?
+                   ORDER BY trade_date DESC LIMIT 2000""", (market,)).fetchall()]
+
+        try:
+            rows = _cached(f"tcal:{_seq(conn)}:{market}", ttl, _fetch)
+        except Exception:                   # noqa: BLE001
+            rows = []
+        if not rows:
+            return unavailable("母库 trading_calendar 无数据（回填中）")
+        asof = max(_as_date(r.get("trade_date")) for r in rows if r.get("trade_date"))
+        return block(rows, mother_source("trading_calendar"), asof=asof,
+                     max_age_days=7)
+    finally:
+        try:
+            conn.close()
+        except Exception:                   # noqa: BLE001
+            pass
+
+
+def coverage(codes: Optional[Iterable[str]] = None,
+             local_bars: Optional[Callable[[str, int], list]] = None,
+             mother: Optional[Path] = None) -> dict:
+    """每个富化接口的覆盖情况汇总（供 CLI `data coverage` / 面板排查）。"""
+    codes = [str(c).strip().zfill(6) for c in (codes or [])]
+    out: dict = {}
+    if codes:
+        out["daily_bars"] = daily_bars(codes, local_bars=local_bars, mother=mother)
+        out["financial_summary"] = financial_summary(codes, mother=mother)
+        out["dividend"] = dividend(codes, mother=mother)
+        out["thesis"] = thesis(codes, mother=mother)
+        out["outcomes"] = outcomes(codes, mother=mother)
+        out["instrument"] = instrument_map(codes, mother=mother)
+    out["screening"] = screening_detail(mother=mother)
+    out["regime"] = regime(mother=mother)
+    out["news"] = news(codes=codes[:10], mother=mother)
+    out["benchmark"] = benchmark(["000001", "399001", "399006"], mother=mother)
+    out["trading_calendar"] = trading_calendar(mother=mother)
+    return out
+
+
+# ---------- 本地 vs 母库行情对照（切库验证） ----------
+
+def _ma(vals: list, n: int) -> list:
+    out = []
+    for i in range(len(vals)):
+        out.append(None if i + 1 < n else sum(vals[i + 1 - n:i + 1]) / n)
+    return out
+
+
+def _crosses(ma5: list, ma20: list) -> tuple:
+    """统计金叉/死叉次数（基于 MA5-MA20 符号变化）。"""
+    golden = death = 0
+    prev = 0
+    for a, b in zip(ma5, ma20):
+        if a is None or b is None:
+            continue
+        s = 1 if a > b else (-1 if a < b else 0)
+        if prev != 0 and s != 0 and s != prev:
+            if s > 0:
+                golden += 1
+            else:
+                death += 1
+        if s != 0:
+            prev = s
+    return golden, death
+
+
+def _corr(a: list, b: list):
+    n = min(len(a), len(b))
+    if n < 2:
+        return None
+    a, b = a[:n], b[:n]
+    ma, mb = sum(a) / n, sum(b) / n
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((x - mb) ** 2 for x in b)
+    if va <= 0 or vb <= 0:
+        return None
+    return round(sum((x - ma) * (y - mb) for x, y in zip(a, b))
+                 / (va ** 0.5 * vb ** 0.5), 4)
+
+
+def compare_bars(codes: Iterable[str], days: int = 250,
+                 local_bars: Optional[Callable[[str, int], list]] = None,
+                 mother: Optional[Path] = None) -> dict:
+    """对照本地前复权与母库后复权日线：MA 交叉差异 + 收益相关性。
+
+    用途：验证“切到母库行情”对策略信号的影响。母库 `close_adj` 是后复权、
+    本地是 akshare 前复权，绝对价位不可比，但均线交叉与收益相关性可比。
+    """
+    codes = [str(c).strip().zfill(6) for c in codes]
+    mother_bars = daily_bars(codes, days=days, local_bars=None, mother=mother)
+    local_b = daily_bars(codes, days=days, local_bars=local_bars,
+                         mother=mother, force_local=True)
+    out: dict = {}
+    for c in codes:
+        def _series(blk):
+            rows = (blk or {}).get("bars") or []
+            return ([r["close"] for r in rows if r.get("close")],
+                    (blk or {}).get("adj"),
+                    [r.get("date") for r in rows])
+
+        mcloses, madj, mdates = _series(mother_bars.get(c))
+        lcloses, ladj, ldates = _series(local_b.get(c))
+        mg, md = _crosses(_ma(mcloses, 5), _ma(mcloses, 20))
+        lg, ld = _crosses(_ma(lcloses, 5), _ma(lcloses, 20))
+        corr = None
+        m_map = {d: v for d, v in zip(mdates, mcloses)}
+        l_map = {d: v for d, v in zip(ldates, lcloses)}
+        common = sorted(set(m_map) & set(l_map))
+        if len(common) >= 10:
+            mret = [m_map[common[i + 1]] / m_map[common[i]] - 1
+                    for i in range(len(common) - 1)]
+            lret = [l_map[common[i + 1]] / l_map[common[i]] - 1
+                    for i in range(len(common) - 1)]
+            corr = _corr(mret, lret)
+        out[c] = {
+            "local": {"adj": ladj, "n": len(lcloses),
+                      "last": ldates[0] if ldates else None,
+                      "golden": lg, "death": ld},
+            "mother": {"adj": madj, "n": len(mcloses),
+                       "last": mdates[0] if mdates else None,
+                       "golden": mg, "death": md},
+            "cross_diff": {"golden": mg - lg, "death": md - ld},
+            "return_corr": corr,
+        }
+    return out
 
 
 def reset_cache() -> None:
@@ -52,6 +236,7 @@ def _conn(mother: Optional[Path] = None):
         conn.execute("PRAGMA query_only=ON")
         conn.execute("PRAGMA busy_timeout=2000")
         _COLUMNS.clear()      # 新连接可能指向不同库：避免复用旧列缓存
+        _CONN_IDS[id(conn)] = next(_CONN_SEQ)
         return conn
     except Exception:                       # noqa: BLE001 - 母库不可用即降级
         return None
@@ -86,6 +271,11 @@ def _cached(key: str, ttl: float, fn: Callable[[], Any]) -> Any:
     return val
 
 
+def _seq(conn) -> int:
+    """连接序号：id() 可能在连接关闭后被复用，用单调序号做缓存键。"""
+    return _CONN_IDS.get(id(conn), 0)
+
+
 def _as_date(value) -> str:
     s = str(value or "")[:10]
     return s
@@ -108,15 +298,17 @@ def _stale(asof: Optional[str], max_age_days: int, today: str) -> bool:
 def daily_bars(codes: Iterable[str], days: int = 250,
                local_bars: Optional[Callable[[str, int], list]] = None,
                mother: Optional[Path] = None,
-               ttl: float = TTL_QUOTES) -> dict:
+               ttl: float = TTL_QUOTES,
+               force_local: bool = False) -> dict:
     """每只标的的日线（母库优先，缺该标的回退本地）。
 
     ``local_bars(code, days)`` 由调用方注入（返回本地 Bar 列表或字典列表）。
-    返回 ``{code: {"available","source","asof","adj","bars":[...]}}``。
+    ``force_local=True`` 时只看本地（用于本地 vs 母库对照）。
+    返回 ``{code: {"available","source","asof","adj","stale","bars":[...]}}``。
     """
     out: dict = {}
     codes = [str(c).strip().zfill(6) for c in (codes or [])]
-    conn = _conn(mother)
+    conn = None if force_local else _conn(mother)
     try:
         for code in dict.fromkeys(codes):
             bars: list = []
@@ -135,7 +327,7 @@ def daily_bars(codes: Iterable[str], days: int = 250,
                     return [dict(r) for r in rows]
 
                 try:
-                    rows = _cached(f"kline:{id(conn)}:{code}:{days}", ttl, _fetch)
+                    rows = _cached(f"kline:{_seq(conn)}:{code}:{days}", ttl, _fetch)
                 except Exception:           # noqa: BLE001 - 单只失败不影响其他
                     rows = []
                 if rows:
@@ -219,7 +411,7 @@ def financial_summary(codes: Iterable[str], mother: Optional[Path] = None,
             return [dict(r) for r in rows]
 
         try:
-            rows = _cached(f"fin:{id(conn)}:{','.join(codes)}", ttl, _fetch)
+            rows = _cached(f"fin:{_seq(conn)}:{','.join(codes)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         out = {c: unavailable("母库未覆盖该标的财务摘要") for c in codes}
@@ -257,7 +449,7 @@ def dividend(codes: Iterable[str], mother: Optional[Path] = None,
                     ORDER BY stock_code, report_date DESC""", codes).fetchall()]
 
         try:
-            rows = _cached(f"div:{id(conn)}:{','.join(codes)}", ttl, _fetch)
+            rows = _cached(f"div:{_seq(conn)}:{','.join(codes)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         grouped: dict = {}
@@ -298,7 +490,7 @@ def benchmark(codes: Iterable[str], days: int = 60,
                 codes).fetchall()]
 
         try:
-            rows = _cached(f"bench:{id(conn)}:{','.join(codes)}:{days}", ttl, _fetch)
+            rows = _cached(f"bench:{_seq(conn)}:{','.join(codes)}:{days}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         grouped: dict = {}
@@ -345,7 +537,7 @@ def news(codes: Optional[Iterable[str]] = None, limit: int = 20,
                 return rows
 
             try:
-                rows = _cached(f"news:{id(conn)}:{','.join(codes)}:{limit}", ttl, _fetch)
+                rows = _cached(f"news:{_seq(conn)}:{','.join(codes)}:{limit}", ttl, _fetch)
             except Exception:               # noqa: BLE001
                 rows = []
             if rows:
@@ -395,7 +587,7 @@ def screening_detail(local_pool: Optional[list] = None,
                         "rows": rows}
 
             try:
-                run = _cached(f"screening:latest:{id(conn)}", ttl, _fetch)
+                run = _cached(f"screening:latest:{_seq(conn)}", ttl, _fetch)
             except Exception:               # noqa: BLE001
                 run = None
             if run and run.get("rows"):
@@ -433,7 +625,7 @@ def thesis(codes: Iterable[str], mother: Optional[Path] = None,
                     FROM watchlist_thesis WHERE code IN ({q})""", codes).fetchall()]
 
         try:
-            rows = _cached(f"thesis:{id(conn)}:{','.join(codes)}", ttl, _fetch)
+            rows = _cached(f"thesis:{_seq(conn)}:{','.join(codes)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         out = {c: unavailable("母库未覆盖该标的论点") for c in codes}
@@ -470,7 +662,7 @@ def outcomes(codes: Iterable[str], mother: Optional[Path] = None,
                     ORDER BY analysis_date DESC""", codes).fetchall()]
 
         try:
-            rows = _cached(f"outcome:{id(conn)}:{','.join(codes)}", ttl, _fetch)
+            rows = _cached(f"outcome:{_seq(conn)}:{','.join(codes)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         grouped: dict = {}
@@ -517,7 +709,7 @@ def regime(mother: Optional[Path] = None,
             return rows
 
         try:
-            rows = _cached(f"regime:{id(conn)}", ttl, _fetch)
+            rows = _cached(f"regime:{_seq(conn)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         if not rows:

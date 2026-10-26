@@ -791,6 +791,7 @@ class TradingBridge:
         # ---- 母库富化：逐接口降级 + 来源标注（绝不阻断决策）----
         prov: dict = {}
         enrichment: dict = {}
+        cards: dict = {}
         try:
             from paper_trading.integration import mother as _mother
             from paper_trading.integration import read_stock_cards
@@ -838,6 +839,36 @@ class TradingBridge:
             pass
         if enrichment:
             out["value_view"] = enrichment
+        # 组合级约束（供 AI 决策遵守；母库缺 sector 时如实标注 unavailable）
+        try:
+            pos_list = st.get("positions") or []
+            total = float(st.get("total_value") or 0.0)
+            mv = float(st.get("market_value") or 0.0)
+            cash = float(st.get("cash") or 0.0)
+            sector_mv: dict = {}
+            for p in pos_list:
+                s = str(p.get("symbol", ""))
+                card = cards.get(s) or {}
+                fund = card.get("fundamentals") if isinstance(card, dict) else None
+                sec = fund.get("sector") if isinstance(fund, dict) else None
+                if sec:
+                    sector_mv[str(sec)] = sector_mv.get(str(sec), 0.0) + float(
+                        p.get("market_value") or 0.0)
+            out["portfolio"] = {
+                "total_value": round(total, 2), "cash": round(cash, 2),
+                "market_value": round(mv, 2),
+                "cash_pct": round(cash / total * 100, 1) if total else None,
+                "exposure_pct": round(mv / total * 100, 1) if total else None,
+                "sector_exposure": ({k: round(v / total * 100, 1)
+                                     for k, v in sorted(sector_mv.items(),
+                                                        key=lambda x: -x[1])}
+                                    if total else {}),
+                "sector_source": ("mother:stock_snapshot" if sector_mv
+                                  else "unavailable"),
+                "positions_count": len(pos_list),
+            }
+        except Exception:                       # noqa: BLE001
+            pass
         if prov:
             out["data_provenance"] = {
                 **prov,
@@ -1134,6 +1165,30 @@ def main() -> None:
         "status", help="查看缓存覆盖范围与新鲜度")
     calendar_status_p.add_argument("--path", default=None)
     calendar_status_p.add_argument("--json", action="store_true")
+
+    # data：母库数据对照与覆盖度（切库验证）
+    data_parser = subparsers.add_parser(
+        "data", help="母库数据对照与覆盖度（切库验证）")
+    data_sub = data_parser.add_subparsers(dest="data_command")
+    data_compare = data_sub.add_parser(
+        "compare", help="本地前复权 vs 母库后复权：均线交叉/收益相关性")
+    data_compare.add_argument("--symbols", nargs="*")
+    data_compare.add_argument("--pool-from", default="config")
+    data_compare.add_argument("--pool-limit", type=int, default=20)
+    data_compare.add_argument("--pool-tag", default="")
+    data_compare.add_argument("--no-picks", action="store_true")
+    data_compare.add_argument("--days", type=int, default=250)
+    data_compare.add_argument("--log", action="store_true",
+                              help="把对照结果记入操作流水")
+    data_compare.add_argument("--json", action="store_true")
+    data_cov = data_sub.add_parser(
+        "coverage", help="每个富化接口的覆盖度/来源/新鲜度")
+    data_cov.add_argument("--symbols", nargs="*")
+    data_cov.add_argument("--pool-from", default="config")
+    data_cov.add_argument("--pool-limit", type=int, default=20)
+    data_cov.add_argument("--pool-tag", default="")
+    data_cov.add_argument("--no-picks", action="store_true")
+    data_cov.add_argument("--json", action="store_true")
 
     # agent
     agent_parser = subparsers.add_parser(
@@ -1526,6 +1581,43 @@ def main() -> None:
                     sys.exit(3)
             elif cmd == "status":
                 emit(calendar_status(path=args.path))
+            else:
+                parser.print_help()
+                sys.exit(2)
+
+        elif args.command == "data":
+            from paper_trading.integration import mother as _m
+
+            def _lb(code, days):
+                return bridge.data_db.get_bars(code, limit=days)
+
+            cmd = getattr(args, "data_command", None)
+            if cmd == "compare":
+                syms, note, _, _ = _resolve_syms(bridge, args)
+                res = _m.compare_bars(syms, days=args.days, local_bars=_lb)
+                out = {"symbols": syms, "pool_source": note, "compare": res}
+                if args.log:
+                    bridge.broker.log_operation(
+                        "data:compare", {"symbols": syms, "days": args.days}, True,
+                        {"pool_source": note, "compare": res}, None, None)
+                emit(out)
+            elif cmd == "coverage":
+                syms, note, _, _ = _resolve_syms(bridge, args)
+                cov = _m.coverage(syms, local_bars=_lb)
+                summary = {}
+                for k, v in cov.items():
+                    if isinstance(v, dict) and "source" in v:
+                        summary[k] = {"source": v.get("source"),
+                                      "asof": v.get("asof"),
+                                      "stale": v.get("stale"),
+                                      "available": v.get("available")}
+                    elif isinstance(v, dict):
+                        srcs = sorted({x.get("source") for x in v.values()
+                                       if isinstance(x, dict) and x.get("source")})
+                        if srcs:
+                            summary[k] = {"sources": srcs}
+                emit({"symbols": syms, "pool_source": note,
+                      "summary": summary, "coverage": cov})
             else:
                 parser.print_help()
                 sys.exit(2)

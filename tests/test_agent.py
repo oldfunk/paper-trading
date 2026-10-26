@@ -72,6 +72,59 @@ def test_agent_buy_fills_and_logs(monkeypatch, tmp_path):
     assert ops[0]["action"] == "ai:decide" and ops[0]["ok"] == 1
 
 
+def test_portfolio_context_exposed(tmp_path):
+    """组合级约束进上下文；母库缺 sector 时如实标 unavailable。"""
+    from paper_trading.agent.loop import _basis_known
+
+    b = _bridge(str(tmp_path), _fresh_bars())
+    ctx = b.llm_context(max_ops=2, max_nav=2, closes_n=3, symbols=[])
+    p = ctx["portfolio"]
+    assert p["cash_pct"] is not None and p["exposure_pct"] is not None
+    assert p["positions_count"] == 0
+    assert p["sector_source"] == "unavailable"
+    assert _basis_known("portfolio.exposure_pct")   # portfolio 是合法 basis 前缀
+
+
+def test_require_stop_rejects_buy_without_stop(monkeypatch, tmp_path):
+    """require_stop=true：买入缺 risk_stop/卖出条件 → 拒单。"""
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                         "price": None, "reason": "低估",
+                         "basis": ["recent_closes"]}], "summary": "买"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0,
+                                   require_stop=True))
+    res = t.run(["600519"])
+    assert "止损安排" in res["decisions"][0]["status"]
+    assert b.broker.get_position("600519") is None
+
+
+def test_require_stop_accepts_with_risk_stop(monkeypatch, tmp_path):
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                         "price": None, "reason": "低估", "risk_stop": 1450.0,
+                         "basis": ["recent_closes"]}], "summary": "买"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0,
+                                   require_stop=True))
+    res = t.run(["600519"])
+    assert res["decisions"][0]["status"].startswith("已成交")
+
+
+def test_has_sell_condition_helper():
+    """止损门禁：卖出条件只对已持仓标的有效（非持仓卖出条件会被解析层拒）。"""
+    from paper_trading.agent.loop import _has_sell_condition
+
+    assert _has_sell_condition([{"symbol": "600519", "side": "sell"}], "600519")
+    assert _has_sell_condition([{"symbol": "600519", "side": "sell"}], "000001") is False
+    assert _has_sell_condition([{"symbol": "600519", "side": "buy"}], "600519") is False
+    assert _has_sell_condition(None, "600519") is False
+
+
 def test_agent_basis_and_audit_fields_recorded(monkeypatch, tmp_path):
     """决策可审计：basis/论点/止损/置信度/持有期被记录进流水。"""
     from paper_trading.llm import provider as prov

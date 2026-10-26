@@ -25,6 +25,8 @@ REQUIRED = {
     "watchlist_thesis": {"code"},
     "analysis_outcome": {"stock_code"},
     "market_index": {"index_code", "date"},
+    "instrument": {"symbol", "instrument_id"},
+    "trading_calendar": {"market_id", "trade_date", "is_open"},
 }
 
 
@@ -59,6 +61,10 @@ def _mk_sd(root: Path) -> Path:
     CREATE TABLE market_index (id INTEGER PRIMARY KEY, index_code TEXT,
         index_name TEXT, current_value REAL, change_percent REAL, pe REAL, pb REAL,
         date TEXT);
+    CREATE TABLE instrument (instrument_id TEXT, market_id TEXT, symbol TEXT,
+        exchange TEXT, name TEXT, status TEXT);
+    CREATE TABLE trading_calendar (market_id TEXT, trade_date TEXT, is_open INTEGER,
+        session_json TEXT, source TEXT);
     """)
     c.execute("""INSERT INTO kline_daily VALUES
         ('600519','2026-10-26',1500,1510,1490,1505,1000000,1500000000,1505,1505,0.1,1000000000),
@@ -74,6 +80,9 @@ def _mk_sd(root: Path) -> Path:
     c.execute("""INSERT INTO analysis_outcome (stock_code,analysis_date,signal,confidence,verdict,entry_price)
         VALUES ('600519','2026-10-23','buy',0.8,'通过','1495')""")
     c.execute("INSERT INTO market_index (index_code,index_name,current_value,change_percent,pe,pb,date) VALUES ('000001','上证指数',3300,0.5,13.0,1.3,'2026-10-26')")
+    c.execute("INSERT INTO instrument VALUES ('CN:600519','CN','600519','SSE','贵州茅台','active')")
+    c.execute("INSERT INTO trading_calendar VALUES ('CN','2026-10-27',1,'{}','test')")
+    c.execute("INSERT INTO trading_calendar VALUES ('CN','2026-10-26',1,'{}','test')")
     c.commit()
     c.close()
     return sd
@@ -165,6 +174,39 @@ def test_thesis_and_outcomes(sd):
     assert t["600519"]["source"] == "mother:watchlist_thesis"
     o = mother.outcomes(["600519"], mother=sd)
     assert o["600519"]["source"] == "mother:analysis_outcome"
+
+
+def test_instrument_map_and_trading_calendar(sd):
+    im = mother.instrument_map(["600519", "000001"], mother=sd)
+    assert im["600519"]["source"] == "mother:instrument"
+    assert im["600519"]["data"]["instrument_id"] == "CN:600519"
+    assert im["000001"]["source"] == SRC_UNAVAILABLE
+
+    tc = mother.trading_calendar(mother=sd)
+    assert tc["source"] == "mother:trading_calendar"
+    assert any(r["is_open"] == 1 for r in tc["data"])
+
+
+def test_compare_bars_local_vs_mother(sd):
+    out = mother.compare_bars(
+        ["600519"], days=10, mother=sd,
+        local_bars=lambda c, d: [{"timestamp": f"2026-10-2{i}T00:00:00",
+                                  "open": 10, "high": 11, "low": 9,
+                                  "close": 10 + i, "volume": 1}
+                                 for i in range(1, 4)])
+    r = out["600519"]
+    assert r["local"]["adj"] == "qfq"
+    assert r["mother"]["adj"] in ("hfq", "raw")
+    assert r["cross_diff"] == {"golden": 0, "death": 0}
+    assert "return_corr" in r
+
+
+def test_coverage_summary(sd):
+    cov = mother.coverage(["600519"], local_bars=lambda c, d: [], mother=sd)
+    for k in ("daily_bars", "financial_summary", "instrument", "screening",
+              "regime", "trading_calendar"):
+        assert k in cov
+    assert cov["instrument"]["600519"]["source"] == "mother:instrument"
 
 
 def test_real_mother_contract_if_present():

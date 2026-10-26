@@ -36,8 +36,13 @@ price 为 null 表示按最新收盘价成交；hold 也要写一行（说明为
       编造不存在的字段会被拒绝。缺 basis 时若开启 require_basis 也会被拒绝。
     - thesis：一句话论点；catalyst：催化（可空）；
       confidence：0-100；expected_hold_days：预期持有交易日数。
-    - risk_stop：买入必须给止损价（数字），或同时给一条 price_below 卖出条件；
-      否则按离场纪律视为不合格。
+    - risk_stop：买入必须给止损价（数字）；若该标的已是持仓，也可用一条卖出条件代替
+      （非持仓的卖出条件会被解析层拒绝）。否则按离场纪律视为不合格。
+11. 组合约束（必须遵守，并在 basis 引用 portfolio.*）：
+    - 总仓位（portfolio.exposure_pct）不超过投资方案上限；单票不超过组合 30%；
+    - 行业集中度：portfolio.sector_exposure 显示各行业占比，单一行业过高时要说明分散理由；
+    - 现金占比过低（portfolio.cash_pct < 10）时买入要说明理由。
+    - 若开启 require_stop：买入必须给 risk_stop（持仓标的也可用卖出条件），否则会被拒单。
 8. conditions 是可选的“条件单”：现在不成交，由引擎盘中盯价触发；最多 {max_conditions} 条，
    有效期最长 {condition_max_days} 天。触发条件必须是可验证的数字，且与现价保持合理距离。
    price_below/price_above 是绝对价格；pct_below/pct_above 是当日涨跌幅%（相对昨收），
