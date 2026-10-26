@@ -186,6 +186,22 @@ def calendar_status(path: Optional[str | Path] = None) -> dict:
             "needs_sync": bool(needs_sync), "stale": bool(stale)}
 
 
+def calendar_covers(d: date | datetime | str,
+                    path: Optional[str | Path] = None) -> bool:
+    """交易日历缓存是否覆盖该日期（覆盖不到 = 无法确认交易日）。
+
+    - 缓存不存在：返回 True。首次部署/源不可用时维持“周末+holidays”回退，
+      否则系统会完全停摆（此时 `is_trading_day` 仍会给出保守判断）。
+    - 有缓存但日期晚于 `max_date`（如 2027 源尚未发布）：返回 False，
+      交易入口（tick/引擎/事件/实时报价）应 **fail-closed** 跳过，
+      并提示跑 `calendar sync`；禁止把“未知日”当交易日静默成交。
+    """
+    data = _read_calendar(path)
+    if not data:
+        return True
+    return _as_date(d).isoformat() <= str(data["max_date"])
+
+
 def is_trading_day(d: date | datetime | str, holidays: Optional[Set[str]] = None) -> bool:
     """是否为交易日。
 

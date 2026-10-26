@@ -126,23 +126,31 @@ def test_llm_config_model_only_with_valid_token_returns_it(cloud_panel):
 
 
 def test_llm_config_base_url_change_requires_token(cloud_panel):
-    """改接口地址（会把已存 Key 发出去的地方）必须口令或凭已存 Key 接管。"""
+    """改接口地址（会把已存 Key 发出去的地方）必须口令或凭**已存** Key 接管。"""
     _, call, sec = cloud_panel
     st, r = call({"preset": "glm", "base_url": "https://evil.test/v1",
                   "model": "glm-5.3-flash", "api_key": ""})
     assert st == 403 and "口令" in r["error"]
+    # 随便填一个 Key 不能接管（否则改地址 + 领口令 = 任意写权限）
+    st2, r2 = call({"preset": "glm", "base_url": "https://evil.test/v1",
+                    "model": "glm-5.3-flash", "api_key": "sk-ANY-KEY"})
+    assert st2 == 403 and "口令" in r2["error"]
     import json as _json
 
     saved = _json.loads(Path(sec).read_text(encoding="utf-8"))
     assert saved["provider"]["base_url"] == "https://open.bigmodel.cn/api/paas/v4"
 
 
-def test_llm_config_takeover_accepts_any_key(cloud_panel):
-    """兼容性优先：接管改地址接受任意非空 Key（各家 Key 字段差异大，不做强一致校验）。"""
+def test_llm_config_takeover_requires_saved_key(cloud_panel):
+    """凭 Key 接管必须与当前已存 Key 一致（证明知道密钥），否则拒绝。"""
     _, call, sec = cloud_panel
     st, r = call({"preset": "glm", "base_url": "https://new-provider.test/v1",
-                  "model": "glm-5.3-flash", "api_key": "sk-ANY-FORMAT-KEY"})
+                  "model": "glm-5.3-flash", "api_key": "sk-SAVED-KEY"})
     assert st == 200 and r["ok"] and r["admin_token"]
+    import json as _json
+
+    saved = _json.loads(Path(sec).read_text(encoding="utf-8"))
+    assert saved["provider"]["base_url"] == "https://new-provider.test/v1"
 
 
 def test_read_json_bad_body_raises():
@@ -164,6 +172,47 @@ def test_read_json_bad_body_raises():
     h.rfile = io.BytesIO(b"[]")
     with pytest.raises(ValueError):
         h._read_json()
+
+
+def test_llm_config_key_change_requires_token(cloud_panel):
+    """未鉴权不能覆盖已存 Key：改 Key → 凭新 Key 接管 = 任意写权限。"""
+    import json as _json
+
+    _, call, sec = cloud_panel
+    st, r = call({"preset": "glm",
+                  "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                  "model": "glm-4.5-flash", "api_key": "sk-NEW-KEY"})
+    assert st == 403 and "口令" in r["error"]
+    saved = _json.loads(Path(sec).read_text(encoding="utf-8"))
+    assert saved["provider"]["api_key"] == "sk-SAVED-KEY"
+
+    # 用已存 Key 提交（未变化）只改模型：允许，且不回传口令
+    st2, r2 = call({"preset": "glm",
+                    "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                    "model": "glm-5.3-flash", "api_key": "sk-SAVED-KEY"})
+    assert st2 == 200 and r2["ok"] and "admin_token" not in r2
+
+    # 持口令轮换 Key：允许
+    tok = saved["admin_token"]
+    st3, r3 = call({"admin_token": tok, "preset": "glm",
+                    "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                    "model": "glm-5.3-flash", "api_key": "sk-ROTATED"})
+    assert st3 == 200 and r3["ok"]
+    saved = _json.loads(Path(sec).read_text(encoding="utf-8"))
+    assert saved["provider"]["api_key"] == "sk-ROTATED"
+
+
+def test_same_origin_guard():
+    """跨站 POST（CSRF）拒绝；同源或非浏览器请求放行。"""
+    import paper_trading.dashboard as d
+
+    h = d.Handler.__new__(d.Handler)
+    h.headers = {"Origin": "http://evil.test", "Host": "192.168.1.10:8080"}
+    assert not h._same_origin()
+    h.headers = {"Origin": "http://192.168.1.10:8080", "Host": "192.168.1.10:8080"}
+    assert h._same_origin()
+    h.headers = {}
+    assert h._same_origin()
 
 
 def test_takeover_token(tmp_path):

@@ -22,7 +22,9 @@ if TYPE_CHECKING:
 from paper_trading.agent.prompts import TRADER_SYSTEM, USER_TMPL
 from paper_trading.agent.runtime import due_action
 from paper_trading.utils.market_time import in_open_exec_window
-from paper_trading.utils.trading_calendar import is_trading_day, next_trading_day
+from paper_trading.utils.trading_calendar import (
+    calendar_covers, is_trading_day, next_trading_day,
+)
 
 
 @dataclass
@@ -484,6 +486,11 @@ class AgentTrader:
         except Exception:                      # noqa: BLE001 - 日历不可用按周末跳过
             _holidays = set()
         plan_date = next_trading_day(base_now, _holidays).isoformat()
+        if not calendar_covers(plan_date):
+            return {"ok": False,
+                    "error": (f"交易日历未覆盖 {plan_date}（缓存 max_date），"
+                              "先运行 calendar sync；未覆盖日不做计划"),
+                    "timestamp": now, "symbols": symbols}
         if not force:
             existing = b.broker.get_pending_plan(plan_date)
             if existing:
@@ -625,6 +632,11 @@ class AgentTrader:
         today = t.date().isoformat()
         if not is_trading_day(t):
             return {"ok": True, "skipped": "not-trading-day",
+                    "timestamp": t.isoformat(), "symbols": symbols}
+        if not calendar_covers(t.date()):
+            # 日历缓存覆盖不到（如 2027 源未发布）：宁可停一天，也不能
+            # 把未知节假日当交易日执行计划/触发引擎。
+            return {"ok": True, "skipped": "calendar-horizon",
                     "timestamp": t.isoformat(), "symbols": symbols}
         pending = b.broker.get_pending_plan(today)
         action = due_action(t, pending_plan=bool(pending), force=force)

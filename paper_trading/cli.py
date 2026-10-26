@@ -909,6 +909,18 @@ def design_conditions(bridge, orders, *, pool_from: str = "auto",
     return True, data, ""
 
 
+def _event_lock_path(lock_file: str) -> str:
+    """事件复盘专用锁：与全局下单锁分离。
+
+    复盘最长会调 LLM（默认 120s×重试），若与引擎共用 `run_lock`，
+    事件期间引擎每分钟拿不到锁 → 止损被推迟 1–3 分钟。复盘只写条件单、
+    不下单，因此给它一把独立锁；全局锁只保留给会下单的入口
+    （sync/run/buy/sell/tick 执行/面板 fire）。
+    """
+    p = Path(lock_file)
+    return str(p.with_name(p.stem + ".event.lock"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Paper Trading Framework - CLI"
@@ -1458,7 +1470,9 @@ def main() -> None:
                 from paper_trading.agent.events import run_event_review
 
                 syms, note, _cands, _picks_on = _resolve_syms(bridge, args)
-                with run_lock(args.lock_file):
+                # 独立事件锁：上一轮复盘（含 LLM）还在跑就跳过本轮，
+                # 不占全局下单锁——否则引擎每分钟都被挡在门外。
+                with run_lock(_event_lock_path(args.lock_file), timeout=5.0):
                     res = run_event_review(bridge, syms, dry_run=args.dry_run,
                                            force=args.force)
                 res["pool_source"] = note

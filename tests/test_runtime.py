@@ -171,6 +171,45 @@ def test_calendar_beyond_horizon_warns_not_silent(tmp_path, monkeypatch, caplog)
         tc.clear_calendar_cache()
 
 
+def test_calendar_horizon_blocks_trading_windows(tmp_path, monkeypatch):
+    """日历缓存覆盖不到的日子 fail-closed：引擎/计划/事件一律不动作。"""
+    from paper_trading.agent.runtime import due_action
+    from paper_trading.utils import market_time as mt
+    from paper_trading.utils import trading_calendar as tc
+
+    p = tmp_path / "cal.json"
+    tc.save_calendar(["2026-12-31"], source="test", path=p)
+    monkeypatch.setenv(tc.CALENDAR_ENV, str(p))
+    tc.clear_calendar_cache()
+    try:
+        inside = datetime(2026, 12, 31, 9, 30)        # 缓存内交易日
+        beyond = datetime(2027, 1, 4, 9, 30)          # 超出 max_date
+        assert mt.is_trading_session(inside)
+        assert mt.in_open_exec_window(inside)
+        assert mt.in_plan_window(datetime(2026, 12, 31, 16, 30))
+        assert not mt.is_trading_session(beyond)
+        assert not mt.in_open_exec_window(beyond)
+        assert not mt.in_plan_window(beyond)
+        assert mt.market_phase(beyond) == "日历未覆盖"
+        assert due_action(inside, pending_plan=True) == "execute_plan"
+        assert due_action(beyond, pending_plan=True) is None
+        assert due_action(beyond, pending_plan=False, force=True) is None
+    finally:
+        tc.clear_calendar_cache()
+
+
+def test_calendar_covers_without_cache_is_permissive(tmp_path, monkeypatch):
+    """首次部署/源不可用时无缓存：维持周末回退，不把系统锁死。"""
+    from paper_trading.utils import trading_calendar as tc
+
+    monkeypatch.setenv(tc.CALENDAR_ENV, str(tmp_path / "missing.json"))
+    tc.clear_calendar_cache()
+    try:
+        assert tc.calendar_covers("2027-06-01")
+    finally:
+        tc.clear_calendar_cache()
+
+
 def test_calendar_cache_drives_realtime_session(tmp_path, monkeypatch):
     from paper_trading.data import realtime as rt
     from paper_trading.utils.trading_calendar import (
