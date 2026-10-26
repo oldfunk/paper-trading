@@ -155,19 +155,24 @@ def test_thesis_and_outcomes(sd):
 
 
 def test_real_mother_contract_if_present():
-    """真母库契约校验：需显式开启（``PAPER_TRADING_MOTHER_CONTRACT=1``）。
+    """真母库契约校验：显式指定 ``PAPER_TRADING_MOTHER_DIR``（推荐）。
 
-    本机默认 ``~/stock-dashboard`` 可能是旧快照（缺新表），直接跑会误报；
-    Pi 上验证时设置该环境变量即可。CI 默认 skip。
+    单测默认隔离母库（见 ``conftest._isolated_mother``）；要在 Pi 上验证真库：
+
+    ```bash
+    PAPER_TRADING_MOTHER_DIR=/home/pi/stock-dashboard \\
+      venv/bin/python -m pytest tests/test_mother_contract.py -q
+    ```
     """
     import os
 
-    if os.environ.get("PAPER_TRADING_MOTHER_CONTRACT") != "1":
-        pytest.skip("未开启 PAPER_TRADING_MOTHER_CONTRACT")
-    sd = mother_dir()
-    db = mother_db_path() if sd is not None else None
+    explicit = os.environ.get("PAPER_TRADING_MOTHER_DIR")
+    if not explicit:
+        pytest.skip("未指定 PAPER_TRADING_MOTHER_DIR")
+    sd = mother_dir(explicit)
+    db = mother_db_path(sd) if sd is not None else None
     if db is None:
-        pytest.skip("本机无母库")
+        pytest.skip(f"指定目录不是可用母库：{explicit}")
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
         for table, cols in REQUIRED.items():
