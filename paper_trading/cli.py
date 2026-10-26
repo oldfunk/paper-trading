@@ -1377,6 +1377,9 @@ def main() -> None:
     cron_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
 
     args = parser.parse_args()
+    if getattr(args, "json", False):
+        from paper_trading.utils.logger import use_stderr
+        use_stderr()
 
     def emit(data, ok: bool = True, error: str | None = None):
         from paper_trading.utils.jsonx import safe
