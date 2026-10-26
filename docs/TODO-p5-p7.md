@@ -8,9 +8,9 @@
 
 - [x] P5.1 组合级约束进 prompt：总敞口/现金占比/行业集中度（`stock_snapshot.sector`）/相对基准（`benchmark_daily`）；`basis` 允许引用 `portfolio.*`
 - [x] P5.2 止损门禁：`agent.require_stop=true` 时，买入缺 `risk_stop` 且无对应卖出条件 → 拒单；`risk_stop` 与引擎 `trailing_stop/time_stop` 口径对齐说明
-- [ ] P5.3 AI 决策落库 `agent_decisions`（decision_date/plan_id/actions_json/basis/result）供回放与审计
-- [ ] P5.4 决策回放/对照：CLI `agent replay --date` 用同一上下文重放 AI 决策 vs 规则，输出差异
-- [ ] P5.5 AI 成绩校准：`analysis_outcome` 有 verdict 后接入（覆盖度低则 `unavailable`，不臆测）
+- [x] P5.3 AI 决策落库 `agent_decisions`（decision_date/plan_id/actions_json/basis/result）供回放与审计
+- [x] P5.4 决策回放/对照：CLI `agent replay --date`（AI 决策 vs 规则信号，只读不下单）
+- [ ] P5.5 AI 成绩校准：`analysis_outcome` 有 verdict 后接入（**等母库回填**，覆盖度低则 `unavailable`）
 
 ## P6 — 母库数据补全适配与监控
 
@@ -22,10 +22,10 @@
 
 ## P7 — 可观测/审计/跨仓协作
 
-- [ ] P7.1 三表契约文件（拥有/只读/永不碰）供母项目 vendor 门禁
-- [ ] P7.2 面板“数据来源”面板（source/asof/stale）
-- [ ] P7.3 母库 Issue 提交（接口级）：qfq 缺失、`trading_calendar` 空、`market_state_daily` 未落库
-- [ ] P7.4 契约测试纳入母项目 CI（接缝测试位）
+- [x] P7.1 三表契约文件（拥有/只读/永不碰）供母项目 vendor 门禁 → `docs/CONTRACT.md`
+- [x] P7.2 面板“数据来源”面板（`/api/data-provenance`，source/asof/stale 可视化）
+- [x] P7.3 母库 Issue 提交（接口级）：qfq 缺失、`trading_calendar` 空、`market_state_daily` 未落库（#4–#7）
+- [ ] P7.4 契约测试纳入母项目 CI（接缝测试位）—— **母项目侧**，子项目不越界
 
 ## “切到母库策略”验证路径
 

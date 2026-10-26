@@ -161,6 +161,14 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 </section>
 
 <section>
+  <div class="section-header"><h2 class="section-title">数据来源</h2><span class="section-count" id="c-prov"></span></div>
+  <div class="ai-panel">
+    <div class="s" id="prov-sum">数据来源：加载中…</div>
+    <div class="scroll"><table id="prov"></table></div>
+  </div>
+</section>
+
+<section>
   <div class="section-header"><h2 class="section-title">规则引擎</h2><span class="section-count" id="c-engine"></span></div>
   <div class="ai-panel">
     <div class="s" id="engine-sum">规则引擎：加载中…</div>
@@ -379,7 +387,7 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   return "完成";}
 async function refresh(){
  try{
-  const [s,ops,pos,ord,nav,nm]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names"].map(get));
+  const [s,ops,pos,ord,nav,nm,prov]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance"].map(get));
   NAMES=(nm&&nm.data)||{};
   try{const qq=await get("/api/quotes");QUOTES=(qq&&qq.data)||{};}catch(e){QUOTES={};}
   const st=s.data;
@@ -420,6 +428,19 @@ async function refresh(){
     const stt=r.status=="filled"?`<span class="ok">已成交</span>`:`<span class="bad">已拒绝</span>`;
     return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td><td><b>${esc(sym(r.symbol))}</b></td><td class="num">${r.volume}</td><td class="num">${fmt(r.filled_price||r.limit_price)}</td><td>${stt}</td><td class="num">${fmt(fee)}</td></tr>`}),
     10,"暂无订单");
+  const provIf=(prov&&prov.data&&prov.data.interfaces)||{};
+  document.getElementById("c-prov").textContent=Object.keys(provIf).length+" 个接口";
+  document.getElementById("prov-sum").textContent=
+    `行情数据源 ${(prov&&prov.data&&prov.data.daily_source)||"auto"}；缺失接口 ${((prov&&prov.data&&prov.data.unavailable)||[]).join("、")||"无"}`;
+  rowsC(document.getElementById("prov"),[["接口"],["来源"],["截至"],["状态"]],
+    Object.entries(provIf).map(([k,v])=>{
+      const src=Array.isArray(v.sources)?v.sources.join("、"):(v.source||"-");
+      const isMother=String(src).startsWith("mother");
+      const isUn=src==="unavailable";
+      const st=(v.stale?`<span class="bad">过期</span> `:"")+
+        ((v.available===false||isUn)?`<span class="bad">缺失</span>`:`<span class="ok">可用</span>`);
+      return `<tr><td><b>${esc(k)}</b></td><td><span class="tag ${isMother?"":(isUn?"sell":"buy")}">${esc(src)}</span></td><td class="mut">${esc(v.asof||"-")}</td><td>${st}</td></tr>`;
+    }),12,"暂无来源数据");
  }catch(e){document.getElementById("clock").textContent="刷新失败: "+e}
 }
 refresh();setInterval(refresh,15000);
@@ -932,6 +953,43 @@ def _walkforward_payload(bridge, grid: str, symbols, days: int, cash: float,
     return (not out.get("error")), out, str(out.get("error") or "")
 
 
+_PROV_CACHE: dict = {"ts": 0.0, "data": None}
+
+
+def _data_provenance(bridge, symbols: list) -> dict:
+    """数据来源汇总（接口级 source/asof/stale/available），30s 缓存。"""
+    import time
+
+    now = time.time()
+    if _PROV_CACHE["data"] is not None and now - _PROV_CACHE["ts"] < 30:
+        return _PROV_CACHE["data"]
+    from paper_trading.integration import mother as _m
+
+    cov = _m.coverage(symbols)
+    interfaces: dict = {}
+    for k, v in cov.items():
+        if isinstance(v, dict) and "source" in v:
+            interfaces[k] = {"source": v.get("source"), "asof": v.get("asof"),
+                             "stale": v.get("stale"), "available": v.get("available")}
+        elif isinstance(v, dict):
+            items = [x for x in v.values() if isinstance(x, dict)]
+            srcs = sorted({x.get("source") for x in items if x.get("source")})
+            if srcs:
+                interfaces[k] = {
+                    "sources": srcs,
+                    "stale": any(x.get("stale") for x in items),
+                    "available": any(x.get("available") for x in items)}
+    data = {
+        "daily_source": getattr(bridge, "daily_source", "auto"),
+        "interfaces": interfaces,
+        "unavailable": [k for k, v in interfaces.items()
+                        if v.get("available") is False
+                        or v.get("sources") == ["unavailable"]],
+    }
+    _PROV_CACHE.update(ts=now, data=data)
+    return data
+
+
 class Handler(BaseHTTPRequestHandler):
     data_db = "data.db"
     account_db = "paper_account.db"
@@ -1013,6 +1071,13 @@ class Handler(BaseHTTPRequestHandler):
 
                 b = TradingBridge(data_db=self.data_db, account_db=self.account_db)
                 self._json({"ok": True, "data": b.get_status()})
+            elif u.path == "/api/data-provenance":
+                from paper_trading.cli import TradingBridge
+
+                b = TradingBridge(data_db=self.data_db, account_db=self.account_db)
+                syms = list(b.stock_pool) + [p.symbol for p in
+                                             b.broker.get_all_positions()]
+                self._json({"ok": True, "data": _data_provenance(b, syms)})
             elif u.path == "/api/positions":
                 from paper_trading.cli import TradingBridge
 

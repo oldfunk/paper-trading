@@ -1062,6 +1062,44 @@ def _event_lock_path(lock_file: str) -> str:
     return str(p.with_name(p.stem + ".event.lock"))
 
 
+def _replay_decision(bridge, decision_date: str, plan_id=None) -> dict:
+    """回放某日 AI 决策并与规则信号对照（只读，不重新下单）。"""
+    d = bridge.broker.get_agent_decision(decision_date, plan_id)
+    if not d:
+        return {"ok": False, "error": f"未找到 {decision_date} 的 AI 决策"}
+    actions = d.get("actions") or []
+    syms = sorted({str(a.get("symbol")) for a in actions if a.get("symbol")})
+    all_bars: dict = {}
+    for s in syms:
+        bars = bridge.bar_source.get_bars(s, limit=60)
+        if bars:
+            all_bars[s] = bars
+    sigs = bridge.strategy.generate_signals(all_bars) if all_bars else {}
+    rule = [{"symbol": s.symbol, "direction": s.direction.value,
+             "volume": s.volume, "price": s.price, "reason": s.reason}
+            for s in sigs.values()]
+    rule_by = {str(x["symbol"]): x for x in rule}
+    comparison = []
+    for a in actions:
+        sym = str(a.get("symbol", ""))
+        ai_act = str(a.get("action", "hold")).lower()
+        r = rule_by.get(sym)
+        rule_dir = ("buy" if r and r["direction"] == 1 else
+                    "sell" if r and r["direction"] == -1 else "hold")
+        comparison.append({"symbol": sym, "ai_action": ai_act,
+                           "ai_status": a.get("status", ""),
+                           "rule_signal": rule_dir, "agree": ai_act == rule_dir,
+                           "ai_basis": a.get("basis") or []})
+    n_agree = sum(1 for c in comparison if c["agree"])
+    return {"ok": True, "date": decision_date, "plan_id": d.get("plan_id"),
+            "mode": d.get("mode"), "from_plan": bool(d.get("from_plan")),
+            "pool_source": d.get("pool_source"), "summary": d.get("summary"),
+            "ai": {"actions": actions, "conditions": d.get("conditions") or []},
+            "rule_signals": rule, "comparison": comparison,
+            "agreement": f"{n_agree}/{len(comparison)}",
+            "decision_id": d.get("id"), "created_at": d.get("created_at")}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Paper Trading Framework - CLI"
@@ -1223,6 +1261,13 @@ def main() -> None:
                            help="兼容旧参数；旧队列已停用，默认就不受队列限制")
     agent_run.add_argument("--plan-only", action="store_true",
                            help="休盘做计划存着，开盘执行（不碰账本）")
+    agent_replay = agent_sub.add_parser(
+        "replay", help="回放某日 AI 决策，并与规则信号对照（不重新下单）")
+    agent_replay.add_argument("--date", required=True,
+                              help="决策日 YYYY-MM-DD（agent_decisions.decision_date）")
+    agent_replay.add_argument("--plan-id", type=int, default=None,
+                              help="指定计划 id；缺省取当天最新一条")
+    agent_replay.add_argument("--json", action="store_true")
     agent_tick = agent_sub.add_parser(
         "tick", help="运行时 tick：开盘执行计划 / 收盘后做计划（不读旧队列）")
     agent_tick.add_argument("--symbols", nargs="*", default=None)
@@ -1667,6 +1712,12 @@ def main() -> None:
                         trader.cfg.picks_enabled = False
                     res = trader.tick(syms, candidates=cands, pool_source=note,
                                       force=args.force)
+                emit(res, ok=res.get("ok", False), error=res.get("error"))
+                if not res.get("ok"):
+                    sys.exit(3)
+                return
+            if args.agent_command == "replay":
+                res = _replay_decision(bridge, args.date, args.plan_id)
                 emit(res, ok=res.get("ok", False), error=res.get("error"))
                 if not res.get("ok"):
                     sys.exit(3)

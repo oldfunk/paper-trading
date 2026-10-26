@@ -897,6 +897,7 @@ class AgentTrader:
             all_bars=all_bars, latest_prices=latest, cash=cash,
             positions=positions, nav_total=nav.total_value,
             dry_run=dry_run, mode=mode, now=now_iso, from_plan=False,
+            plan_id=(pending['id'] if pending else None),
             pool_source=pool_source, slot=_slot_s,
             picks=[{"symbol": p["symbol"], "name": p.get("name", "")}
                    for p in picks], conditions=conditions,
@@ -958,7 +959,8 @@ class AgentTrader:
             positions=positions, nav_total=nav.total_value,
             dry_run=False, mode="live",
             now=now_iso or datetime.now().isoformat(),
-            from_plan=True, pool_source=str(plan.get("pool_source", "config")),
+            from_plan=True, plan_id=int(pending["id"]),
+            pool_source=str(plan.get("pool_source", "config")),
             slot=slot, conditions=conditions,
             conditions_rejected=conditions_rejected)
         b.broker.mark_plan_done(int(pending["id"]))
@@ -973,7 +975,8 @@ class AgentTrader:
                          slot: Optional[str] = None,
                          picks: Optional[list] = None,
                          conditions: Optional[list] = None,
-                         conditions_rejected: Optional[list] = None) -> dict:
+                         conditions_rejected: Optional[list] = None,
+                         plan_id: Optional[int] = None) -> dict:
         """逐条钳制执行（dry_run 不碰账本；from_plan 仅标记来源）。"""
         from paper_trading.models import Order, OrderType, Signal, SignalType
         from paper_trading.utils import get_logger
@@ -1098,6 +1101,15 @@ class AgentTrader:
                           **({"slot": slot} if slot else {})}, True,
             {"decisions": decided, "picks": picks or [], "conditions": cond_res},
             nav2.cash, nav2.total_value)
+        # 决策落库（供回放/审计）；失败不阻断决策链
+        try:
+            b.broker.save_agent_decision(
+                decision_date=now[:10], plan_id=plan_id, mode=mode,
+                from_plan=from_plan, pool_source=pool_source, summary=summary,
+                actions=decided, conditions=cond_res,
+                result={"decisions": decided, "conditions": cond_res})
+        except Exception:                       # noqa: BLE001
+            logger.warning("save agent_decision failed")
         logger.info(f"AI decide done: {len(decided)} actions, mode={mode}, from_plan={from_plan}")
         return {"ok": True, "timestamp": now, "symbols": symbols, "mode": mode,
                 "from_plan": from_plan, "pool_source": pool_source,

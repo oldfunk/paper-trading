@@ -125,6 +125,57 @@ def test_has_sell_condition_helper():
     assert _has_sell_condition(None, "600519") is False
 
 
+def test_agent_decision_persisted_for_replay(monkeypatch, tmp_path):
+    """决策落库 agent_decisions，供回放/审计。"""
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                         "price": None, "reason": "低估",
+                         "basis": ["recent_closes"], "thesis": "低估"}], "summary": "买"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    t.run(["600519"])
+    day = datetime.now().date().isoformat()
+    d = b.broker.get_agent_decision(day)
+    assert d and d["actions"][0]["symbol"] == "600519"
+    assert d["actions"][0]["basis"] == ["recent_closes"]
+    assert d["mode"] == "live" and not d["from_plan"]
+
+
+def test_replay_decision_compares_rules(monkeypatch, tmp_path):
+    """回放：AI 决策 vs 规则信号对照，不重新下单。"""
+    import paper_trading.cli as hb
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                         "price": None, "reason": "低估",
+                         "basis": ["recent_closes"]}], "summary": "买"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    t.run(["600519"])
+    day = datetime.now().date().isoformat()
+    res = hb._replay_decision(b, day)
+    assert res["ok"] and res["date"] == day
+    assert len(res["comparison"]) == 1
+    assert res["comparison"][0]["symbol"] == "600519"
+    assert res["agreement"].endswith("/1")
+
+
+def test_save_agent_decision_roundtrip(tmp_path):
+    b = _bridge(str(tmp_path), _fresh_bars())
+    did = b.broker.save_agent_decision(
+        decision_date="2026-10-27", plan_id=3, mode="live", from_plan=True,
+        pool_source="screening", summary="测试",
+        actions=[{"action": "buy", "symbol": "600519", "basis": ["recent_closes"]}],
+        conditions={"created": []}, result={"decisions": []})
+    assert did > 0
+    d = b.broker.get_agent_decision("2026-10-27", plan_id=3)
+    assert d["plan_id"] == 3 and d["actions"][0]["basis"] == ["recent_closes"]
+    assert b.broker.get_agent_decision("2026-01-01") is None
+
+
 def test_agent_basis_and_audit_fields_recorded(monkeypatch, tmp_path):
     """决策可审计：basis/论点/止损/置信度/持有期被记录进流水。"""
     from paper_trading.llm import provider as prov

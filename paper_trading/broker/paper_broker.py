@@ -153,6 +153,21 @@ class PaperBroker:
                     executed_at TEXT
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS agent_decisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    decision_date TEXT NOT NULL,
+                    plan_id INTEGER,
+                    mode TEXT NOT NULL DEFAULT 'live',
+                    from_plan INTEGER NOT NULL DEFAULT 0,
+                    pool_source TEXT NOT NULL DEFAULT 'config',
+                    summary TEXT NOT NULL DEFAULT '',
+                    actions_json TEXT NOT NULL DEFAULT '[]',
+                    conditions_json TEXT NOT NULL DEFAULT '[]',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                )
+            """)
             self._migrate_positions(conn)
 
     def _migrate_positions(self, conn) -> None:
@@ -702,6 +717,55 @@ class PaperBroker:
             d["plan"] = _json.loads(d["plan_json"])
         except Exception:
             d["plan"] = {}
+        return d
+
+    def save_agent_decision(self, *, decision_date: str, plan_id=None,
+                            mode: str = "live", from_plan: bool = False,
+                            pool_source: str = "config", summary: str = "",
+                            actions=None, conditions=None, result=None) -> int:
+        """落库一条 AI 决策（供回放/审计）。返回 id。"""
+        import json as _json
+
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO agent_decisions
+                   (decision_date, plan_id, mode, from_plan, pool_source, summary,
+                    actions_json, conditions_json, result_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (decision_date, plan_id, mode, 1 if from_plan else 0,
+                 pool_source, summary,
+                 _json.dumps(actions or [], ensure_ascii=False, default=str),
+                 _json.dumps(conditions or [], ensure_ascii=False, default=str),
+                 _json.dumps(result or {}, ensure_ascii=False, default=str),
+                 datetime.now().isoformat()),
+            )
+            return int(cur.lastrowid)
+
+    def get_agent_decision(self, decision_date: str,
+                           plan_id=None) -> Optional[dict]:
+        """取某日 AI 决策（供回放）；plan_id 为空取当天最新一条。"""
+        import json as _json
+
+        with self._connect() as conn:
+            if plan_id is not None:
+                row = conn.execute(
+                    "SELECT * FROM agent_decisions WHERE decision_date = ? "
+                    "AND plan_id = ? ORDER BY id DESC LIMIT 1",
+                    (decision_date, plan_id)).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM agent_decisions WHERE decision_date = ? "
+                    "ORDER BY id DESC LIMIT 1", (decision_date,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        for k in ("actions_json", "conditions_json", "result_json"):
+            try:
+                d[k.replace("_json", "")] = _json.loads(d.get(k) or ("[]"
+                                                                    if k != "result_json"
+                                                                    else "{}"))
+            except Exception:
+                d[k.replace("_json", "")] = [] if k != "result_json" else {}
         return d
 
     def get_executable_plan(self, day: str,

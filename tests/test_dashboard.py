@@ -202,6 +202,34 @@ def test_llm_config_key_change_requires_token(cloud_panel):
     assert saved["provider"]["api_key"] == "sk-ROTATED"
 
 
+def test_provenance_panel_and_endpoint():
+    import inspect
+
+    import paper_trading.dashboard as d
+
+    assert "/api/data-provenance" in d.PAGE
+    assert 'id="prov"' in d.PAGE
+    assert "/api/data-provenance" in inspect.getsource(d.Handler.do_GET)
+
+
+def test_data_provenance_summary(tmp_path, monkeypatch):
+    import paper_trading.dashboard as d
+
+    class _Bridge:
+        daily_source = "auto"
+        stock_pool = []
+
+    monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(tmp_path / "no-sd"))
+    d._PROV_CACHE.update(ts=0.0, data=None)
+    try:
+        out = d._data_provenance(_Bridge(), [])
+        assert out["daily_source"] == "auto"
+        assert "screening" in out["interfaces"]
+        assert isinstance(out["unavailable"], list)
+    finally:
+        d._PROV_CACHE.update(ts=0.0, data=None)
+
+
 def test_long_lists_are_collapsible_latest_first():
     """长列表（资产走势/订单/条件单/操作流水）默认折叠，最新在上。"""
     import paper_trading.dashboard as d
