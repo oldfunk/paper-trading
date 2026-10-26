@@ -202,6 +202,22 @@ def test_llm_config_key_change_requires_token(cloud_panel):
     assert saved["provider"]["api_key"] == "sk-ROTATED"
 
 
+def test_long_lists_are_collapsible_latest_first():
+    """长列表（资产走势/订单/条件单/操作流水）默认折叠，最新在上。"""
+    import paper_trading.dashboard as d
+
+    src = d.PAGE
+    assert "function rowsC(" in src
+    for tid in ("nav", "ops", "orders"):
+        assert f'rowsC(document.getElementById("{tid}")' in src
+    assert 'rowsC(box,[["状态"]' in src
+    # 资产走势不再 reverse：API 已按 id DESC，最新在上
+    assert "(nav.data||[]).reverse()" not in src
+    # 折叠状态记忆 + 展开按钮 + 条件单按创建时间倒序
+    assert "COLLAPSE" in src and "展开剩余" in src
+    assert "created_at" in src and "localeCompare" in src
+
+
 def test_same_origin_guard():
     """跨站 POST（CSRF）拒绝；同源或非浏览器请求放行。"""
     import paper_trading.dashboard as d

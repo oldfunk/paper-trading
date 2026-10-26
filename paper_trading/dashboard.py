@@ -85,6 +85,12 @@ tbody tr:hover{background:var(--bg-hover)}
 .tag.buy{background:var(--color-up-bg);color:var(--color-up)} .tag.sell{background:var(--color-down-bg);color:var(--color-down)}
 .tag.live{background:var(--accent-soft);color:var(--accent)}
 .scroll{overflow-x:auto}
+/* 长列表折叠：默认只显示最新 N 条，其余收起（最新在上） */
+tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
+.more-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:9px 12px;margin:0;border-width:0;border-top:1px dashed var(--divider);background:transparent;color:var(--text-tertiary);font-size:12px;font-family:inherit;letter-spacing:.02em;cursor:pointer}
+.more-btn:hover{color:var(--accent);background:var(--bg-hover)}
+.more-btn::before{content:"";width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid currentColor;transition:transform .15s}
+.more-btn[data-open="1"]::before{transform:rotate(180deg)}
 .mut{color:var(--text-tertiary)}
 .ai-panel{background:var(--bg-secondary);border:1px solid var(--divider);border-radius:var(--radius);padding:14px 16px;margin-bottom:14px;box-shadow:var(--shadow)}
 .ai-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
@@ -267,6 +273,24 @@ const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&g
 async function get(u){const r=await fetch(u);return r.json()}
 function rows(t,head,body){t.innerHTML="<thead><tr>"+head.map(h=>`<th${h[1]?' class="num"':''}>${h[0]}</th>`).join("")+"</tr></thead><tbody>"+body+"</tbody>"}
 
+/* 长列表折叠渲染：默认只显示最新 N 条（bodyArr 须已按最新在上排序），
+   其余收进 tfoot 的“展开剩余 N 条”。展开状态按表 id 记忆，刷新不丢。 */
+const COLLAPSE={};
+function rowsC(t,head,bodyArr,showN,emptyLabel){
+  t._head=head;t._body=bodyArr;t._showN=showN;t._empty=emptyLabel;
+  const total=bodyArr.length, open=!!COLLAPSE[t.id];
+  const vis=open?bodyArr:bodyArr.slice(0,showN);
+  const hid=open?[]:bodyArr.slice(showN);
+  t.innerHTML="<thead><tr>"+head.map(h=>`<th${h[1]?' class="num"':''}>${h[0]}</th>`).join("")+"</tr></thead>"+
+    "<tbody>"+(total?vis.join(""):
+      `<tr><td colspan="${head.length}" class="mut">${emptyLabel||"暂无记录"}</td></tr>`)+"</tbody>"+
+    (hid.length?`<tfoot><tr><td colspan="${head.length}" class="more-cell">`+
+      `<button class="more-btn" type="button" data-open="${open?"1":""}">${open?"收起":`展开剩余 ${hid.length} 条`}</button></td></tr></tfoot>`:"");
+  const btn=t.querySelector(".more-btn");
+  if(btn)btn.onclick=()=>{COLLAPSE[t.id]=!COLLAPSE[t.id];rowsC(t,t._head,t._body,t._showN,t._empty);};
+  if(t._after)t._after();
+}
+
 /* ---- 中文映射（名称表来自 /api/names，均为行情源真实名称） ----
    展示规范：股票一律写成 名称(代码)，如 贵州茅台(600519)；
    名称缺失时只写代码，不写“未知”等占位词。 */
@@ -373,26 +397,29 @@ async function refresh(){
   document.getElementById("c-ops").textContent=(ops.data||[]).length+" 条";
   document.getElementById("c-pos").textContent=(st.positions||[]).length+" 只股票";
   document.getElementById("c-orders").textContent=(ord.data||[]).length+" 笔";
-  rows(document.getElementById("nav"),[["时间"],["总资产",1],["可用资金",1],["浮动盈亏",1]],
-    (nav.data||[]).reverse().map(r=>{const d=new Date(r.timestamp);const pn=Number(r.pnl);
-    return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td class="num">${fmt(r.total_value)}</td><td class="num">${fmt(r.cash)}</td><td class="num ${cls(pn)}">${pn>=0?"+":""}${fmt(pn)}</td></tr>`}).join(""));
-  rows(document.getElementById("ops"),[["时间"],["操作"],["详情"],["结果"],["操作后资产",1]],
+  rowsC(document.getElementById("nav"),[["时间"],["总资产",1],["可用资金",1],["浮动盈亏",1]],
+    (nav.data||[]).map(r=>{const d=new Date(r.timestamp);const pn=Number(r.pnl);
+    return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td class="num">${fmt(r.total_value)}</td><td class="num">${fmt(r.cash)}</td><td class="num ${cls(pn)}">${pn>=0?"+":""}${fmt(pn)}</td></tr>`}),
+    10,"暂无净值记录");
+  rowsC(document.getElementById("ops"),[["时间"],["操作"],["详情"],["结果"],["操作后资产",1]],
     (ops.data||[]).map(r=>{const ok=!!r.ok;const d=new Date(r.timestamp);
     const label=ACTION_CN[r.action]||r.action;
     return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><b>${esc(label)}</b></td>`+
       `<td class="mut">${esc(paramCN(r.action,r.params))}</td>`+
       `<td class="${ok?"ok":"bad"}">${esc(resultCN(r.action,ok,r.result))}</td>`+
-      `<td class="num">${r.total_value_after!=null?fmt(r.total_value_after):"-"}</td></tr>`}).join("")||`<tr><td colspan="5" class="mut">暂无操作记录 —— AI 执行每日结算、买入、卖出后会出现在这里</td></tr>`);
+      `<td class="num">${r.total_value_after!=null?fmt(r.total_value_after):"-"}</td></tr>`}),
+    10,"暂无操作记录 —— AI 执行每日结算、买入、卖出后会出现在这里");
   rows(document.getElementById("pos"),[["股票"],["总股数",1],["可卖股数",1],["买入成本",1],["当前价",1],["持股市值(收盘)",1],["浮动盈亏",1]],
     (st.positions||[]).map(p=>{const pn=(p.current_price-p.avg_cost)*p.total_volume;
     const live=(QUOTES||{})[p.symbol];
     const pxHtml=live&&live.price?`${fmt(live.price)} <span class="tag live">实时</span>`:`${fmt(p.current_price)}`;
     return `<tr><td><b>${esc(sym(p.symbol))}</b></td><td class="num">${p.total_volume}</td><td class="num">${p.available_volume}</td><td class="num">${fmt(p.avg_cost)}</td><td class="num">${pxHtml}</td><td class="num">${fmt(p.market_value,0)}</td><td class="num ${cls(pn)}">${pn>=0?"+":""}${fmt(pn)}</td></tr>`}).join("")||`<tr><td colspan="7" class="mut">空仓</td></tr>`);
-  rows(document.getElementById("orders"),[["时间"],["方向"],["股票"],["股数",1],["价格",1],["状态"],["手续费",1]],
+  rowsC(document.getElementById("orders"),[["时间"],["方向"],["股票"],["股数",1],["价格",1],["状态"],["手续费",1]],
     (ord.data||[]).map(r=>{const d=new Date(r.created_at);const buy=r.direction==1;
     const fee=(Number(r.commission)+Number(r.stamp_duty)+Number(r.transfer_fee));
     const stt=r.status=="filled"?`<span class="ok">已成交</span>`:`<span class="bad">已拒绝</span>`;
-    return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td><td><b>${esc(sym(r.symbol))}</b></td><td class="num">${r.volume}</td><td class="num">${fmt(r.filled_price||r.limit_price)}</td><td>${stt}</td><td class="num">${fmt(fee)}</td></tr>`}).join("")||`<tr><td colspan="7" class="mut">暂无订单</td></tr>`);
+    return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td><td><b>${esc(sym(r.symbol))}</b></td><td class="num">${r.volume}</td><td class="num">${fmt(r.filled_price||r.limit_price)}</td><td>${stt}</td><td class="num">${fmt(fee)}</td></tr>`}),
+    10,"暂无订单");
  }catch(e){document.getElementById("clock").textContent="刷新失败: "+e}
 }
 refresh();setInterval(refresh,15000);
@@ -640,8 +667,10 @@ engineStatus();
 function condRow(){
   const box=document.getElementById("conds");
   const d=(box.dataset.d)||"";
-  rows(box,[["状态"],["股票"],["方向"],["触发条件",1],["金额/股数",1],["有效期"],["理由"],["操作"]],
-    d?JSON.parse(d).map(o=>{
+  const os=d?JSON.parse(d):[];
+  // 最新在上：按创建时间倒序（缺失时保持原顺序）
+  os.sort((a,b)=>String(b.created_at||"").localeCompare(String(a.created_at||"")));
+  const body=os.map(o=>{
       const st=COND_ST[o.status]||[o.status,"mut"];
       const amt=o.side==="buy"?(Number(o.value)?fmt(o.value,0)+" 元":`${o.volume} 股`):`${o.volume?o.volume+" 股":"全部持仓"}`;
       const cond=`${esc(COND_CN[o.cond_type]||o.cond_type)} ${fmt(o.cond_value, o.cond_type.startsWith("pct")?2:2)}`;
@@ -650,9 +679,8 @@ function condRow(){
         `<td><b>${esc(sym(o.symbol))}</b></td><td><span class="tag ${o.side}">${o.side==="buy"?"买入":"卖出"}</span></td>`+
         `<td class="num">${cond}</td><td class="num">${amt}</td>`+
         `<td class="mut">${esc(String(o.expiry||"").replace("T"," ").slice(0,16))}</td>`+
-        `<td class="mut">${esc(o.note||"")}</td><td>${act}</td></tr>`;}).join("")
-    :`<tr><td colspan="8" class="mut">暂无条件单 —— 条件单现在不成交，盘中触发才下单</td></tr>`);
-  box.querySelectorAll(".ccancel").forEach(b=>b.onclick=async()=>{
+        `<td class="mut">${esc(o.note||"")}</td><td>${act}</td></tr>`;});
+  box._after=()=>{box.querySelectorAll(".ccancel").forEach(b=>b.onclick=async()=>{
     b.disabled=true;
     const st=document.getElementById("condstat");
     const r=await guard((extra)=>post("/api/cond/cancel",
@@ -660,7 +688,9 @@ function condRow(){
     if(!r.ok){st.textContent="撤销失败："+(r.error||"");b.disabled=false;return}
     st.textContent=`已撤销条件单 #${b.dataset.id}`;
     await condStatus();refresh();
-  });
+  });};
+  rowsC(box,[["状态"],["股票"],["方向"],["触发条件",1],["金额/股数",1],["有效期"],["理由"],["操作"]],
+    body,8,"暂无条件单 —— 条件单现在不成交，盘中触发才下单");
 }
 async function condStatus(){
   try{
