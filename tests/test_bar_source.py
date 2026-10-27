@@ -16,8 +16,9 @@ def _mk_local(tmp):
     b = hb.TradingBridge(data_db=str(tmp / "d.db"), account_db=str(tmp / "a.db"),
                          config_path="/nonexistent.yaml",
                          secrets_path=str(tmp / "s.json"))
+    # 真实量级：与合成母库（600519≈1495/1505）同日同价（差 <0.01%）
     bars = [Bar(symbol="600519", timestamp=datetime(2026, 10, 20) + timedelta(days=i),
-                open=10, high=11, low=9, close=10 + i, volume=100)
+                open=1490, high=1500, low=1485, close=1490 + i, volume=100)
             for i in range(5)]
     b.data_db.upsert_bars(bars)
     return b
@@ -27,7 +28,7 @@ def test_local_source_uses_local(tmp_path):
     b = _mk_local(tmp_path)
     src = BarSource(b.data_db, source="local")
     bars = src.get_bars("600519", limit=3)
-    assert len(bars) == 3 and bars[0].close == 12.0   # 取最近 3 根（升序）
+    assert len(bars) == 3 and bars[0].close == 1492.0   # 取最近 3 根（升序）
     assert src.source_of("600519") == "local:akshare"
 
 

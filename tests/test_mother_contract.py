@@ -98,8 +98,9 @@ def sd(tmp_path):
 
 
 def _local_bar(code, days):
-    return [{"timestamp": f"2026-10-2{i}T00:00:00", "open": 10, "high": 11,
-             "low": 9, "close": 10 + i, "volume": 1000}
+    # 真实量级：同日 qfq 双源差 <0.01%（尺度闸按此假设对照）
+    return [{"timestamp": f"2026-10-2{i}T00:00:00", "open": 1490, "high": 1500,
+             "low": 1485, "close": 1490 + i, "volume": 1000}
             for i in range(1, 4)]
 
 
@@ -131,6 +132,47 @@ def test_daily_bars_qfq_null_falls_back_hfq(sd):
     assert out["300750"]["source"] == "mother:kline_daily"
     assert out["300750"]["bars"][0]["close"] == 1200   # close_adj 后复权
     assert out["300750"]["adj"] == "hfq"
+
+
+def test_scale_guard_rejects_polluted_mother(sd):
+    """尺度闸：母库同日价与本地差 7.9 倍（事故场景）→ 拒用母库回退本地。"""
+    def polluted_local(code, days):
+        # 合成母库 600519 2026-10-23 close=1495；本地给 189（差 ~8 倍）
+        return [{"timestamp": "2026-10-23T00:00:00", "open": 185, "high": 192,
+                 "low": 180, "close": 189.0, "volume": 1000}]
+
+    out = mother.daily_bars(["600519"], days=5, local_bars=polluted_local,
+                            mother=sd)
+    blk = out["600519"]
+    assert blk["source"] == SRC_LOCAL_AKSHARE       # 母库被拒，回退本地
+    assert blk["adj"] == "qfq"
+    assert blk["scale_check"] and blk["scale_check"]["ok"] is False
+    assert blk["bars"][0]["close"] == 189.0
+
+
+def test_scale_guard_allows_small_diff(sd):
+    """同日差 <10%（真实双源抖动）→ 母库正常放行。"""
+    def close_local(code, days):
+        return [{"timestamp": "2026-10-23T00:00:00", "open": 1490, "high": 1500,
+                 "low": 1485, "close": 1493.0, "volume": 1000}]
+
+    out = mother.daily_bars(["600519"], days=5, local_bars=close_local,
+                            mother=sd)
+    blk = out["600519"]
+    assert blk["source"] == "mother:kline_daily"
+    assert blk["scale_check"]["ok"] is True
+
+
+def test_scale_guard_no_overlap_passes(sd):
+    """两边无共有日期（本地滞后/母库独有）→ 无法对照则放行母库。"""
+    def far_local(code, days):
+        return [{"timestamp": "2026-09-01T00:00:00", "close": 100.0,
+                 "open": 100, "high": 100, "low": 100, "volume": 1}]
+
+    out = mother.daily_bars(["600519"], days=5, local_bars=far_local, mother=sd)
+    blk = out["600519"]
+    assert blk["source"] == "mother:kline_daily"
+    assert blk["scale_check"] is None               # 无对照依据，不误杀
 
 
 def test_daily_bars_unavailable_without_mother(tmp_path):

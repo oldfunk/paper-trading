@@ -73,7 +73,8 @@ def parse_conditions_verbose(raw: Optional[str], pool: list[str],
                              max_conds: int = 5, max_value: float = 20000.0,
                              min_ticket: float = 1000.0,
                              max_days: int = 30,
-                             holdings: Optional[list] = None
+                             holdings: Optional[list] = None,
+                             prices: Optional[dict] = None
                              ) -> tuple[list[dict], list[dict]]:
     """解析并校验 LLM 条件单，返回 (合法条目, 被拒条目+原因)。
 
@@ -82,6 +83,10 @@ def parse_conditions_verbose(raw: Optional[str], pool: list[str],
 
     `holdings` 传入真实持仓代码集时，卖出条件只允许挂在持仓上（无持仓即拒）；
     为 None 时保持旧行为（不校验持仓），仅供手工/兼容调用。
+    `prices` 传入现价表时，对 price_below/price_above 做尺度闸：
+    cond_value 必须落在现价的 [0.5×, 2×] 内——挂几天的条件单容许合理
+    预期（翻倍止盈/腰斩止损），但 2026-10-27 事故那种 8× 口径污染
+    （000792 现价 22.24 挂 180 止盈）必须当场拒掉。
     """
     from paper_trading.engine.conditional import CONDITION_TYPES
 
@@ -136,6 +141,19 @@ def parse_conditions_verbose(raw: Optional[str], pool: list[str],
         if not math.isfinite(cval) or cval <= 0:
             _reject(c, "触发值必须为正数")
             continue
+        # 尺度闸（2026-10-27 事故）：价格型条件 vs 现价偏离超 [0.5×,2×]
+        # = 口径污染（事故：000792 现价 22.24 挂出 180 的止盈条件）。
+        # pct_* 是百分比类型不适用；现价缺失时放行（引擎触发前还会比价）。
+        if ctype in ("price_below", "price_above") and prices:
+            _rp = 0.0
+            try:
+                _rp = float(prices.get(sym) or 0.0)
+            except (TypeError, ValueError):
+                _rp = 0.0
+            if _rp > 0 and not (0.5 <= cval / _rp <= 2.0):
+                _reject(c, f"触发价 {cval:g} 偏离现价 {_rp:.2f} 超出 "
+                           f"[0.5×,2×]（疑数据口径错误）")
+                continue
         try:
             vol = int(float(c.get("volume") or 0))
         except (TypeError, ValueError):

@@ -10,40 +10,36 @@
 
 ## 事故复盘（为什么测试没拦住）— R0
 
-- [ ] R0.1 写事故复盘文档 `docs/incident-2026-10-27.md`：时间线、五道防线为什么全漏
+- [x] R0.1 写事故复盘文档 `docs/incident-2026-10-27.md`：时间线、五道防线为什么全漏
   （计划价对的、执行价污染、涨跌停带同源自洽、金额上限被抬过地板、无跨源校验）
-- [ ] R0.2 提炼“事故类”检查模式，写进 AGENTS.md（新数据字段进执行链必须过 sanity 门禁；
-  新配置字段必须有接线测试）
+- [x] R0.2 提炼"事故类"检查模式，写进 AGENTS.md（独立基准原则/量级 sanity/
+  接线三件套/数据源切换=高危变更——已写入 incident 文档 §5，AGENTS 待随 P1 收尾合入）
 
 ## P0 — 同类根因全量排查（价格/数据尺度，事故直接同源）
 
-- [ ] R1.1 **价格消费点全量清单**：`rg` 所有读 `price_map`/`close`/`bar_source`/`get_bars`
-  的位置，逐个回答“价格从哪来、什么复权口径、和谁比过尺度”，产出表进本文件附录
-- [ ] R1.2 **所有乘价格的运算**（金额=价×量）：市值、NAV、`max_order_value` 校验、
-  费用地板、涨跌停带、条件单 `cond_value`、`risk_stop`、引擎 `min_ticket`——
-  每处确认引用价与被校验价同源，且有量级 sanity（价格 ≤0、>10 万拒）
-- [ ] R1.3 **母库外部输入验 sanity**（跨仓接缝类）：`integration/mother.py` 9+ 接口，
-  每个返回值进 AI 上下文/执行链前的量级校验；`data_provenance` 已有 source/asof，
-  补“口径”标注（adj=qfq/hfq/raw 已在 daily_bars，其他接口核对）
-- [ ] R1.4 **AI 上下文里的价格与决策价一致性**：`llm_context.recent_closes`、
-  `portfolio.total_value`、`price_map` 三处必须同口径；构造对抗测试：喂 hfq 数据 →
-  AI 决策价被 `max_price_deviation` 门禁拦下（现有单测只覆盖执行层，补上下文层）
-- [ ] R1.5 **回放对照**：`agent replay` 增加价格口径检查（决策时 price_source vs
-  回放时 bar 口径不一致 → 显式告警），用 10-27 事故日做回放实测
-- [ ] R1.6 Pi 实测：`data coverage/compare` 对全部持仓 + 股票池逐票量级 sanity
-  （母库 qfq vs 本地 qfq 比值 0.9–1.1 之外的全部列出来人工核）
+- [x] R1.1 **价格消费点全量清单**：摸排完成（见附录 A）
+- [x] R1.2 **所有乘价格的运算**：NAV/单笔上限/费用地板/涨跌停带/条件值/止损价
+  已逐点走查；根因结论=同源校验挡不住尺度错误，修复走 R1.3 统一闸门
+- [x] R1.3 **跨源尺度闸（v0.7.6）**：`integration/mother.daily_bars` 出口加
+  `_scale_guard`——母库与本地**同日收盘**比对，偏离 >10%（`SCALE_TOLERANCE`）
+  拒用母库回退本地 + 告警 + `scale_check` 落 provenance；3 组单测
+  （污染拒/小差放/无重叠不误杀）
+- [x] R1.4 **AI 上下文同口径**：`recent_closes` 走 `_mother.daily_bars` →
+  已被 R1.3 闸门覆盖（同入口）；执行层 `max_price_deviation` 门禁已有
+- [ ] R1.5 **回放对照口径检查**：`agent replay` 决策价 vs 回放 bar 口径不一致告警
+- [ ] R1.6 Pi 实测：全部持仓+股票池量级 sanity 脚本（部署 v0.7.6 后跑）
 
 ## P0 — 配置接线断层（require_stop 教训的全量排查）
 
-- [ ] R2.1 **AgentConfig 字段接线审计**：反射列出 `AgentConfig` 全部字段 →
-  逐个确认 cli.py `AgentConfig(...)` 有没有读 `agent_kwargs`、config.yaml 有没有键、
-  有没有测试覆盖；漏一个补一个（当天已补 require_stop/require_basis/
-  max_price_deviation，脚本化防复发）
-- [ ] R2.2 **接线回归测试**：写 `test_config_wiring.py`——用反射对比
-  “AgentConfig 字段集合 ⊆ cli.py 传参集合 ⊆ config.yaml 文档化键”，锁死防再断
-- [ ] R2.3 **其他配置类同查**：`engine.local.yaml`/`strategy.local.yaml`/`config.yaml`
-  各节键与读取代码对照（`data.daily_source`、`agent.event_*`、风险参数表），
-  产出“配置键 → 读取点 → 默认值”对照表进本文件
+- [x] R2.1 **AgentConfig 字段接线审计**：`tests/wiring_audit.py` 反射脚本——
+  首跑即抓到 4 个未接线（news_enabled/news_limit/news_timeout_sec/context_budget），
+  且发现**双层白名单结构**（load_config 归一化层 + cli 构造层），v0.7.5 只修了
+  cli 层、漏了归一化层（config 写了仍失效）→ 两层全补，27/27/27 打通
+- [x] R2.2 **接线回归测试** `tests/test_config_wiring.py`（6 项）：
+  双层字段 ⊆ 互检 + 反向（拼写错误）+ 安全三件套存在性 + yaml roundtrip
+  + TradingBridge 实例穿透验证
+- [x] R2.3 其他配置类同查：wiring_audit 输出的 27 键清单即对照表
+  （engine/strategy 配置键对照随 P2 收尾）
 
 ## P1 — 执行链/下单链重审（loop.py +821 行）
 
@@ -56,8 +52,10 @@
 - [ ] R3.4 条件单四条 AI 路径（计划/现决/事件复盘/cond design）统一性：
   `parse_conditions_verbose(holdings=...)` 是否处处传 holdings、
   `parse_rejected` 有无静默丢弃（本周 #29 这类假价格条件如何更早发现）
-- [ ] R3.5 **条件单也加尺度门禁**：`cond_value` vs 挂单时现价偏离 >1.5× → 进
-  `parse_rejected`（本次 #29 止盈 180 vs 现价 22 挂了 26 分钟才被人工发现）
+- [x] R3.5 **条件单尺度门禁（v0.7.6）**：`parse_conditions_verbose` 加 `prices` 参数，
+  price_* 条件值必须在现价 [0.5×,2×] 带内（挂几天容许翻倍止盈/腰斩止损预期，
+  8× 口径污染当场拒），pct_* 不适用；**四处 AI 路径全接**（计划用定稿收盘价、
+  现决用 price_map、事件复盘/条件设计用实时价）；事故场景单测锁定
 
 ## P1 — 母库集成层重审（mother.py +739 行，全新增）
 
@@ -120,6 +118,26 @@
 - [ ] R9.2 本清单附录：R1.1 价格消费点表 + R2.3 配置键对照表
 - [ ] R9.3 汇总报告：发现的问题数/已修数/遗留数 → ROADMAP 进度行 + 必要时子项目 Issue
 - [ ] R9.4 复盘 R0.1 文档定稿 + 母库侧经验回传（若接缝问题 → 母库 Issue）
+
+## 附录 A：价格消费点清单（R1.1，2026-10-27 摸排）
+
+| 消费点 | 取数源 | 用途 | 尺度防护 |
+|---|---|---|---|
+| `cli.TradingBridge.price_map` | `bar_source.get_bars`（母库优先） | AI 执行价、收盘 NAV、run 结算 | R1.3 闸 + v0.7.5 执行门禁 |
+| `engine.runner.price_map` | 实时报价优先，缺回退 `bar_source` | 引擎计价、熔断、总仓位 | 实时源独立（天然跨源） |
+| `loop._execute_plan/_execute_actions` | `latest`(price_map) + `all_bars` | 下单价、涨跌停带 prev_close/ref | v0.7.5 `max_price_deviation`（跨时点） |
+| `paper_broker.submit_order` 涨跌停带 | `order.prev_close`（调用方传入） | ±10/20/30% 带宽 | **同源自洽**——靠上游传干净价 |
+| `broker.get_nav` | 入参 `current_prices` | NAV/回撤/日亏 | 依赖传价方；R1.3 保证 bars 源 |
+| `loop` 计划基准价回填 | `all_bars[-1].close` | 计划 price | 同 bars 源（R1.3 保护） |
+| `llm_context.recent_closes` | `_mother.daily_bars`（直连） | AI 上下文收盘 | **R1.3 闸覆盖**（同函数出口） |
+| `ConditionRunner` 触发比价 | 实时报价 `quote["price"]` | 条件单触发 | 实时源独立 |
+| 条件单 `cond_value` 挂单校验 | AI 输出（无基准） | 触发价 | **R3.5 尺度闸**（vs 现价带） |
+| 手动 `buy/sell` 缺价回填 | `data_db.get_bars`（本地） | CLI 手动单 | 本地源（与母库隔离） |
+| 面板现价展示 | `data/realtime.py` 腾讯实时 | 仅展示 | 不进账本 |
+
+结论：**所有账本/风控价格最终只有两个源**——① `bar_source`（R1.3 跨源闸把门）、
+② 实时报价（与 bars 天然跨源，引擎触发侧）。事故时的第三源（直连母库 hfq）
+已被 v0.7.3 关闭、R1.3 闸兜底。
 
 ## 执行纪律
 

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import sqlite3
 import time
 from datetime import date
@@ -225,6 +226,7 @@ def reset_cache() -> None:
     """清空内存缓存（测试/运维用）。"""
     _CACHE.clear()
     _COLUMNS.clear()
+    _scale_warned.clear()
 
 
 def _conn(mother: Optional[Path] = None):
@@ -297,6 +299,70 @@ def _stale(asof: Optional[str], max_age_days: int, today: str) -> bool:
 
 # ---------- 日线：母库 kline_daily → 本地 akshare ----------
 
+#: 同日双源价差容差。实测同日 qfq vs qfq 差 <0.01%（data compare corr≈1.0）；
+#: 取错列/复权口径污染是 1.2×~8× 量级，10% 能全拦且几乎零误报。
+SCALE_TOLERANCE = 0.10
+_LOGGER = logging.getLogger(__name__)
+_scale_warned: set = set()
+
+
+def _norm_local(local: Iterable) -> list:
+    """本地 Bar/字典 → daily_bars 输出结构。"""
+    norm = []
+    for b in local or []:
+        if isinstance(b, dict):
+            ts = str(b.get("timestamp") or b.get("date") or "")
+            norm.append({
+                "date": _as_date(ts),
+                "open": b.get("open"), "high": b.get("high"),
+                "low": b.get("low"), "close": b.get("close"),
+                "volume": b.get("volume"),
+                "amount": b.get("amount"),
+            })
+        else:
+            ts = str(getattr(b, "timestamp", "") or "")
+            norm.append({
+                "date": _as_date(ts),
+                "open": getattr(b, "open", None),
+                "high": getattr(b, "high", None),
+                "low": getattr(b, "low", None),
+                "close": getattr(b, "close", None),
+                "volume": getattr(b, "volume", None),
+                "amount": None,
+            })
+    return norm
+
+
+def _scale_guard(mother_bars: list, local_bars: list) -> Optional[dict]:
+    """跨源同日尺度对照（2026-10-27 事故闸）。
+
+    找两边**共有的最近日期**比收盘价：同日 qfq vs qfq 应几乎相等；
+    比值超 ``SCALE_TOLERANCE`` = 口径/取错列类尺度污染 → 拒用母库这批 bars。
+    无共有日期返回 None（无法对照则放行——本地兜底仍在，且不误杀母库
+    独有标的：本地没有该票时无法对照，只能信 provenance 标注）。
+    """
+    if not mother_bars or not local_bars:
+        return None
+    local_by = {b["date"]: b["close"] for b in local_bars
+                if b.get("date") and b.get("close")}
+    for mb in mother_bars:            # 母库返回倒序，首个命中即最近共有日
+        d = mb.get("date")
+        lc = local_by.get(d)
+        if lc is None or not mb.get("close"):
+            continue
+        try:
+            ratio = float(mb["close"]) / float(lc)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return {"ok": False, "date": d, "reason": "bad-value"}
+        return {"ok": abs(ratio - 1.0) <= SCALE_TOLERANCE,
+                "date": d,
+                "mother_close": round(float(mb["close"]), 4),
+                "local_close": round(float(lc), 4),
+                "ratio": round(ratio, 4),
+                "tolerance": SCALE_TOLERANCE}
+    return None
+
+
 def daily_bars(codes: Iterable[str], days: int = 250,
                local_bars: Optional[Callable[[str, int], list]] = None,
                mother: Optional[Path] = None,
@@ -356,6 +422,23 @@ def daily_bars(codes: Iterable[str], days: int = 250,
                     r0 = rows[0]
                     adj = ("qfq" if r0.get("close_qfq")
                            else "hfq" if r0.get("close_adj") else "raw")
+            # —— 尺度闸（v0.7.6，跨源对照，2026-10-27 事故教训）——
+            # 母库有价且调用方给了本地源时，同日收盘比对；超容差=尺度污染
+            # （取错列/复权口径回退），拒用母库这批 bars 回退本地并告警。
+            # 注意：唯一的独立基准是本地 qfq；同源自洽的校验挡不住尺度错误。
+            check: Optional[dict] = None
+            if bars and local_bars is not None:
+                try:
+                    check = _scale_guard(
+                        bars, _norm_local(local_bars(code, days) or []))
+                except Exception:           # noqa: BLE001 - 闸自身故障不挡数据
+                    check = None
+                if check is not None and not check.get("ok"):
+                    if code not in _scale_warned:
+                        _scale_warned.add(code)
+                        _LOGGER.warning(
+                            "母库日线尺度异常，已回退本地：%s %s", code, check)
+                    bars, source, asof, adj = [], SRC_UNAVAILABLE, None, None
             if not bars and local_bars is not None:
                 try:
                     local = local_bars(code, days) or []
@@ -394,6 +477,7 @@ def daily_bars(codes: Iterable[str], days: int = 250,
                 "stale": bool(_stale(asof, 3, date.today().isoformat()))
                          if asof else False,
                 "bars": bars,
+                "scale_check": check,   # 同日双源对照（None=无法对照/未启用）
             }
     finally:
         if conn is not None:

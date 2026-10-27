@@ -349,6 +349,35 @@ def test_agent_arms_ai_conditions(monkeypatch, tmp_path):
     assert o["cond_type"] == "price_below" and o["cond_value"] == 10.5
 
 
+def test_condition_scale_gate_rejects_polluted_value():
+    """条件尺度闸（2026-10-27 事故）：000792 现价 22.24 挂 180 止盈 → 拒。"""
+    from paper_trading.engine.ai_conditions import parse_conditions_verbose
+
+    exp = (datetime.now() + timedelta(days=2)).date().isoformat()
+    raw = json.dumps({"conditions": [
+        {"symbol": "000792", "side": "sell",
+         "cond": {"type": "price_above", "value": 180.0},
+         "volume": 100, "expiry": exp, "reason": "止盈"},
+        {"symbol": "000792", "side": "sell",
+         "cond": {"type": "price_below", "value": 20.0},
+         "volume": 100, "expiry": exp, "reason": "止损"},
+    ]})
+    valid, rejected = parse_conditions_verbose(
+        raw, ["000792"], holdings=["000792"],
+        prices={"000792": 22.24})
+    assert len(valid) == 1 and valid[0]["cond_value"] == 20.0   # 0.90× 放行
+    assert len(rejected) == 1
+    assert "偏离现价" in rejected[0]["why"]                       # 8.1× 拒掉
+    # pct_* 是百分比类型，不适用尺度闸
+    raw2 = json.dumps({"conditions": [
+        {"symbol": "000792", "side": "buy",
+         "cond": {"type": "pct_below", "value": 3.0},
+         "value": 8000, "expiry": exp}]})
+    v2, r2 = parse_conditions_verbose(raw2, ["000792"],
+                                      prices={"000792": 22.24})
+    assert len(v2) == 1 and not r2
+
+
 def test_ai_condition_fills_through_engine(monkeypatch, tmp_path):
     """端到端：AI 挂条件 → ConditionRunner 盘中触发 → 成交（不是二次下单）。"""
     from paper_trading.engine.conditional import ConditionalOrders

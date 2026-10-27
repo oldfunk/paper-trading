@@ -213,6 +213,11 @@ class TradingBridge:
             require_stop=bool(agent_kwargs.get("require_stop", False)),
             require_basis=bool(agent_kwargs.get("require_basis", False)),
             max_price_deviation=float(agent_kwargs.get("max_price_deviation", 0.30)),
+            # v0.7.6 接线审计补齐（此前只读 yaml 归一化层，AgentConfig 恒为默认）
+            news_enabled=bool(agent_kwargs.get("news_enabled", True)),
+            news_limit=max(0, int(agent_kwargs.get("news_limit", 12))),
+            news_timeout_sec=float(agent_kwargs.get("news_timeout_sec", 15.0)),
+            context_budget=max(1000, int(agent_kwargs.get("context_budget", 8000))),
         )
 
     def sync_data(self, symbols: list[str]) -> dict:
@@ -1034,7 +1039,9 @@ def design_conditions(bridge, orders, *, pool_from: str = "auto",
         raw, syms, max_conds=int(max_conds),
         max_value=max_value, min_ticket=min_ticket,
         max_days=int(max_days),
-        holdings=[p.symbol for p in bridge.broker.get_all_positions()])
+        holdings=[p.symbol for p in bridge.broker.get_all_positions()],
+        prices={s: float(q.get("price") or 0.0)
+                for s, q in quotes.items() if isinstance(q, dict)})
     if dry_run:
         return True, {"dry_run": True, "parsed": conds,
                       "parse_rejected": parse_rejected,

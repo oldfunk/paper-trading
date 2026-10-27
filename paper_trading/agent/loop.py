@@ -363,12 +363,14 @@ class AgentTrader:
 
     def _conditions_from_raw(self, raw: Optional[str],
                              pool: list[str],
-                             holdings: Optional[list] = None
+                             holdings: Optional[list] = None,
+                             prices: Optional[dict] = None
                              ) -> tuple[list[dict], list[dict]]:
         """从决策 JSON 里取 conditions，返回 (合法条目, 被拒原因)。
 
         坏输出/池外/金额越界/卖出无持仓 不能静默消失；原因要进
         ai:decide / ai:plan 流水。`holdings`=真实持仓代码（卖出条件只许挂持仓）。
+        `prices`=现价表（条件尺度闸，见 parse_conditions_verbose）。
         """
         if not self.cfg.conditions_enabled:
             return [], []
@@ -381,7 +383,7 @@ class AgentTrader:
                 max_value=float(self.cfg.max_order_value),
                 min_ticket=self._engine_min_ticket(),
                 max_days=int(self.cfg.condition_max_days),
-                holdings=holdings)
+                holdings=holdings, prices=prices)
         except Exception as e:                # noqa: BLE001 - 条件单失败不阻断主决策
             return [], [{"why": f"解析异常：{type(e).__name__}: {e}"}]
 
@@ -489,7 +491,9 @@ class AgentTrader:
             raw, pool, max_conds=int(max_conds or self.cfg.event_max_conditions),
             max_value=max_value, min_ticket=min_ticket,
             max_days=int(self.cfg.condition_max_days),
-            holdings=[p.symbol for p in b.broker.get_all_positions()])
+            holdings=[p.symbol for p in b.broker.get_all_positions()],
+            prices={s: float(q.get("price") or 0.0)
+                    for s, q in quotes.items() if isinstance(q, dict)})
         res = self._arm_conditions(conds, dry_run=dry_run)
         b.broker.log_operation(
             "ai:review", {"pool": pool, "event": event_txt[:300],
@@ -626,8 +630,11 @@ class AgentTrader:
                     "timestamp": now, "symbols": symbols}
         summary = str((plan or {}).get("summary", ""))[:200]
         held_syms = [p.symbol for p in b.broker.get_all_positions()]
+        # 条件尺度闸用定稿收盘价（与 AI 看到的 recent_closes 同源同口径）
+        plan_prices = {s: float(v[-1].close)
+                       for s, v in all_bars.items() if v}
         conditions, conditions_rejected = self._conditions_from_raw(
-            raw, symbols, holdings=held_syms)
+            raw, symbols, holdings=held_syms, prices=plan_prices)
         # 计划基准价：买/卖动作一律回填定稿收盘价（prompt 约定 null=最新收盘）。
         # 不采信 LLM 自报价格；带 price_source 的基准价才允许在执行缺价时兜底。
         for a in actions:
@@ -893,7 +900,7 @@ class AgentTrader:
             actions = []
         summary = str((plan or {}).get("summary", ""))[:200] if plan else ""
         conditions, conditions_rejected = self._conditions_from_raw(
-            raw, symbols, holdings=set(positions))
+            raw, symbols, holdings=set(positions), prices=latest)
 
         # 7. 逐条钳制执行（现决与计划执行共用实现）
         return self._execute_actions(
