@@ -964,17 +964,38 @@ class AgentTrader:
                 latest[sym] = float(bars[-1].close)
         cash = b.broker.get_cash()
         nav = b.broker.get_nav(latest)
-        res = self._execute_actions(
-            actions=actions, summary=summary, symbols=syms,
-            all_bars=all_bars, latest_prices=latest, cash=cash,
-            positions=positions, nav_total=nav.total_value,
-            dry_run=False, mode="live",
-            now=now_iso or datetime.now().isoformat(),
-            from_plan=True, plan_id=int(pending["id"]),
-            pool_source=str(plan.get("pool_source", "config")),
-            slot=slot, conditions=conditions,
-            conditions_rejected=conditions_rejected)
-        b.broker.mark_plan_done(int(pending["id"]))
+        try:
+            res = self._execute_actions(
+                actions=actions, summary=summary, symbols=syms,
+                all_bars=all_bars, latest_prices=latest, cash=cash,
+                positions=positions, nav_total=nav.total_value,
+                dry_run=False, mode="live",
+                now=now_iso or datetime.now().isoformat(),
+                from_plan=True, plan_id=int(pending["id"]),
+                pool_source=str(plan.get("pool_source", "config")),
+                slot=slot, conditions=conditions,
+                conditions_rejected=conditions_rejected)
+        except Exception as e:                # noqa: BLE001
+            # H-5 定案（T8 复核后主 AI 裁决）：**执行中断也消费计划**。
+            # 反向风险更严重：崩溃不消费 → 下个 tick 自动重跑 → 已成交的
+            # 动作被再执行一遍（重复下单）。错误入审计后返回、不重试；
+            # 恢复路径 = 人工重做计划（agent tick 的下一轮会正常做新计划）。
+            logger.error(f"AI plan {pending['id']} crashed: {e}")
+            try:
+                b.broker.log_operation(
+                    "ai:decide",
+                    {"plan_id": int(pending["id"]), "symbols": syms},
+                    False,
+                    {"error": f"{type(e).__name__}: {e}",
+                     "note": "计划执行中断，已消费不重试（防重复下单）"},
+                    None, None)
+            except Exception:                  # noqa: BLE001 - 审计失败不挡消费
+                pass
+            res = {"ok": False,
+                   "error": f"计划执行中断：{type(e).__name__}: {e}",
+                   "plan_id": int(pending["id"]), "from_plan": True}
+        finally:
+            b.broker.mark_plan_done(int(pending["id"]))
         logger.info(f"AI plan {pending['id']} executed")
         return res
 

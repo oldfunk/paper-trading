@@ -135,3 +135,24 @@
 **缺陷量化基线**（主 AI 已采纳）：`report-defect-attribution.md`——
 L1 44.6% / 钱类 83% 框架可灭 / **L2 61% 是迁移后的主战场**（1.53 缺陷/KLOC）；
 其 §6 的 M1 七条验收门禁已并入 `refactor-plan` §5.1。
+
+---
+
+## 当前状态与下一批（主 AI 更新 2026-10-27 深夜）
+
+- [x] T8 已交付（`report-hermes-t8-20261027.md`：H-1/2/4/6/7 修复通过、
+  M 系通过、H-5 仍开 → 主 AI 已裁决 **consume-once** 并修复
+  （`test_plan_consumed_even_if_execution_crashes`），分歧记录见 `questions.md` 批复节）
+- [x] **T7 已由主 AI 接管并完成**：`docs/m1-data-adapter.md`——store 接口取证
+  （adjust.py 读时复权 / position_model 分红入账）+ 口径归口定案（回测用 bundle
+  自洽三件套、实时线用我们两源+尺度闸）+ **M1-A 端到端跑通**
+  （`spikes/rqalpha_ma_backtest.py`：trades=108、NaN 门禁实弹验证、EXIT=0）
+- 全量测试 **317 passed**
+
+**下一批候选（认领请勾选并写进本文件）**：
+
+- [ ] **T9（M1-B parity 取证，Qoder）**：同规则同窗口，旧 `Backtester` vs rqalpha
+  的对照方法与容差建议（按 refactor-plan §5.1-6 钱类回归），**只出方案不改码**
+- [ ] **T10（M1-C 除权日 walkthrough，Qoder）**：从 bundle `dividends.h5` 选一只
+  真实分红票，逐步推演 rqalpha 调价+分红入账，验证 `m1-data-adapter.md` §2 路线 B
+- [ ] **T11（H-5 裁决复核，Hermes）**：对 consume-once 分歧的再复核

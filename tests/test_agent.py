@@ -745,6 +745,37 @@ def test_plan_buy_on_held_symbol_allowed(monkeypatch, tmp_path):
     assert b.broker.get_position("600519").total_volume == 200
 
 
+def test_plan_consumed_even_if_execution_crashes(monkeypatch, tmp_path):
+    """H-5 定案（T8 复核后裁决）：执行崩溃也必须消费计划。
+
+    反向风险更严重：崩溃不消费 → 下 tick 自动重跑 → 已成交动作再执行
+    （重复下单）。正确语义 = consume-once + 错误入审计 + 人工重做恢复。
+    """
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    day = datetime.now().date().isoformat()
+    b.broker.save_plan(day, ["600519"], {
+        "actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                     "price": None, "price_source": "last_close",
+                     "reason": "崩", "basis": ["recent_closes"]}],
+        "summary": "崩溃计划"})
+    pend = b.broker.get_pending_plan(day)
+    bars = {"600519": b.data_db.get_bars("600519", limit=30)}
+
+    def _boom(order):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(b.broker, "submit_order", _boom)
+    res = t._execute_plan(pend, bars, b.price_map(["600519"]))
+    assert res["ok"] is False and "中断" in res["error"]
+    assert b.broker.get_pending_plan(day) is None, \
+        "崩溃后计划必须被消费（否则下 tick 重跑会重复下单）"
+    errs = [o for o in b.broker.get_op_log(20)
+            if o["action"] == "ai:decide" and not o["ok"]]
+    assert errs, "崩溃必须落 ai:decide 错误审计"
+    assert "重复下单" in str(errs[-1]["result"])
+
+
 def test_agent_dry_run_changes_nothing(monkeypatch, tmp_path):
     from paper_trading.llm import provider as prov
 
