@@ -16,7 +16,6 @@
 """
 from __future__ import annotations
 
-import itertools
 import logging
 import sqlite3
 import time
@@ -35,8 +34,6 @@ TTL_SCREENING = 600.0
 
 _CACHE: dict = {}
 _COLUMNS: dict = {}
-_CONN_SEQ = itertools.count()
-_CONN_IDS: dict = {}
 
 
 def instrument_map(codes: Optional[Iterable[str]] = None,
@@ -65,7 +62,7 @@ def instrument_map(codes: Optional[Iterable[str]] = None,
                    FROM instrument LIMIT 5000""").fetchall()]
 
         try:
-            rows = _cached(f"instr:{_seq(conn)}:{','.join(codes)}", ttl, _fetch)
+            rows = _cached(f"instr:{_dbkey(conn)}:{','.join(codes)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         out = {c: unavailable("母库未覆盖该标的 instrument") for c in codes}
@@ -96,7 +93,7 @@ def trading_calendar(market: str = "CN", mother: Optional[Path] = None,
                    ORDER BY trade_date DESC LIMIT 2000""", (market,)).fetchall()]
 
         try:
-            rows = _cached(f"tcal:{_seq(conn)}:{market}", ttl, _fetch)
+            rows = _cached(f"tcal:{_dbkey(conn)}:{market}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         if not rows:
@@ -239,16 +236,20 @@ def _conn(mother: Optional[Path] = None):
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only=ON")
         conn.execute("PRAGMA busy_timeout=2000")
-        _COLUMNS.clear()      # 新连接可能指向不同库：避免复用旧列缓存
-        _CONN_IDS[id(conn)] = next(_CONN_SEQ)
+        # 列缓存键含库路径（_columns 内），不同库天然区分——不再每次清
+        # （旧实现每次 _conn 都 clear，列缓存同样永不命中，R4.2 一并修）
         return conn
     except Exception:                       # noqa: BLE001 - 母库不可用即降级
         return None
 
 
 def _columns(conn, table: str) -> set:
-    """表的列名集合（带缓存）；表不存在返回空集。"""
-    key = (str(id(conn)), table)
+    """表的列名集合（带缓存）；表不存在返回空集。
+
+    键含库路径：同一库跨连接复用，不同库（测试多母库、真库切换）互不串。
+    """
+    dkey = _dbkey(conn)
+    key = (dkey, table)
     if key in _COLUMNS:
         return _COLUMNS[key]
     try:
@@ -275,9 +276,23 @@ def _cached(key: str, ttl: float, fn: Callable[[], Any]) -> Any:
     return val
 
 
-def _seq(conn) -> int:
-    """连接序号：id() 可能在连接关闭后被复用，用单调序号做缓存键。"""
-    return _CONN_IDS.get(id(conn), 0)
+def _dbkey(conn) -> str:
+    """库路径做缓存键（稳定跨连接）。
+
+    旧实现用 ``_dbkey(conn)``（每连接单调序号）——而 ``_conn`` 每次调用都
+    新建连接，序号永远不同，TTL 缓存跨调用**永不命中**（2026-10-27
+    R4.2 审查发现，文档声称的 60s/300s 缓存形同虚设）。库路径同一库
+    跨调用稳定、不同库（测试多母库）天然区分；schema 变更由 TTL 兜底
+    （最长 60-300s 旧口径窗口，可接受且与文档 TTL 语义一致）。
+    查不到路径时回退 id(conn)（缓存退化为不跨调用，只求不串库）。
+    """
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        if row and row[2]:
+            return str(row[2])
+    except Exception:                       # noqa: BLE001
+        pass
+    return f"conn:{id(conn)}"
 
 
 def _as_date(value) -> str:
@@ -402,7 +417,7 @@ def daily_bars(codes: Iterable[str], days: int = 250,
                     return [dict(r) for r in rows]
 
                 try:
-                    rows = _cached(f"kline:{_seq(conn)}:{code}:{days}", ttl, _fetch)
+                    rows = _cached(f"kline:{_dbkey(conn)}:{code}:{days}", ttl, _fetch)
                 except Exception:           # noqa: BLE001 - 单只失败不影响其他
                     rows = []
                 if rows:
@@ -510,7 +525,7 @@ def financial_summary(codes: Iterable[str], mother: Optional[Path] = None,
             return [dict(r) for r in rows]
 
         try:
-            rows = _cached(f"fin:{_seq(conn)}:{','.join(codes)}", ttl, _fetch)
+            rows = _cached(f"fin:{_dbkey(conn)}:{','.join(codes)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         out = {c: unavailable("母库未覆盖该标的财务摘要") for c in codes}
@@ -548,7 +563,7 @@ def dividend(codes: Iterable[str], mother: Optional[Path] = None,
                     ORDER BY stock_code, report_date DESC""", codes).fetchall()]
 
         try:
-            rows = _cached(f"div:{_seq(conn)}:{','.join(codes)}", ttl, _fetch)
+            rows = _cached(f"div:{_dbkey(conn)}:{','.join(codes)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         grouped: dict = {}
@@ -589,7 +604,7 @@ def benchmark(codes: Iterable[str], days: int = 60,
                 codes).fetchall()]
 
         try:
-            rows = _cached(f"bench:{_seq(conn)}:{','.join(codes)}:{days}", ttl, _fetch)
+            rows = _cached(f"bench:{_dbkey(conn)}:{','.join(codes)}:{days}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         grouped: dict = {}
@@ -636,7 +651,7 @@ def news(codes: Optional[Iterable[str]] = None, limit: int = 20,
                 return rows
 
             try:
-                rows = _cached(f"news:{_seq(conn)}:{','.join(codes)}:{limit}", ttl, _fetch)
+                rows = _cached(f"news:{_dbkey(conn)}:{','.join(codes)}:{limit}", ttl, _fetch)
             except Exception:               # noqa: BLE001
                 rows = []
             if rows:
@@ -686,7 +701,7 @@ def screening_detail(local_pool: Optional[list] = None,
                         "rows": rows}
 
             try:
-                run = _cached(f"screening:latest:{_seq(conn)}", ttl, _fetch)
+                run = _cached(f"screening:latest:{_dbkey(conn)}", ttl, _fetch)
             except Exception:               # noqa: BLE001
                 run = None
             if run and run.get("rows"):
@@ -724,7 +739,7 @@ def thesis(codes: Iterable[str], mother: Optional[Path] = None,
                     FROM watchlist_thesis WHERE code IN ({q})""", codes).fetchall()]
 
         try:
-            rows = _cached(f"thesis:{_seq(conn)}:{','.join(codes)}", ttl, _fetch)
+            rows = _cached(f"thesis:{_dbkey(conn)}:{','.join(codes)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         out = {c: unavailable("母库未覆盖该标的论点") for c in codes}
@@ -761,7 +776,7 @@ def outcomes(codes: Iterable[str], mother: Optional[Path] = None,
                     ORDER BY analysis_date DESC""", codes).fetchall()]
 
         try:
-            rows = _cached(f"outcome:{_seq(conn)}:{','.join(codes)}", ttl, _fetch)
+            rows = _cached(f"outcome:{_dbkey(conn)}:{','.join(codes)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         grouped: dict = {}
@@ -808,7 +823,7 @@ def regime(mother: Optional[Path] = None,
             return rows
 
         try:
-            rows = _cached(f"regime:{_seq(conn)}", ttl, _fetch)
+            rows = _cached(f"regime:{_dbkey(conn)}", ttl, _fetch)
         except Exception:                   # noqa: BLE001
             rows = []
         if not rows:

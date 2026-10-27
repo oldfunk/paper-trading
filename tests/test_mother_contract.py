@@ -314,6 +314,42 @@ def test_coverage_summary(sd):
     assert cov["instrument"]["600519"]["source"] == "mother:instrument"
 
 
+def test_ttl_cache_hits_across_connections(sd):
+    """R4.2 回归：缓存键必须跨连接稳定——旧实现用连接序号，永不命中。
+
+    连续两次调用（各自新建连接）+ TTL 内母库被改：第二次必须命中内存
+    缓存吐旧值。2026-10-27 审查发现：文档声称 60s/300s 缓存，实际
+    因键含单调连接序号形同虚设。
+    """
+    db = sd / "data" / "db" / "stock_dashboard.db"
+    # 填缓存（local_bars 恒空：尺度闸无对照依据则放行母库）
+    out1 = mother.daily_bars(["600519"], days=5, local_bars=lambda c, d: [],
+                             mother=sd, ttl=60.0)
+    assert out1["600519"]["bars"][0]["close"] == 1505
+    # 模拟母库更新（改值）
+    c = sqlite3.connect(db)
+    c.execute("UPDATE kline_daily SET close_qfq=9999, close_adj=9999, close=9999 "
+              "WHERE code='600519' AND trade_date='2026-10-26'")
+    c.commit()
+    c.close()
+    # TTL 内第二次调用（独立连接）：命中缓存 → 仍是旧值 1505
+    out2 = mother.daily_bars(["600519"], days=5, local_bars=lambda c, d: [],
+                             mother=sd, ttl=60.0)
+    assert out2["600519"]["bars"][0]["close"] == 1505, \
+        "缓存未命中（键跨连接不稳定，回到旧 bug）"
+    # TTL=0 强制回源：读到新值
+    out3 = mother.daily_bars(["600519"], days=5, local_bars=lambda c, d: [],
+                             mother=sd, ttl=0.0)
+    assert out3["600519"]["bars"][0]["close"] == 9999
+    # 还原（合成库供后续用例）
+    c = sqlite3.connect(db)
+    c.execute("UPDATE kline_daily SET close_qfq=1505, close_adj=1505, close=1505 "
+              "WHERE code='600519' AND trade_date='2026-10-26'")
+    c.commit()
+    c.close()
+    mother.reset_cache()
+
+
 def test_real_mother_contract_if_present():
     """真母库契约校验：显式指定 ``PAPER_TRADING_MOTHER_DIR``（推荐）。
 
