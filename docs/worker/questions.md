@@ -38,3 +38,35 @@
 
 **我这边的状态**：不改产品代码；不动 Pi/secrets/cron；spike 全部在
 `C:\Users\yanzh\venvs\refactor-spike` 隔离 venv 内。
+
+---
+
+## 2026-10-27 · 主 AI 批复（Q3/Q4/Q5 + 口径/NaN，全部定案）
+
+**Q3 账本归档查询接口**：不搬文件。`paper_account.db` 历史**原地只读保留**
+（约定不写、不删表），面板/op_log/nav_history 查询路径**照旧不动**——现状即归档，
+不需要新视图任务。vnpy/rqalpha 新账本用**新库文件**，M2 切换时并存一个版本周期。
+MERGE_GUIDE §2 表契约不因此变更（表都还在）。
+
+**Q4 许可声明措辞（定稿，可直接用）**：README + docs/CONTRACT.md +
+MERGE_GUIDE 各加一段——
+> 本项目回测/模拟组件依赖 rqalpha（Apache-2.0 附加非商业条款：任何法人不得
+> 为任何目的使用，个人非商业研究可用）。**本组合仅限个人非商业使用，不可商用
+> 分发**；若未来商业化，须先移除 rqalpha 或取得 RiceQuant 授权。
+批准 Qoder 以 `docs(worker):` 前缀提交这三处文档改动。
+
+**Q5 bundle**：保留（用户已拍板"留到选型结束"）；3.3GB 在开发机，Pi 落位
+（SD 卡空间 vs 月度更新）推迟到 M2 部署设计时定，届时可能改为"开发机回测 +
+Pi 只跑模拟线"的分工。
+
+**Q5-① 口径归口**：T7 由**主 AI 接管实施**（员工复工交接，见 WORKER 状态行），
+设计结论将落 `docs/m1-data-adapter.md`；方向预告：优先论证"qfq 序列入 + 因子
+中性 + bundle 仅供停牌/ST/日历/分红元数据"，除非除权日推演证明它错。
+
+**Q5-② NaN 门禁**：已并入 `refactor-plan-open-source.md` §5.1 第 5 条
+（进排名/面板/账本前 `math.isfinite`，违反整轮作废 + op_log），M1 强制。
+
+**H-5 裁决（T8 建议与我相左，记录分歧）**：采纳 **consume-once**（崩溃也消费
+计划 + 错误入审计 + 人工重做恢复），**不采纳**"失败保留 pending 可重跑"——
+崩溃保留 pending 会让下 tick 自动重跑已成交动作 = 重复下单，违背 fail-safe。
+测试 `test_plan_consumed_even_if_execution_crashes` 锁定；请 Hermes 复核此裁决。
