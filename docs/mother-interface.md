@@ -84,7 +84,7 @@ AI 上下文里的 `data_provenance` 汇总每个接口的 `source/asof/stale`�
 |---|---|---|
 | `kline_daily` 无 `qfq` 列；`close_adj` 有 NULL（002215） | #4 | ✅ `close_qfq` 已有、近 30 天无 NULL；子项目切 `close_qfq` 优先（v0.7.3） |
 | `benchmark_daily` 代码为 `sh000300`/`sh000922`，子项目按 `000001` 查不到 | #5 | ✅ 已补 `000001`/`399001`/`399006` |
-| `trading_calendar` 空；`market_index` 停在 2026-07-03；`market_state_daily` 未落库 | #6 | ✅ `trading_calendar` 3949 行；`market_index` 最新 2026-10-27；`calendar sync` 改母库优先（v0.7.3） |
+| `trading_calendar` 空；`market_index` 停在 2026-07-03；`market_state_daily` 未落库 | #6 | ⚠️ 部分：`trading_calendar` 3949 行但**只有历史**（max=2026-10-26，无未来交易日），子项目仅在覆盖今天/未来时采用，否则回退 akshare（v0.7.4 防 fail-closed 停摆）；`market_index` 已更新至 2026-10-27 ✅。**请母方补未来交易日（≥3 个月）** |
 | `kline_daily` 仅 959/5527 只（如 000858 缺失） | #7 | ⏳ 覆盖仍 959 只（母方回填进行中）；子项目逐标的回退本地，不阻断 |
 | 最小数据契约汇总（qfq/基准/日历/主键/覆盖度） | #8 | ✅ P0/P1 项已交付；P2（覆盖度视图）随回填推进 |
 

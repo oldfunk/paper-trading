@@ -38,12 +38,24 @@
 
 - #4 `kline_daily` 缺 qfq 口径（`close_adj` 有 NULL）→ 执行信号不可比 → **✅ 已交付（close_qfq）**
 - #5 `benchmark_daily` 指数代码约定不一致（sh000300/sh000922）→ **✅ 已补 000001/399001/399006**
-- #6 `trading_calendar` 未回填、`market_index` 过期、`market_state_daily` 未落库 → **✅ 日历 3949 行、market_index 至 2026-10-27**
+- #6 `trading_calendar` 未回填、`market_index` 过期、`market_state_daily` 未落库 → ⚠️ 部分（日历有历史无未来，market_index 已新鲜；待母方补未来交易日）
 - #7 `kline_daily` 覆盖不全（959/5527，如 000858 缺失）→ ⏳ 回填进行中，子项目逐标的回退
-- #8 最小数据契约汇总（qfq/基准/日历/主键/instrument/覆盖度）→ **✅ P0/P1 已交付；验收见 v0.7.3**
+- #8 最小数据契约汇总（qfq/基准/日历/主键/instrument/覆盖度）→ **✅ P0/P1 已交付；验收见 v0.7.3/v0.7.4**
 
 ## 执行侧验证结果（2026-10-27，Pi）
 
 - `daily_source=auto`：002215/600989/000792/002192/300390 → `mother:kline_daily`（最新 10-26）；
   000858 母库缺失 → 回退 `local:akshare`。
 - 本地日线此前对部分持仓滞后（000858 曾停在 2025-10-14），母库优先后执行信号不再受本地同步滞后影响。
+
+## 母库契约验收结果（2026-10-27，Pi，v0.7.3/v0.7.4）
+
+- 真库契约测试 `PAPER_TRADING_MOTHER_DIR=/home/pi/stock-dashboard`：**14 passed**（含近 30 天
+  `close_qfq` 非空、基准代码 `000001/399001/399006`、日历有 `is_open=1` 行三项数据级校验）。
+- `data compare`（60 天窗口）：600036/002215 两侧 `adj=qfq`、收益相关性 **1.0**；002215 交叉数差
+  +1/-1（停牌日两边 bar 集对齐差异，净 0）；000858 母库缺失回退本地。
+- `agent replay --date 2026-10-27`：**v0.7.2 决策落库 + 回放链路首次实盘验证通过**
+  （计划 #14 开盘执行落库，AI vs 规则一致度 4/5）。
+- **发现并热修（v0.7.4）**：母库 `trading_calendar` 只有历史无未来（max=10-26），母库优先会把
+  本地缓存写成“覆盖不到今天”触发 fail-closed 停摆 → sync 只在母库覆盖今天/未来时采用，
+  否则回退 akshare；已在 Issue #8 反馈请母方补未来交易日。

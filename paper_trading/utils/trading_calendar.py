@@ -147,7 +147,10 @@ def sync_calendar(path: Optional[str | Path] = None,
             dates = [str(r.get("trade_date"))[:10] for r in (mc.get("data") or [])
                      if r.get("is_open") == 1 and r.get("trade_date")]
             dates = [d for d in dict.fromkeys(dates) if d >= cutoff]
-            if dates:
+            # 权威日历必须能回答“今天/明天是不是交易日”：母库只回填了历史
+            # （如回填中，max < 今天）不算可用，回退 akshare——否则缓存
+            # max_date 会落在昨天，触发 calendar_covers fail-closed 停摆。
+            if dates and max(dates) >= date.today().isoformat():
                 info = save_calendar(dates, source="mother:trading_calendar",
                                      path=path)
                 return {"ok": True, "history_tail_days": HISTORY_TAIL_DAYS,

@@ -218,6 +218,38 @@ def test_calendar_sync_prefers_mother(sd, tmp_path, monkeypatch):
     assert tc_mod.is_trading_day(date.fromisoformat(fut))
 
 
+def test_calendar_sync_history_only_falls_back(sd, tmp_path, monkeypatch):
+    """母库日历只有历史（回填中，max < 今天）不算可用：回退 akshare。
+
+    否则缓存 max_date 落在昨天，calendar_covers fail-closed 会让所有
+    交易入口停摆（Pi 实测：母库 3949 行但无未来交易日）。
+    """
+    from paper_trading.utils import trading_calendar as tc_mod
+
+    # 合成库日历行都是 2026-10-26/27（历史/今天）；把未来全删，模拟只回填历史
+    conn = sqlite3.connect(sd / "data" / "db" / "stock_dashboard.db")
+    conn.execute("DELETE FROM trading_calendar WHERE trade_date >= DATE('now')")
+    conn.commit()
+    conn.close()
+    mother.reset_cache()
+    monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(sd))
+    cal = tmp_path / "cal.json"
+    monkeypatch.setenv(tc_mod.CALENDAR_ENV, str(cal))
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_akshare(name, *a, **kw):
+        if name == "akshare":
+            raise ImportError("stubbed: no network")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", _no_akshare)
+    out = tc_mod.sync_calendar()
+    assert out["ok"] is False          # 母库历史-only + akshare 不可用 → 失败但不写坏缓存
+    assert not cal.exists() or "mother" not in cal.read_text(encoding="utf-8")
+
+
 def test_compare_bars_local_vs_mother(sd):
     out = mother.compare_bars(
         ["600519"], days=10, mother=sd,
