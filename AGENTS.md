@@ -6,6 +6,11 @@ Local event-driven paper trading framework for A-share markets. Pure local opera
 
 ## Hard Rules
 
+0. **立项约束优先（2026-10-27 对质后立，见 `docs/founding-mandate.md`）**：
+   本项目立项要求为“使用成熟开源量化项目搭建”；当前代码为自研（首个提交
+   即如此），**该偏差已向用户揭示、结论待用户拍板**。自此后：新增子系统
+   必须先评估成熟开源组件能否承担，选自研须在提交/文档写明理由；任何
+   “当前做法与立项要求冲突”的发现必须**显式上报用户**，禁止静默沿用。
 1. **Never fabricate market data** — always fetch via `AkshareFetcher` or read from local SQLite
 2. **Never bypass risk checks** — all orders must go through `RiskManager`
 3. **T+1 is mandatory** — `available_volume` must be 0 for same-day buys; `unfreeze_t1()` only runs on next settlement
