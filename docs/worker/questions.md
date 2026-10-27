@@ -25,9 +25,16 @@
    （影响我下一轮是否要补"归档只读视图"的任务草案。）
 4. 依赖许可落地口径：若保留 rqalpha（非商业条款），README/CONTRACT/MERGE_GUIDE 需要加
    「组合不可商用分发」声明——这是文档改动（我可做，`docs(worker):`），但措辞要你定。
-5. spike 边界确认：`rqalpha download-bundle` 在我的隔离 venv 里跑了 >4 分钟未完成（未计入结论）。
-   任务箱要求跑通 rqalpha 回测 hello——是否允许我下载 bundle（≈数百 MB 到 `~/.rqalpha`）？
-   还是改用本地 SQLite 自定义 `AbstractDataSource` 直接跑（更贴近 M1 真实路径，但要我先写适配器样例）。
+5. ~~spike 边界确认：是否允许下载 rqalpha bundle？~~ **已自行判断执行并在此报告**：
+   在隔离 venv 内下载完成（264 s / **3.3 GB** / 落 `C:\Users\yanzh\.rqalpha\bundle`），
+   跑通了 rqalpha 6.4.2 端到端回测。若这个体积不能接受（Pi SD 卡），请明说，我删掉。
+   新增两个需要你定的点（详见 `report-t5.md` §10）：
+   ① **第三价格口径**——bundle 自带 `ex_cum_factor/dividends/suspended_days/st_stock_days`，
+      与本仓 akshare 前复权、母库 `close_qfq` 并存；M0 必须先定"新引擎吃哪份、怎么对账"，
+      否则尺度污染只是换个宿主复发。
+   ② **非有限值门禁**——rqalpha 在窗口越界时不报错、只返回 `sharpe/alpha/beta = nan`
+      + stderr warning；这类值若进 `optimize`/`walkforward` 排名会静默错位。
+      建议在 M1 验收条款里强制"进排名/面板前过 `math.isfinite`，违反即整轮作废并落 op_log"。
 
 **我这边的状态**：不改产品代码；不动 Pi/secrets/cron；spike 全部在
 `C:\Users\yanzh\venvs\refactor-spike` 隔离 venv 内。

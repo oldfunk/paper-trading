@@ -236,9 +236,76 @@ done
 
 ## 本审查自身未完成项（如实交代）
 
-- spike 的 `rqalpha download-bundle` 在本机仍在下载中（>4 分钟未完成，未计入结论）；
-  M0-③「用本地 SQLite 适配器跑通 rqalpha 回测」与 M0-②「vnpy 无 GUI hello 撮合」**尚未跑完**，
-  这两项结论请以主 AI 的 Pi spike 或我的下一轮为准。
+- vnpy 无 GUI 的「下单→成交→T+1 冻结→账户」hello **没跑**——因为 P0-1 已经证明核心包不含
+  撮合引擎，要跑得先把 `vnpy_ctastrategy` + 数据库后端 + (可选)GUI 组装起来；组装本身就是
+  M0 要回答的问题（1061 MB / 73 包 / 120 s 是实测底数）。
 - akquant / hikyuu 我只做了**发布事实与许可/依赖取证**，没跑通策略；表里的"该进表"是
   评估资格，不是选型结论。
 - 本报告**不改任何产品代码**（红线遵守：未跑任何写账本命令，未碰 Pi/secrets/cron，未 force push）。
+
+---
+
+## §10 spike 后半程实测（补测后追加：含对我自己 P1-5 的更正）
+
+### 10.1 rqalpha 端到端确实跑得通（M0-③ 技术可行）
+
+```
+pip install rqalpha      → 6.4.2（与 vnpy 4.5.0 并存于同一 venv，无冲突）
+rqalpha version          → Current Version: 6.4.2
+rqalpha download-bundle  → 数据源 http://bundle.assets.ricequant.com/bundles_v4/rqbundle_202610.tar.bz2
+                            264 s 完成，落盘 3.3 GB，14 个数据文件
+run_func(BACKTEST)       → 正常返回 sys_analyser.summary（无异常、无网络依赖）
+pandas                   → 3.1.0（rqalpha 同样把 pandas 拉到 3.1，见 P1-3）
+```
+
+### 10.2 **更正 P1-5**：bundle 自带权息/停牌/ST，我原话"要你补元数据"说重了
+
+`~/.rqalpha/bundle` 实际内容：
+
+```
+dividends.h5  ex_cum_factor.h5  split_factor.h5  share_transformation.json
+suspended_days.h5  st_stock_days.h5  trading_dates.npy(20050104→20271231)
+instruments.pk  stocks.h5  indexes.h5  funds.h5  yield_curve.h5  future_info.json
+```
+
+⇒ 除权除息累计因子、拆股、停牌日、ST 日这些**本仓没有**的结构化元数据，rqalpha 是**白送**的
+（本仓 AGENTS 合规表 #16 目前只做"检测 + 人工 `corporate apply`"）。这一条对 rqalpha 有利，
+我不含糊。P1-5 的真正成本要改成下面这三项：
+
+1. **3.3 GB + 月度刷新**：Pi（SD 卡）上放 3.3 GB bundle 且每月整包更新，是运维成本不是零成本；
+   `trading_dates.npy` 虽预生成到 2027-12-31，但**价格数据只到 2026-09/10**（月度包），
+   实时性必须靠自写 `AbstractDataSource` 接 akshare/母库——适配器工作仍在，只是范围比我原写的窄。
+2. **第三个价格口径**：本仓现在已经有 ①akshare 本地前复权 ②母库 `close_qfq`（缺列逐行降级
+   `close_adj`）。rqalpha bundle 是**第三个源**（自带复权因子）。10-27 事故的根因就是口径混用；
+   方案 §3 没写"新引擎吃哪份价、与现有两源如何对账"。这是必须在 M0 定死的一条，否则尺度污染换宿主复发。
+3. **免费包与付费包的界线**：随时更新走 RQData（商业），mod 生态（tushare/ctp/stock-realtime）
+   全部 2018–2021 停更——别指望现成实时源。
+
+### 10.3 [P2] rqalpha 对越界/未配置窗口**不报错，只吐 NaN + warning**（对我自己的配置失误敏感）
+
+我这次把 `start_date/end_date` 放在 config 顶层（rqalpha 6 期望在 `base` 下），于是它按
+bundle 的日历把窗口当 **2015-06-01 → 2027-12-31** 跑，尾部没有价格数据，结果：
+
+```
+summary: {'start_date': '2015-06-01', 'end_date': '2027-12-31', 'starting_cash': '',
+          'alpha': nan, 'beta': nan, 'sharpe': nan, 'excess_sharpe': nan,
+          'information_ratio': nan, 'downside_risk': nan, 'tracking_error': nan, ...}
+RuntimeWarning: divide by zero encountered in log1p   (rqrisk/risk.py:119, pandas arraylike.py:438)
+WARN: system_log: The strategy requires explicit configuration of base.capital_gain_tax_rate …
+```
+
+**没有异常、没有非零退出码**——只有 stderr 里的 warning。对本仓的直接含义：
+`engine/optimize.py` 按 `excess_pct/sharpe` 排序、`walkforward` 用样本外超额做晋级判断，
+一旦接上这类指标，**NaN 会静默进入排名**（NaN 比较恒为假 → 排名错位而不报错）。
+本仓纪律要求"不静默"（路线图纪律 4），AGENTS 硬规则 1 要求"绝不编造数据"；
+框架拿 NaN 当结果返回时，**必须在胶水层做 `math.isfinite` 白名单校验**，并把 `starting_cash: ''`
+这类空串字段一并拦下。建议写进 M1 验收条款：
+「新引擎结果进 optimize/walkforward/面板之前，必须过非有限值门禁，违反即整轮作废并落 `op_log`」。
+
+### 10.4 对结论的影响
+
+- P0-1 / P0-2 / P1-3 / P1-4 / P1-6 **不变**（都是实测/源码事实）。
+- P1-5 按 10.2 收窄：数据适配成本从"高"降为"中"，但**新增"第三价格口径"这一硬风险**，
+  并且 3.3 GB/月更对 Pi 是实打实的运维项。
+- 反建议第 1 条（三选一 spike）现在有了基线数据：rqalpha 装得起、跑得通、指标会吐 NaN；
+  vnpy 装得起但要 1 GB 且核心无撮合；akquant/hikyuu 待测（hikyuu **无 Windows wheel** 已知）。
