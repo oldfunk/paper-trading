@@ -159,8 +159,8 @@ L1 44.6% / 钱类 83% 框架可灭 / **L2 61% 是迁移后的主战场**（1.53 
 - [ ] **T10（Qoder，P1）**：M1-C 除权日 walkthrough——从 bundle `dividends.h5`
   选一只真实分红票，逐步推演 rqalpha 调价+分红入账，验证
   `m1-data-adapter.md` §2 路线 B 数学自洽；产出 `report-t10.md`
-- [ ] **T11（Hermes，P1）**：H-5 consume-once 裁决再复核（`questions.md` 批复节）；
-  有异议写 `report-t11.md`，无异议勾掉即可
+- [x] **T11（Hermes，P1）**：H-5 consume-once 裁决再复核（`questions.md` 批复节）；
+  无异议，见 `report-t11.md`
 - [ ] **T12（Hermes，P0，与 T9 交叉）**：T9 对照脚本与结果的**独立复核**——
   同窗口同参数的复现性、容差计算是否正确、有无"挑数据"（换窗口/换标的凑齐）；
   产出 `report-t12.md`
