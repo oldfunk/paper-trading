@@ -269,8 +269,24 @@ class TradingBridge:
         except Exception as e:
             logger.warning(f"Stock name refresh skipped: {e}")
         ok = all(v >= 0 for v in updated.values())
-        return {"ok": ok, "symbols": symbols, "updated": updated,
-                "revisions": revisions}
+        out = {"ok": ok, "symbols": symbols, "updated": updated,
+               "revisions": revisions}
+        # 数据质量守卫（M2）：缺口/重复/异常涨跌/停牌停滞/同步失败——不静默。
+        # 有发现即落 op_log[data:quality] 供面板可见；守卫自身故障绝不阻断同步。
+        try:
+            from paper_trading.data.quality import check as _quality_check
+
+            q = _quality_check(self.data_db, symbols)
+            out["quality"] = q
+            if not q["clean"]:
+                self.broker.log_operation(
+                    "data:quality", {"symbols": len(symbols)}, True,
+                    {"findings": q["findings"]}, None, None)
+                logger.warning("Data quality findings: %d in %d symbols",
+                               q["n_findings"], q["checked"])
+        except Exception as e:               # noqa: BLE001
+            logger.warning(f"quality check skipped: {e}")
+        return out
 
     def _detect_revisions(self, sym: str, bars: list) -> list[dict]:
         """检测前复权回溯调整：同一历史交易日的收盘在两次同步间发生变化。
@@ -1266,6 +1282,17 @@ def main() -> None:
     data_cov.add_argument("--pool-tag", default="")
     data_cov.add_argument("--no-picks", action="store_true")
     data_cov.add_argument("--json", action="store_true")
+    data_quality = data_sub.add_parser(
+        "quality",
+        help="行情质量守卫：缺日/重复/异常涨跌幅/停牌停滞/无数据（M2）")
+    data_quality.add_argument("--symbols", nargs="*")
+    data_quality.add_argument("--pool-from", default="config")
+    data_quality.add_argument("--pool-limit", type=int, default=20)
+    data_quality.add_argument("--pool-tag", default="")
+    data_quality.add_argument("--no-picks", action="store_true")
+    data_quality.add_argument("--days", type=int, default=30,
+                              help="回看窗口（交易日/缺口扫描天数，默认 30）")
+    data_quality.add_argument("--json", action="store_true")
 
     # agent
     agent_parser = subparsers.add_parser(
@@ -1705,6 +1732,13 @@ def main() -> None:
                             summary[k] = {"sources": srcs}
                 emit({"symbols": syms, "pool_source": note,
                       "summary": summary, "coverage": cov})
+            elif cmd == "quality":
+                from paper_trading.data.quality import check as quality_check
+
+                syms, note, _, _ = _resolve_syms(bridge, args)
+                q = quality_check(bridge.data_db, syms, days=args.days)
+                # 有发现≠命令失败（数据照常可用，发现进 findings 供审计）
+                emit({"symbols": syms, "pool_source": note, **q})
             else:
                 parser.print_help()
                 sys.exit(2)

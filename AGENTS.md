@@ -35,6 +35,12 @@ python -m paper_trading.cli history --type fills --limit 20 --json
 
 # 除权除息人工调整（M1：只检测+审计，不自动改账本）
 python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20 --cash-per-share 0.5 --share-ratio 0.3 --json
+
+# 行情质量守卫（M2）：缺日/重复/异常涨跌幅/停牌停滞/无数据；有发现会落 op_log[data:quality]
+python -m paper_trading.cli data quality --json
+# 母库覆盖度/口径对照（P6）
+python -m paper_trading.cli data coverage --json
+python -m paper_trading.cli data compare --symbols 600036 --json
 ```
 
 ### Cron Integration
