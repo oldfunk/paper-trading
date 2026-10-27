@@ -38,6 +38,7 @@
 1. `docs/incident-2026-10-27.md` —— 刚发生的交易事故复盘（尺度污染，已冲正）
 2. `docs/TODO-code-review-20261027.md` —— R0–R9 全量审查清单与结论（**已知问题都在这**，你的价值是找它没覆盖的）
 3. `AGENTS.md` —— 项目硬规则（数据不许编造、fail-closed、可审计……）
+4. `docs/worker/report-defect-attribution.md` —— **代码问题的量化归因**（L1 重造面积 44.6%／钱类缺陷 83% 可被框架消灭／61% 缺陷在 L2 框架管不到）＋ §6 M1 验收靶子；L3 双审的分工按 §7
 
 ---
 
@@ -76,9 +77,10 @@
 
 - [ ] 背景变化：用户已拍板"量化核心必须用成熟开源框架、零自研"；主 AI 已产出
   迁移方案 `docs/refactor-plan-open-source.md`（vnpy + rqalpha 双框架）
-- [ ] **反驳审查**：通读方案，专门找漏洞——技术假设错误、遗漏的能力点、
+- [x] **反驳审查**：通读方案，专门找漏洞——技术假设错误、遗漏的能力点、
   风险低估、更该入选的框架；产出 `docs/worker/report-t5.md`，
-  每条反驳要有依据（文档/代码/检索），**不许和稀泥**
+  每条反驳要有依据（文档/代码/检索），**不许和稀泥**（→ `report-t5.md`，
+  已促成 §7 拍板作废与 rqalpha 单引擎定案）
 - [ ] **桌面 spike**（用户电脑，隔离 venv，不污染现有环境）：
   建 Python 3.13 venv（如 `C:\Users\yanzh\venvs\refactor-spike`），
   `pip install vnpy rqalpha`，跑两个 hello：① vnpy EventEngine+撮合引擎
@@ -95,14 +97,15 @@
 - [ ] 背景：选型主线已定 **rqalpha 单引擎**（`docs/refactor-plan-open-source.md` §7），
   但 akquant（MIT + AKFamily 同门 + Rust）是唯一可能翻盘的挑战者——
   用**两个否决性问题**验证，不是全量打分
-- [ ] 问题①**aarch64 可装性**：PyPI/官方是否提供 manylinux aarch64 轮子
+- [x] 问题①**aarch64 可装性**：PyPI/官方是否提供 manylinux aarch64 轮子
   （Rust 内核没有轮子就要交叉编译 = 否决）；在 Pi 隔离 venv
   （`/home/pi/refactor-spike`，与你之前 spike 同一环境）实测 `pip install akquant`
-- [ ] 问题②**模拟撮合/T+1 能力**：源码取证——有没有常驻/模拟盘撮合（不是纯
+- [x] 问题②**模拟撮合/T+1 能力**：源码取证——有没有常驻/模拟盘撮合（不是纯
   回测）、T+1 冻结语义（`tplusone`/`Position.available`）、涨跌停拒单、
   卖出印花税、100 股整手；每条给 文件:行 证据
-- [ ] 产出 `docs/worker/report-t6.md`：两问各有明确是/否 + 证据；
+- [x] 产出 `docs/worker/report-t6.md`：两问各有明确是/否 + 证据；
   结论格式「akquant 反超 / rqalpha 定案」二选一，不许含糊
 - 验收：aarch64 实测结果 + 撮合能力源码取证；**不改产品代码、不碰生产环境**
 
-**状态**：Batch 1 T1–T4 + T5' 已交付；T6 下发；主 AI 并行处理 H-1..H-8 复核修复。
+**状态**：Batch 1 T1–T4 + T5' 已交付；**T6 已交付 → akquant 不反超（缺涨跌停带），rqalpha 定案**；主 AI 并行处理 H-1..H-8 复核修复。
+  注：T6 的两处未做项见 `report-t6.md` §3（Pi 真机安装由主 AI 一枪收口；akquant 策略执行验证约半天，不在否决路径上）。
