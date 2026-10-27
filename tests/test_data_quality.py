@@ -53,8 +53,9 @@ def test_quality_flags_all_defect_types(tmp_path):
 
     b = _bridge(tmp_path)
     days = _trading_days(6)
-    # A：同日重复 + 异常涨跌 + 中段缺口
-    a_rows = [_bar("600519", days[0], 10.0),
+    # A：老股（40 天前已有 K 线，不落入新股宽限期）+ 同日重复 + 异常涨跌 + 中段缺口
+    a_rows = [_bar("600519", date.today() - timedelta(days=40), 10.0),
+              _bar("600519", days[0], 10.0),
               _bar("600519", days[1], 10.0),
               _bar("600519", days[1], 10.0, hour=15),   # 同日第二条（绕过主键）
               _bar("600519", days[3], 16.0),            # +60% 异常涨跌（days[2] 缺口）
@@ -91,6 +92,50 @@ def test_quality_bad_price_flagged(tmp_path):
                            _bar("600519", days[2], 10.0)])
     f = check_symbol(b.data_db, "600519")
     assert any(x["type"] == "bad_price" for x in f)
+
+
+def test_quality_new_listing_grace(tmp_path):
+    """M-3：上市首周的大幅波动是合法行情（创业板前 5 日无涨跌幅），不判脏。"""
+    from paper_trading.data.quality import check_symbol
+
+    b = _bridge(tmp_path)
+    d0, d1, d2 = _trading_days(3)
+    b.data_db.upsert_bars([_bar("301001", d0, 10.0),
+                           _bar("301001", d1, 30.0),   # +200%：新股合法
+                           _bar("301001", d2, 28.0)])
+    f = check_symbol(b.data_db, "301001")
+    assert not any(x["type"] == "absurd_move" for x in f), f
+    # 老股同样幅度仍然要报（40 天前有 K 线 = 不在宽限期）
+    old_days = _trading_days(2)
+    b.data_db.upsert_bars([_bar("600001", date.today() - timedelta(days=40), 10.0),
+                           _bar("600001", old_days[0], 10.0),
+                           _bar("600001", old_days[1], 30.0)])
+    f2 = check_symbol(b.data_db, "600001")
+    assert any(x["type"] == "absurd_move" for x in f2), f2
+
+
+def test_sync_quality_oplog_once_per_day(monkeypatch, tmp_path):
+    """M-2：同日多次 sync 只记一条 data:quality（停牌/停滞不许刷屏 op_log）。"""
+    from paper_trading.models import Bar as _Bar
+
+    class FakeFetcher:
+        @staticmethod
+        def fetch_daily(symbol, start_date=None, **kw):
+            return [_Bar(symbol=symbol,
+                         timestamp=datetime(2024, 1, 1) + timedelta(days=i),
+                         open=10.0, high=11.0, low=9.0, close=10.0, volume=100)
+                    for i in range(5)]
+
+        @staticmethod
+        def fetch_stock_names(symbols):
+            return {}
+
+    monkeypatch.setattr(hb, "_get_fetcher", lambda: FakeFetcher)
+    b = _bridge(tmp_path)
+    b.sync_data(["600519"])
+    b.sync_data(["600519"])          # 同日第二次（模拟 cron 多轮）
+    ops = [o for o in b.broker.get_op_log(30) if o["action"] == "data:quality"]
+    assert len(ops) == 1, f"同日多次 sync 只应记 1 条，实际 {len(ops)}"
 
 
 def test_sync_data_logs_quality_findings(monkeypatch, tmp_path):

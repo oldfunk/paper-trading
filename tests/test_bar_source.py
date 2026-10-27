@@ -57,3 +57,26 @@ def test_bridge_get_bars_delegates(tmp_path):
     b = _mk_local(tmp_path)
     assert len(b.get_bars("600519", limit=2)) == 2
     assert b.daily_source in ("auto", "local", "mother")
+
+
+def test_mother_only_mode_no_local_fallback(tmp_path, monkeypatch):
+    """M-1：data.daily_source=mother 是真开关——缺母库不回退本地（fail-closed）。"""
+    monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(tmp_path / "no-sd"))
+    b = _mk_local(tmp_path)          # 本地有 600519 数据
+    src = BarSource(b.data_db, source="mother")
+    assert src.get_bars("600519", limit=3) == [], \
+        "mother 模式缺母库必须返回空（旧行为静默回退本地=死配置）"
+    assert src.source_of("600519") == "unavailable"
+
+
+def test_mother_only_mode_uses_mother(tmp_path, monkeypatch):
+    """M-1：mother 模式有母库时只读母库（无视本地）。"""
+    import test_mother_contract as t
+
+    sd = t._mk_sd(tmp_path)
+    monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(sd))
+    b = _mk_local(tmp_path)
+    src = BarSource(b.data_db, source="mother")
+    bars = src.get_bars("600519", limit=3)
+    assert bars and bars[-1].close == 1505.0      # 母库价，非本地 1494
+    assert src.source_of("600519") == "mother:kline_daily"

@@ -107,5 +107,31 @@
   结论格式「akquant 反超 / rqalpha 定案」二选一，不许含糊
 - 验收：aarch64 实测结果 + 撮合能力源码取证；**不改产品代码、不碰生产环境**
 
-**状态**：Batch 1 T1–T4 + T5' 已交付；**T6 已交付 → akquant 不反超（缺涨跌停带），rqalpha 定案**；主 AI 并行处理 H-1..H-8 复核修复。
+**状态**：Batch 1 T1–T4 + T5' 已交付；**T6 已交付 → akquant 不反超（缺涨跌停带），rqalpha 定案**；主 AI 已完成 H 系修复（`caa7371`）与 M-1/M-2/M-3 三缺陷修复，全量 **316 passed**。
   注：T6 的两处未做项见 `report-t6.md` §3（Pi 真机安装由主 AI 一枪收口；akquant 策略执行验证约半天，不在否决路径上）。
+
+### T7 rqalpha 数据源适配器取证与口径归口设计（Qoder，P0，M0b 关键路径）
+
+- [ ] 背景：T6 判决 **rqalpha 定案**；M1 第一步 = `AbstractDataSource` 接我们的数据
+- [ ] 在 spike venv（`C:\Users\yanzh\venvs\refactor-spike`，rqalpha 6.4.2 已装、
+  bundle 已下）读源码，枚举 `AbstractDataSource` 必须实现的方法/属性（**文件:行**）
+- [ ] 逐方法映射到我们的数据（SQLite `daily_bars` / bundle 元数据 / 交易日历）
+- [ ] **口径归口设计（refactor-plan §7.3 红线，本任务核心）**：论证两条路线的
+  除权日行为——路线 A「我们的 qfq 序列入 + 因子置中性 + bundle 只供停牌/ST/
+  日历/分红元数据」 vs 路线 B「raw 价 + bundle 复权因子」；必须回答
+  "**除权日净值/持仓会不会错**"，举一个真实分红案例逐步推演
+- [ ] 产出 `docs/worker/report-t7.md`：接口表（文件:行）+ 数据流 + 难点清单
+  （哪些方法我们给不了、退路是什么）+ 口径结论
+- 验收：**不含产品代码**；口径结论有除权日推演
+
+### T8 H 系修复复核（Hermes，P0，L3 审查）
+
+- [ ] 复核 commit `caa7371`（H-1/H-2/H-4/H-6/H-7 修复 + H-3/H-5 锁定测试）：
+  修复是否正确、测试是否真能红（mutation 视角）、**有无过度拦截**
+  （正常下单/挂条件路径是否被误伤）
+- [ ] 产出 `docs/worker/report-t8.md`：逐条 verdict（修复正确 / 需改 / 误伤）
+- 验收：只审查不改码；发现 P0 立即 `questions.md` 喊停
+
+**缺陷量化基线**（主 AI 已采纳）：`report-defect-attribution.md`——
+L1 44.6% / 钱类 83% 框架可灭 / **L2 61% 是迁移后的主战场**（1.53 缺陷/KLOC）；
+其 §6 的 M1 七条验收门禁已并入 `refactor-plan` §5.1。

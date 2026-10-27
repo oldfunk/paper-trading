@@ -25,6 +25,9 @@ from typing import Optional
 ABS_MOVE_LIMIT = 0.31
 #: 最后一根 K 线落后多少交易日算"长期停牌/同步停滞"标记
 SUSPENSION_TRADING_DAYS = 10
+#: 新股上市宽限天数（M-3）：创业板/科创板上市前 5 日无涨跌幅、主板首日
+#: +44% 上限——上市初期的大幅波动是合法行情，不许判成脏数据
+NEW_LISTING_GRACE_DAYS = 10
 #: 缺口扫描最大迭代天数（防日历异常导致死循环）
 _MAX_GAP_SCAN = 200
 
@@ -87,13 +90,17 @@ def check_symbol(db, symbol: str, *, days: int = 30,
                              "date": d.isoformat(),
                              "detail": f"收盘价非法：{c!r}"})
     # 3) 异常涨跌幅（只看相邻**不同交易日**，非法价已在上面单列）
+    #    M-3（Qoder 审查）：上市初期宽限——首根 K 线起 10 天内的大幅波动
+    #    是合法行情（创业板/科创前 5 日无涨跌幅），不判脏数据。
+    first_d = ordered[0][0]
     prev_d: Optional[date] = None
     prev_c: Optional[float] = None
     for d, c in ordered:
         if prev_d is not None and d != prev_d and prev_c and prev_c > 0 \
                 and math.isfinite(c):
             pct = c / prev_c - 1.0
-            if abs(pct) > abs_move_limit:
+            if abs(pct) > abs_move_limit \
+                    and (d - first_d).days > NEW_LISTING_GRACE_DAYS:
                 findings.append({"type": "absurd_move", "symbol": symbol,
                                  "date": d.isoformat(),
                                  "detail": f"相邻日涨跌 {pct:+.1%}（超 ±31% 涨跌"

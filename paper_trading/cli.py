@@ -279,9 +279,14 @@ class TradingBridge:
             q = _quality_check(self.data_db, symbols)
             out["quality"] = q
             if not q["clean"]:
-                self.broker.log_operation(
-                    "data:quality", {"symbols": len(symbols)}, True,
-                    {"findings": q["findings"]}, None, None)
+                # M-2（Qoder 审查）：按业务日去重——停牌/节假日数据停滞时，
+                # 每次 sync 都会有发现，不加闸会每天刷几十条 op_log。
+                # 一天最多记一条 data:quality；当日明细看返回值 quality 字段。
+                day = datetime.now().date().isoformat()
+                if not self.broker.has_operation("data:quality", day):
+                    self.broker.log_operation(
+                        "data:quality", {"symbols": len(symbols)}, True,
+                        {"date": day, "findings": q["findings"]}, None, None)
                 logger.warning("Data quality findings: %d in %d symbols",
                                q["n_findings"], q["checked"])
         except Exception as e:               # noqa: BLE001
