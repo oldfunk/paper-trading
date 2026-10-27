@@ -350,6 +350,48 @@ def test_ttl_cache_hits_across_connections(sd):
     mother.reset_cache()
 
 
+def test_daily_bars_missing_table_falls_back(sd):
+    """R4.1 表缺失态：有目录但库无 kline_daily 表 → 回退本地（不整链失败）。"""
+    empty = sd.parent / "empty-sd"
+    (empty / "src").mkdir(parents=True, exist_ok=True)
+    (empty / "data" / "db").mkdir(parents=True, exist_ok=True)
+    sqlite3.connect(empty / "data" / "db" / "stock_dashboard.db").close()
+    mother.reset_cache()
+    try:
+        out = mother.daily_bars(["600519"], days=5, local_bars=_local_bar,
+                                mother=empty)
+        assert out["600519"]["source"] == SRC_LOCAL_AKSHARE
+        assert out["600519"]["available"] and out["600519"]["bars"]
+    finally:
+        mother.reset_cache()
+
+
+def test_locked_mother_falls_back_quickly(sd):
+    """R4.4 母库被写锁占死：2s 硬超时内降级本地，不挂死（合成库，不碰真母库）。
+
+    真母库上有母项目回填进程在写，不能人为加锁干扰；行为等价性在合成库
+    验证（同一 _conn 路径：timeout=2 + busy_timeout=2000）。
+    """
+    import time
+
+    db = sd / "data" / "db" / "stock_dashboard.db"
+    locker = sqlite3.connect(db)
+    mother.reset_cache()
+    locker.execute("BEGIN EXCLUSIVE")       # 独占锁，读者全部阻塞
+    t0 = time.monotonic()
+    try:
+        out = mother.daily_bars(["600519"], days=5, local_bars=_local_bar,
+                                mother=sd)
+    finally:
+        locker.execute("ROLLBACK")
+        locker.close()
+        mother.reset_cache()
+    elapsed = time.monotonic() - t0
+    assert elapsed < 8.0, f"锁竞争下未在硬超时内返回：{elapsed:.1f}s"
+    assert out["600519"]["source"] == SRC_LOCAL_AKSHARE
+    assert out["600519"]["available"]      # 本地兜底照常供给
+
+
 def test_real_mother_contract_if_present():
     """真母库契约校验：显式指定 ``PAPER_TRADING_MOTHER_DIR``（推荐）。
 
@@ -394,5 +436,35 @@ def test_real_mother_contract_if_present():
             "SELECT COUNT(*) FROM trading_calendar WHERE is_open = 1"
         ).fetchone()[0]
         assert n_cal > 0, "trading_calendar 无 is_open=1 行（回填未完成）"
+        # 4) 量级 sanity（R1.6 固化）：母库与本地同日重叠抽样比值 [0.9,1.1]
+        #    ——尺度污染（复权口径/取错列）是 1.2×~8× 量级，比值检查必拦
+        if "close_qfq" in {r[1] for r in conn.execute(
+                "PRAGMA table_info(kline_daily)")}:
+            local_db = Path("data.db")
+            if local_db.exists():
+                loc = sqlite3.connect(f"file:{local_db}?mode=ro", uri=True)
+                try:
+                    rows = conn.execute(
+                        """SELECT code, trade_date, COALESCE(close_qfq, close)
+                           FROM kline_daily WHERE trade_date >= DATE('now','-7 day')
+                           LIMIT 200""").fetchall()
+                    bad, cmp_n = [], 0
+                    for code, mdate, mclose in rows:
+                        same = loc.execute(
+                            """SELECT close FROM daily_bars WHERE symbol=?
+                               AND timestamp>=? AND timestamp<?""",
+                            (code, mdate, mdate + "T23:59:59")).fetchone()
+                        if not same or not same[0] or not mclose:
+                            continue
+                        cmp_n += 1
+                        ratio = mclose / same[0]
+                        if ratio > 1.1 or ratio < 0.9:
+                            bad.append((code, mdate, round(ratio, 3)))
+                    assert not bad, f"母库/本地同日量级异常：{bad[:5]}"
+                    # 有重叠才断言（回填期可能 0 可比，不误杀）
+                    if cmp_n == 0:
+                        pytest.skip("本地库与母库近 7 日无重叠，无法量级对照")
+                finally:
+                    loc.close()
     finally:
         conn.close()
