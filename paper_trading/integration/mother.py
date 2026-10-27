@@ -175,10 +175,12 @@ def _corr(a: list, b: list):
 def compare_bars(codes: Iterable[str], days: int = 250,
                  local_bars: Optional[Callable[[str, int], list]] = None,
                  mother: Optional[Path] = None) -> dict:
-    """对照本地前复权与母库后复权日线：MA 交叉差异 + 收益相关性。
+    """对照本地前复权与母库日线：MA 交叉差异 + 收益相关性。
 
-    用途：验证“切到母库行情”对策略信号的影响。母库 `close_adj` 是后复权、
-    本地是 akshare 前复权，绝对价位不可比，但均线交叉与收益相关性可比。
+    用途：验证“切到母库行情”对策略信号的影响。母库交付 `close_qfq`
+    （母方 Issue #8，2026-10-27 验收）后与本地 akshare qfq 同口径，绝对
+    价位可比；老数据（`close_qfq` 为 NULL）降级后复权/不复权，仍按均线
+    交叉与收益相关性对照。
     """
     codes = [str(c).strip().zfill(6) for c in codes]
     mother_bars = daily_bars(codes, days=days, local_bars=None, mother=mother)
@@ -317,12 +319,19 @@ def daily_bars(codes: Iterable[str], days: int = 250,
             adj = None
             if conn is not None and _has(conn, "kline_daily",
                                          ("code", "trade_date", "close")):
+                # 复权口径优先级：close_qfq（前复权，母方 Issue #8 交付后可用，
+                # 与本地 akshare qfq 同口径、绝对价位可比）→ close_adj（后复权，
+                # 绝对价位与本地不可比）→ 不复权 close。close_qfq 列不存在或
+                # 值为 NULL（老数据/回填中）逐行降级，不影响其他行。
+                has_qfq = _has(conn, "kline_daily", ("close_qfq",))
+                cols = ("trade_date, open, high, low, close, volume, amount, "
+                        "close_adj" + (", close_qfq" if has_qfq else ""))
+
                 def _fetch():
                     rows = conn.execute(
-                        """SELECT trade_date, open, high, low, close,
-                                  volume, amount, close_adj
-                           FROM kline_daily WHERE code = ?
-                           ORDER BY trade_date DESC LIMIT ?""",
+                        f"""SELECT {cols}
+                            FROM kline_daily WHERE code = ?
+                            ORDER BY trade_date DESC LIMIT ?""",
                         (code, int(days))).fetchall()
                     return [dict(r) for r in rows]
 
@@ -331,16 +340,22 @@ def daily_bars(codes: Iterable[str], days: int = 250,
                 except Exception:           # noqa: BLE001 - 单只失败不影响其他
                     rows = []
                 if rows:
+                    def _close(r):
+                        return (r.get("close_qfq") or r.get("close_adj")
+                                or r["close"])
+
                     bars = [{
                         "date": _as_date(r["trade_date"]),
                         "open": r["open"], "high": r["high"],
-                        "low": r["low"], "close": r["close_adj"] or r["close"],
+                        "low": r["low"], "close": _close(r),
                         "volume": r["volume"],
                         "amount": r.get("amount"),
                     } for r in rows]
                     source = mother_source("kline_daily")
                     asof = _as_date(rows[0]["trade_date"])
-                    adj = "hfq" if rows[0].get("close_adj") else "raw"
+                    r0 = rows[0]
+                    adj = ("qfq" if r0.get("close_qfq")
+                           else "hfq" if r0.get("close_adj") else "raw")
             if not bars and local_bars is not None:
                 try:
                     local = local_bars(code, days) or []

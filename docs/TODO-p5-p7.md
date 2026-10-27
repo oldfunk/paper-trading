@@ -19,6 +19,7 @@
 - [x] P6.3 母库行情口径：`close_adj` 为后复权、本地为前复权；`data compare` 量化差异
 - [x] P6.4 契约测试扩展：`instrument`/`trading_calendar` 列校验
 - [x] P6.5 执行侧切库：`config.data.daily_source` + `BarSource`（引擎日线规则/AI 信号/`price_map` 母库优先、缺标的回退本地）；`data compare` 量化口径差异
+- [x] P6.6 **qfq 口径打通（v0.7.3，母方 Issue #8 交付后）**：母库取价切 `close_qfq`（NULL 逐行降级 `close_adj`→`close`）；`calendar sync` 母库优先（`trading_calendar` → akshare 兜底）；契约测试加数据级校验（近 30 天 `close_qfq` 非空、基准代码、日历 `is_open=1` 行）
 
 ## P7 — 可观测/审计/跨仓协作
 
@@ -29,16 +30,17 @@
 
 ## “切到母库策略”验证路径
 
-1. `data compare`：同标的本地 qfq vs 母库 hfq 的 MA5/MA20 交叉差异 → 量化口径影响。
+1. `data compare`：本地 qfq vs 母库日线（v0.7.3 起母库也取 `close_qfq`，同口径）的 MA5/MA20 交叉差异 + 收益相关性 → 量化口径影响。
 2. `agent run --dry-run --data-source mother`：用母库日线喂信号，与本地结果对照（默认仍本地，开关式）。
 3. 差异写入 `op_log`（`data:compare`）与 `docs/mother-interface.md` 结论；接缝问题提母库 Issue。
 
 ## 母库 Issue（本轮已提交，`oldfunk/stock-dashboard`）
 
-- #4 `kline_daily` 缺 qfq 口径（`close_adj` 有 NULL）→ 执行信号不可比
-- #5 `benchmark_daily` 指数代码约定不一致（sh000300/sh000922）
-- #6 `trading_calendar` 未回填、`market_index` 过期、`market_state_daily` 未落库
-- #7 `kline_daily` 覆盖不全（959/5527，如 000858 缺失）
+- #4 `kline_daily` 缺 qfq 口径（`close_adj` 有 NULL）→ 执行信号不可比 → **✅ 已交付（close_qfq）**
+- #5 `benchmark_daily` 指数代码约定不一致（sh000300/sh000922）→ **✅ 已补 000001/399001/399006**
+- #6 `trading_calendar` 未回填、`market_index` 过期、`market_state_daily` 未落库 → **✅ 日历 3949 行、market_index 至 2026-10-27**
+- #7 `kline_daily` 覆盖不全（959/5527，如 000858 缺失）→ ⏳ 回填进行中，子项目逐标的回退
+- #8 最小数据契约汇总（qfq/基准/日历/主键/instrument/覆盖度）→ **✅ P0/P1 已交付；验收见 v0.7.3**
 
 ## 执行侧验证结果（2026-10-27，Pi）
 

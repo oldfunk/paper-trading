@@ -3,7 +3,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -41,7 +41,7 @@ def _mk_sd(root: Path) -> Path:
     c.executescript("""
     CREATE TABLE kline_daily (code TEXT, trade_date TEXT, open REAL, high REAL,
         low REAL, close REAL, volume REAL, amount REAL, close_raw REAL,
-        close_adj REAL, turnover REAL, shares REAL);
+        close_adj REAL, turnover REAL, shares REAL, close_qfq REAL);
     CREATE TABLE financial_summary (stock_code TEXT PRIMARY KEY, roe_5y_avg REAL,
         roe_10y_avg REAL, updated_at TEXT);
     CREATE TABLE dividend_annual (stock_code TEXT, report_date TEXT,
@@ -67,8 +67,10 @@ def _mk_sd(root: Path) -> Path:
         session_json TEXT, source TEXT);
     """)
     c.execute("""INSERT INTO kline_daily VALUES
-        ('600519','2026-10-26',1500,1510,1490,1505,1000000,1500000000,1505,1505,0.1,1000000000),
-        ('600519','2026-10-23',1490,1500,1480,1495,900000,1300000000,1495,1495,0.1,1000000000)""")
+        ('600519','2026-10-26',1500,1510,1490,1505,1000000,1500000000,1505,1505,0.1,1000000000,1505),
+        ('600519','2026-10-23',1490,1500,1480,1495,900000,1300000000,1495,1495,0.1,1000000000,1495),
+        ('300750','2026-10-26',200,210,190,205,500000,100000000,205,1200,0.1,500000000,NULL),
+        ('300750','2026-10-23',190,200,180,195,400000,80000000,195,1150,0.1,500000000,NULL)""")
     c.execute("INSERT INTO financial_summary VALUES ('600519', 20.5, 18.2, '2026-10-23T22:00:00')")
     c.execute("INSERT INTO dividend_annual VALUES ('600519','2025-12-31', 3.0, 6.5, 2.0, 'em')")
     c.execute("INSERT INTO benchmark_daily VALUES ('000001','2026-10-26', 11000)")
@@ -117,9 +119,18 @@ def test_daily_bars_mother_first_then_local(sd):
     assert out["600519"]["source"] == "mother:kline_daily"
     assert out["600519"]["available"] and out["600519"]["asof"] == "2026-10-26"
     assert out["600519"]["bars"][0]["close"] == 1505
+    assert out["600519"]["adj"] == "qfq"          # 有 close_qfq 用前复权
     assert out["600519"]["stale"] is False
     assert out["000001"]["source"] == SRC_LOCAL_AKSHARE
     assert out["000001"]["available"]
+
+
+def test_daily_bars_qfq_null_falls_back_hfq(sd):
+    """close_qfq 为 NULL（老数据/回填中）逐行降级到 close_adj，不整体失败。"""
+    out = mother.daily_bars(["300750"], days=5, local_bars=None, mother=sd)
+    assert out["300750"]["source"] == "mother:kline_daily"
+    assert out["300750"]["bars"][0]["close"] == 1200   # close_adj 后复权
+    assert out["300750"]["adj"] == "hfq"
 
 
 def test_daily_bars_unavailable_without_mother(tmp_path):
@@ -187,6 +198,26 @@ def test_instrument_map_and_trading_calendar(sd):
     assert any(r["is_open"] == 1 for r in tc["data"])
 
 
+def test_calendar_sync_prefers_mother(sd, tmp_path, monkeypatch):
+    """calendar sync 母库优先：母库 trading_calendar 可用即落缓存，不再调 akshare。"""
+    from paper_trading.utils import trading_calendar as tc_mod
+
+    fut = (date.today() + timedelta(days=10)).isoformat()
+    conn = sqlite3.connect(sd / "data" / "db" / "stock_dashboard.db")
+    conn.execute("INSERT INTO trading_calendar VALUES ('CN',?,1,'{}','test')",
+                 (fut,))
+    conn.commit()
+    conn.close()
+    mother.reset_cache()
+    monkeypatch.setenv("STOCK_DASHBOARD_DIR", str(sd))
+    cal = tmp_path / "cal.json"
+    monkeypatch.setenv(tc_mod.CALENDAR_ENV, str(cal))
+    out = tc_mod.sync_calendar()
+    assert out["ok"] and out["source"] == "mother:trading_calendar"
+    assert fut in tc_mod._read_calendar(cal)["dates"]
+    assert tc_mod.is_trading_day(date.fromisoformat(fut))
+
+
 def test_compare_bars_local_vs_mother(sd):
     out = mother.compare_bars(
         ["600519"], days=10, mother=sd,
@@ -196,7 +227,7 @@ def test_compare_bars_local_vs_mother(sd):
                                  for i in range(1, 4)])
     r = out["600519"]
     assert r["local"]["adj"] == "qfq"
-    assert r["mother"]["adj"] in ("hfq", "raw")
+    assert r["mother"]["adj"] == "qfq"           # 母库有 close_qfq 时同口径
     assert r["cross_diff"] == {"golden": 0, "death": 0}
     assert "return_corr" in r
 
@@ -235,5 +266,23 @@ def test_real_mother_contract_if_present():
             assert have, f"母库缺表 {table}"
             missing = cols - have
             assert not missing, f"母库表 {table} 缺列 {missing}"
+        # —— Issue #8 数据契约验收（母方 2026-10-27 交付）——
+        # 1) 前复权口径：close_qfq 存在且近 30 天无 NULL（老数据允许回填中）
+        if "close_qfq" in {r[1] for r in conn.execute(
+                "PRAGMA table_info(kline_daily)")}:
+            n_null = conn.execute(
+                "SELECT COUNT(*) FROM kline_daily WHERE close_qfq IS NULL "
+                "AND trade_date >= DATE('now', '-30 day')").fetchone()[0]
+            assert n_null == 0, f"近 30 天 close_qfq 有 {n_null} 行 NULL"
+        # 2) 基准代码：子项目使用的三个指数代码必须可查（Issue #5）
+        codes = {r[0] for r in conn.execute(
+            "SELECT DISTINCT code FROM benchmark_daily")}
+        assert {"000001", "399001", "399006"} & codes, \
+            f"benchmark_daily 缺常用指数代码，现有 {sorted(codes)[:8]}"
+        # 3) 交易日历：有数据且覆盖今天（Issue #6；空表=回填未完成）
+        n_cal = conn.execute(
+            "SELECT COUNT(*) FROM trading_calendar WHERE is_open = 1"
+        ).fetchone()[0]
+        assert n_cal > 0, "trading_calendar 无 is_open=1 行（回填未完成）"
     finally:
         conn.close()

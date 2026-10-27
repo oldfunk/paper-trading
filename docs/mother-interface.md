@@ -22,7 +22,7 @@
 
 | 接口 | 母库表 | 依赖列 | 本地兜底 | 说明 |
 |---|---|---|---|---|
-| `daily_bars` | `kline_daily` | `code, trade_date, close` | `local:akshare`（`data.db.daily_bars`，前复权） | 逐标的降级；母库 `close_adj`（后复权）优先于 `close`，返回带 `adj` 标注 |
+| `daily_bars` | `kline_daily` | `code, trade_date, close` | `local:akshare`（`data.db.daily_bars`，前复权） | 逐标的降级；取价优先 `close_qfq`（前复权，2026-10-27 起）→ `close_adj`（后复权）→ `close`，返回带 `adj` 标注 |
 | `financial_summary` | `financial_summary` | `stock_code` | 无 → `unavailable` | ROE 5y/10y、毛利/净利率、OCF、负债、ROIC、数据年数 |
 | `dividend` | `dividend_annual` | `stock_code` | 无 → `unavailable` | 年度分红 |
 | `benchmark` | `benchmark_daily` | `code, trade_date, close` | 无 → `unavailable` | 基准指数日线（相对强度） |
@@ -73,17 +73,23 @@ AI 上下文里的 `data_provenance` 汇总每个接口的 `source/asof/stale`�
 - `TradingBridge.bar_source`（`paper_trading/data/source.py`）统一取数：**母库优先、缺该标的回退本地**。
 - 开关在 `config.yaml`：`data.daily_source = auto|local|mother`（缺省 `auto`）。
 - 引擎日线规则、AI 信号、`price_map`（NAV/风控计价）都走 `bar_source.get_bars`。
-- 复权口径：母库 `close_adj` 为**后复权/不复权**，本地为**前复权**。绝对价位不可比，
-  均线交叉/收益相关性可比（见 `data compare`）。切库前请确认口径（见下方 Issue）。
+- 复权口径（**2026-10-27 母方 Issue #8 交付后**）：`kline_daily` 已有 `close_qfq`
+  （前复权），子项目取价优先 `close_qfq` → 与本地 akshare **同口径、绝对价位可比**；
+  `close_qfq` 为 NULL 的老数据逐行降级 `close_adj`（后复权）→ 不复权，并通过
+  `adj` 标注。`data compare` 输出的 `mother.adj` 反映当前口径（`qfq`/`hfq`/`raw`）。
 
-## 5.2 本轮切库验证发现（已给母库提 Issue）
+## 5.2 母库 Issue 台账与验收（#4–#8）
 
-| 现象 | 子项目影响 | 母库 Issue |
+| 现象（v0.7.1 观测） | 母库 Issue | 验收（2026-10-27 母方交付） |
 |---|---|---|
-| `kline_daily` 无 `qfq` 列；`close_adj` 有 NULL（002215） | 执行信号口径不可比 | #4 |
-| `benchmark_daily` 代码为 `sh000300`/`sh000922`，子项目按 `000001` 查不到 | 相对基准不可用 | #5 |
-| `trading_calendar` 空；`market_index` 停在 2026-07-03；`market_state_daily` 未落库 | 日历/大盘只能本地 | #6 |
-| `kline_daily` 仅 959/5527 只（如 000858 缺失） | 覆盖不均，逐标的回退 | #7 |
+| `kline_daily` 无 `qfq` 列；`close_adj` 有 NULL（002215） | #4 | ✅ `close_qfq` 已有、近 30 天无 NULL；子项目切 `close_qfq` 优先（v0.7.3） |
+| `benchmark_daily` 代码为 `sh000300`/`sh000922`，子项目按 `000001` 查不到 | #5 | ✅ 已补 `000001`/`399001`/`399006` |
+| `trading_calendar` 空；`market_index` 停在 2026-07-03；`market_state_daily` 未落库 | #6 | ✅ `trading_calendar` 3949 行；`market_index` 最新 2026-10-27；`calendar sync` 改母库优先（v0.7.3） |
+| `kline_daily` 仅 959/5527 只（如 000858 缺失） | #7 | ⏳ 覆盖仍 959 只（母方回填进行中）；子项目逐标的回退本地，不阻断 |
+| 最小数据契约汇总（qfq/基准/日历/主键/覆盖度） | #8 | ✅ P0/P1 项已交付；P2（覆盖度视图）随回填推进 |
+
+验收方式：Pi 上 `PAPER_TRADING_MOTHER_DIR=/home/pi/stock-dashboard venv/bin/python -m pytest tests/test_mother_contract.py -q`
+（含 `close_qfq` 近 30 天非空、基准代码、日历有 `is_open=1` 行三项数据级校验）。
 
 ## 6. 性能约束（Pi 实机）
 
