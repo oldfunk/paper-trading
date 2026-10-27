@@ -83,5 +83,19 @@
 
 ---
 
-**状态**：Batch 1 已下发，等待员工 AI 认领；我并行开工 M2 数据质量守卫
-（`docs/ROADMAP.md` §2 第 1 项）。
+### T6 akquant 挑战者 spike（P0，半天，决定终选翻不翻盘）
+
+- [ ] 背景：选型主线已定 **rqalpha 单引擎**（`docs/refactor-plan-open-source.md` §7），
+  但 akquant（MIT + AKFamily 同门 + Rust）是唯一可能翻盘的挑战者——
+  用**两个否决性问题**验证，不是全量打分
+- [ ] 问题①**aarch64 可装性**：PyPI/官方是否提供 manylinux aarch64 轮子
+  （Rust 内核没有轮子就要交叉编译 = 否决）；在 Pi 隔离 venv
+  （`/home/pi/refactor-spike`，与你之前 spike 同一环境）实测 `pip install akquant`
+- [ ] 问题②**模拟撮合/T+1 能力**：源码取证——有没有常驻/模拟盘撮合（不是纯
+  回测）、T+1 冻结语义（`tplusone`/`Position.available`）、涨跌停拒单、
+  卖出印花税、100 股整手；每条给 文件:行 证据
+- [ ] 产出 `docs/worker/report-t6.md`：两问各有明确是/否 + 证据；
+  结论格式「akquant 反超 / rqalpha 定案」二选一，不许含糊
+- 验收：aarch64 实测结果 + 撮合能力源码取证；**不改产品代码、不碰生产环境**
+
+**状态**：Batch 1 T1–T4 + T5' 已交付；T6 下发；主 AI 并行处理 H-1..H-8 复核修复。
