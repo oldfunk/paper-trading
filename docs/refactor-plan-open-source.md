@@ -78,7 +78,7 @@
 
 | 阶段 | 内容 | 验收 | 回滚 |
 |---|---|---|---|
-| **M0 技术验证**（先决，1-2 天） | ① 本地/Pi 建 Python 3.13 venv：装 vnpy 4.5（研究 **--no-deps 去 GUI** 或独立安装法）+ rqalpha 6.4.2；② Pi arm64 headless spike：vnpy 撮合 hello（下单→成交→T+1 冻结→账户）；③ rqalpha 用本地 SQLite 数据适配器跑通 MA5/20 回测 | 三 spike 各出报告；任一失败 → 方案修订（如回退 backtrader 备选） | 未动生产任何文件 |
+| **M0 技术验证**（先决，1-2 天） | ① 本地/Pi 建 Python 3.13 venv：装 vnpy 4.5（研究 **--no-deps 去 GUI** 或独立安装法）+ rqalpha 6.4.2；② Pi arm64 headless spike：vnpy 撮合 hello（下单→成交→T+1 冻结→账户）；③ rqalpha 用本地 SQLite 数据适配器跑通 MA5/20 回测 | **Pi 侧 ✅ 完成（`docs/spike-m0-pi.md`：双框架 arm64 可用、MainEngine headless 实例化成功）**；桌面侧/数据适配/模拟撮合载体定位（M0b）待续 | 未动生产任何文件 |
 | **M1 回测替换** | rqalpha 接管日线回测；与现 Backtester 做 **parity 对照**（同规则/同费用/同窗口 → 成交数/费用/收益对齐，容差书面化） | parity 报告 + 现 306 测试中回测相关转为对照测试 | 回测入口双轨，旧 `backtest.py` 保留 |
 | **M2 交易线替换** | vnpy 撮合/账户/风控/条件单接管；AI/引擎下单走 vnpy；**双轨影子对照**一周（vnpy 撮合 vs 现账本同步跑，逐单对照） | 影子对照零分歧（或分歧全部书面归因） | 切回旧账本开关（config） |
 | **M3 切换** | 账本归档、cron 切 vnpy 常驻、旧模块下线（只读保留一个版本周期） | 一周实盘观察 + 面板/审计完整 | git tag 回退 + 账本归档恢复 |
@@ -94,13 +94,16 @@
 4. **数据适配**：rqalpha 需要 bundle 风格数据 → akshare/SQLite 适配器（胶水）。
 5. **认知/运维成本**：双框架学习与升级跟踪；由 T5 反驳审查+文档缓解。
 6. **性能**：vnpy 事件驱动在 Pi 每分钟 tick 负载下无压力（轻量级）；观察期验证。
+7. **vnpy 4.x wheel 瘦身**（M0 已证实）：2.x 的 `app/` 层不在 wheel 内；
+   **常驻模拟撮合网关的载体待定**（M0b 定论，阻塞 M2 设计不阻塞 M1）；
+   撮合实现已确认在 `vnpy.alpha.strategy.backtesting`。
 
-## 7. 待用户拍板
+## 7. 用户拍板（2026-10-27 已全部确认）
 
-- **A. 账本历史**：推荐"归档+切换日新开账"（§4）。
-- **B. 框架组合**：推荐"vnpy(交易) + rqalpha(回测)"双框架（§3）；备选"仅 vnpy"
-  （回测精度让位，A股口径弱于 rqalpha）。
-- **C. Python 3.13 标准化**：本地开发建 3.13 venv（3.14 暂别）。
+- [x] **A. 账本历史**：归档+切换日新开账（历史只读归档，vnpy 账户切换日
+  以 initial_cash 初始化，持仓按切换日收盘迁移并标 `source: migration`）。
+- [x] **B. 框架组合**：**vnpy（交易执行）+ rqalpha（回测）双框架**。
+- [x] **C. Python 3.13 标准化**：本地建 3.13 venv 开发，与 Pi（3.13.5）一致。
 
 ## 8. 协作分工
 

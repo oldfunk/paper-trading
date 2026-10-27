@@ -44,6 +44,10 @@
       （数据/参考策略/AI 供给部分除外）
 - [x] 迁移方案产出：`docs/refactor-plan-open-source.md`（vnpy + rqalpha 双框架，
       M0-M4 分阶段，含 parity 门禁与回滚）
-- [ ] 用户对方案 §7 三项拍板（账本历史/框架组合/Python 3.13）
-- [ ] M0 spike（Pi arm64 + 桌面 3.13）→ T5' 反驳报告
+- [x] **方案 §7 三项已拍板（2026-10-27）**：vnpy+rqalpha 双框架 / 账本归档新开 /
+      Python 统一 3.13
+- [x] **M0 Pi arm64 spike 完成**（`docs/spike-m0-pi.md`）：vnpy 4.5.0 headless
+      （--no-deps + 最小依赖 + ta-lib aarch64 轮子）+ rqalpha 6.4.2 均可用，
+      MainEngine headless 实例化成功；遗留 M0b（模拟撮合载体/数据适配）
+- [ ] M0 桌面侧（员工 AI T5'）+ M0b → M1 启动
 - [ ] M1-M4 执行（每阶段 parity 报告先行）
