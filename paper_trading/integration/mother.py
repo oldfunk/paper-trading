@@ -317,6 +317,9 @@ def _stale(asof: Optional[str], max_age_days: int, today: str) -> bool:
 #: 同日双源价差容差。实测同日 qfq vs qfq 差 <0.01%（data compare corr≈1.0）；
 #: 取错列/复权口径污染是 1.2×~8× 量级，10% 能全拦且几乎零误报。
 SCALE_TOLERANCE = 0.10
+#: 绝对量级上限（H-7）：qfq 契约下 A 股真实股价 <1 万元/股；
+#: 10 万留足余量，只拦“分为单位/小数点错位”级错误
+ABS_PRICE_SANITY_MAX = 100000.0
 _LOGGER = logging.getLogger(__name__)
 _scale_warned: set = set()
 
@@ -454,37 +457,34 @@ def daily_bars(codes: Iterable[str], days: int = 250,
                         _LOGGER.warning(
                             "母库日线尺度异常，已回退本地：%s %s", code, check)
                     bars, source, asof, adj = [], SRC_UNAVAILABLE, None, None
+            # 绝对量级 sanity（H-7，2026-10-27 同事审查）：无跨源对照时的
+            # 最后防线——qfq 契约下 close ≤0 或 >10 万元/股 = 单位级错误
+            # （如以“分”计价 ×10000），拒用回退本地。相对偏差（7.9× 这类）
+            # 由 R1.3 跨源闸负责，此闸只拦绝对荒谬值。
+            if bars:
+                try:
+                    _c0 = float(bars[0].get("close") or 0.0)
+                except (TypeError, ValueError):
+                    _c0 = 0.0
+                if not (0.0 < _c0 <= ABS_PRICE_SANITY_MAX):
+                    if code not in _scale_warned:
+                        _scale_warned.add(code)
+                        _LOGGER.warning("母库日线量级非法（close=%r），"
+                                        "回退本地：%s", _c0, code)
+                    bars, source, asof, adj = [], SRC_UNAVAILABLE, None, None
             if not bars and local_bars is not None:
                 try:
                     local = local_bars(code, days) or []
                 except Exception:           # noqa: BLE001
                     local = []
                 if local:
-                    norm = []
-                    for b in local:
-                        if isinstance(b, dict):
-                            ts = str(b.get("timestamp") or b.get("date") or "")
-                            norm.append({
-                                "date": _as_date(ts),
-                                "open": b.get("open"), "high": b.get("high"),
-                                "low": b.get("low"), "close": b.get("close"),
-                                "volume": b.get("volume"),
-                                "amount": b.get("amount"),
-                            })
-                        else:
-                            ts = str(getattr(b, "timestamp", "") or "")
-                            norm.append({
-                                "date": _as_date(ts),
-                                "open": getattr(b, "open", None),
-                                "high": getattr(b, "high", None),
-                                "low": getattr(b, "low", None),
-                                "close": getattr(b, "close", None),
-                                "volume": getattr(b, "volume", None),
-                                "amount": None,
-                            })
+                    norm = _norm_local(local)
+                    # H-6（同事审查）：本地返回顺序由调用方决定，必须自己
+                    # 排序并以最新日为 asof——否则 stale/新鲜度判定失真
+                    norm.sort(key=lambda r: r["date"] or "")
                     bars = norm
                     source = SRC_LOCAL_AKSHARE
-                    asof = bars[0]["date"] if bars else None
+                    asof = bars[-1]["date"] if bars else None
                     adj = "qfq"
             out[code] = {
                 "available": bool(bars), "source": source, "asof": asof,

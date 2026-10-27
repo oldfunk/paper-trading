@@ -654,6 +654,97 @@ def test_agent_llm_timeout_retries_once(monkeypatch, tmp_path):
         pass
 
 
+def test_no_reference_price_fails_closed(monkeypatch, tmp_path):
+    """H-1：px>0 但无独立基准价（bars/计划价均缺）→ fail-closed 拒单。
+
+    事故教训：门禁静默关闭 = 同源自洽盲区；无基准时必须拒，不许放行。
+    """
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    res = t._execute_actions(
+        actions=[{"action": "buy", "symbol": "600519", "volume": 100,
+                  "reason": "无基准", "basis": ["recent_closes"]}],
+        summary="", symbols=["600519"], all_bars={},
+        latest_prices={"600519": 12.9}, cash=1000000.0, positions={},
+        nav_total=1000000.0, dry_run=True, mode="live",
+        now=datetime.now().isoformat(), from_plan=False)
+    st = res["decisions"][0]["status"]
+    assert "fail-closed" in st and "基准价" in st
+    assert b.broker.get_order_history(5) == []   # 没有下单
+
+
+def test_actions_beyond_cap_are_audited(monkeypatch, tmp_path):
+    """H-2：超出单轮处理上限的条目也必须进 decisions 审计（只审不执行）。"""
+    from paper_trading.llm import provider as prov
+
+    plan = {"actions": [{"action": "hold", "symbol": f"60000{i}",
+                         "reason": f"h{i}"} for i in range(9)], "summary": "超量"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=2, max_order_value=20000.0))
+    res = t.run(["600519"])
+    assert res["ok"]
+    ds = res["decisions"]
+    assert len(ds) == 9, f"超出上限的条目必须留审计，实际 {len(ds)}"
+    # cap = max_orders_per_run + 5 = 7 → 第 8/9 条拒绝但入账
+    assert "超出单轮处理上限" in ds[7]["status"]
+    assert "超出单轮处理上限" in ds[8]["status"]
+    assert ds[0]["status"] == "持有不动"
+
+
+def test_condition_gate_rejects_when_no_price():
+    """H-4：prices 提供但缺该标的现价 → fail-closed 进 parse_rejected。"""
+    from paper_trading.engine.ai_conditions import parse_conditions_verbose
+
+    exp = (datetime.now() + timedelta(days=2)).date().isoformat()
+    raw = json.dumps({"conditions": [
+        {"symbol": "000792", "side": "sell",
+         "cond": {"type": "price_below", "value": 20.0},
+         "volume": 100, "expiry": exp},
+        {"symbol": "000792", "side": "buy",
+         "cond": {"type": "pct_below", "value": 3.0},
+         "value": 8000, "expiry": exp}]})
+    # 行情失败：空表 → price_* 拒，pct_*（不适用）仍放行
+    valid, rejected = parse_conditions_verbose(
+        raw, ["000792"], holdings=["000792"], prices={})
+    assert not any(v["cond_type"] == "price_below" for v in valid)
+    assert any("无法校验尺度" in r["why"] for r in rejected)
+    assert any(v["cond_type"] == "pct_below" for v in valid)
+    # prices=None（未提供现价表）保持旧行为：兼容手工调用
+    valid2, _ = parse_conditions_verbose(
+        raw, ["000792"], holdings=["000792"], prices=None)
+    assert any(v["cond_type"] == "price_below" for v in valid2)
+
+
+def test_plan_buy_on_held_symbol_allowed(monkeypatch, tmp_path):
+    """H-3 复核：计划对持仓加仓不被“不在股票池”误拒。
+
+    计划 symbols 由 _decision_symbols 生成时已含持仓 → allow_buy 天然覆盖；
+    此测试锁定该行为，防止未来改动把加仓路径堵死。
+    """
+    from paper_trading.llm import provider as prov
+
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    buy = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                        "reason": "建仓"}], "summary": "买"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(buy))
+    t.run(["600519"])
+    assert b.broker.get_position("600519") is not None
+    # 计划再加仓（symbols 含持仓）
+    b.broker.save_plan(datetime.now().date().isoformat(), ["600519"], {
+        "actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                     "price": None, "price_source": "last_close",
+                     "reason": "加仓", "basis": ["recent_closes"]}],
+        "summary": "加仓"})
+    pend = b.broker.get_pending_plan(datetime.now().date().isoformat())
+    bars = {"600519": b.data_db.get_bars("600519", limit=30)}
+    res = t._execute_plan(pend, bars, b.price_map(["600519"]))
+    st = res["decisions"][0]["status"]
+    assert "不在股票池" not in st, f"持仓加仓被误拒：{st}"
+    assert b.broker.get_position("600519").total_volume == 200
+
+
 def test_agent_dry_run_changes_nothing(monkeypatch, tmp_path):
     from paper_trading.llm import provider as prov
 

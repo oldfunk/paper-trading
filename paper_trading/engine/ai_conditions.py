@@ -83,10 +83,12 @@ def parse_conditions_verbose(raw: Optional[str], pool: list[str],
 
     `holdings` 传入真实持仓代码集时，卖出条件只允许挂在持仓上（无持仓即拒）；
     为 None 时保持旧行为（不校验持仓），仅供手工/兼容调用。
-    `prices` 传入现价表时，对 price_below/price_above 做尺度闸：
-    cond_value 必须落在现价的 [0.5×, 2×] 内——挂几天的条件单容许合理
-    预期（翻倍止盈/腰斩止损），但 2026-10-27 事故那种 8× 口径污染
-    （000792 现价 22.24 挂 180 止盈）必须当场拒掉。
+        `prices` 传入现价表时（**含空 dict**）即启用尺度闸，fail-closed：
+    price_* 条件的 cond_value 必须落在现价的 [0.5×, 2×] 内；**缺该标的现价
+    或现价非法 → 进 parse_rejected**（行情抖动时宁可不挂，不许挂无法校验
+    的条件——2026-10-27 事故教训）。挂几天的条件容许合理预期（翻倍止盈/
+    腰斩止损），但 8× 口径污染（000792 现价 22.24 挂 180 止盈）当场拒。
+    传 `None`（未提供现价表）保持旧行为，仅供手工/兼容调用。
     """
     from paper_trading.engine.conditional import CONDITION_TYPES
 
@@ -141,16 +143,21 @@ def parse_conditions_verbose(raw: Optional[str], pool: list[str],
         if not math.isfinite(cval) or cval <= 0:
             _reject(c, "触发值必须为正数")
             continue
-        # 尺度闸（2026-10-27 事故）：价格型条件 vs 现价偏离超 [0.5×,2×]
-        # = 口径污染（事故：000792 现价 22.24 挂出 180 的止盈条件）。
-        # pct_* 是百分比类型不适用；现价缺失时放行（引擎触发前还会比价）。
-        if ctype in ("price_below", "price_above") and prices:
+        # 尺度闸（2026-10-27 事故 + H-4 复核）：价格型条件 vs 现价必须在
+        # [0.5×,2×] 带内；**prices 提供了（含空 dict）就 fail-closed**——
+        # 缺该标的现价/现价非法 → 进 parse_rejected，不许挂无法校验的条件。
+        # pct_* 是百分比类型不适用；prices=None（未提供）保持旧行为。
+        if ctype in ("price_below", "price_above") and prices is not None:
             _rp = 0.0
             try:
                 _rp = float(prices.get(sym) or 0.0)
             except (TypeError, ValueError):
                 _rp = 0.0
-            if _rp > 0 and not (0.5 <= cval / _rp <= 2.0):
+            if not (_rp > 0 and math.isfinite(_rp)):
+                _reject(c, f"无 {sym} 有效现价，无法校验尺度"
+                           f"（fail-closed；行情恢复后重试）")
+                continue
+            if not (0.5 <= cval / _rp <= 2.0):
                 _reject(c, f"触发价 {cval:g} 偏离现价 {_rp:.2f} 超出 "
                            f"[0.5×,2×]（疑数据口径错误）")
                 continue

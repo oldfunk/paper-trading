@@ -392,6 +392,55 @@ def test_locked_mother_falls_back_quickly(sd):
     assert out["600519"]["available"]      # 本地兜底照常供给
 
 
+def test_local_fallback_sorts_and_asof_latest(sd):
+    """H-6：本地回退必须自己排序，asof 取最新日（旧代码取 bars[0] 会失真）。"""
+    def desc_local(code, days):
+        # 故意降序返回：调用方顺序不可信
+        return [{"timestamp": "2026-10-23T00:00:00", "open": 1495, "high": 1500,
+                 "low": 1490, "close": 1495.0, "volume": 1},
+                {"timestamp": "2026-10-21T00:00:00", "open": 1491, "high": 1496,
+                 "low": 1486, "close": 1491.0, "volume": 1},
+                {"timestamp": "2026-10-22T00:00:00", "open": 1493, "high": 1498,
+                 "low": 1488, "close": 1493.0, "volume": 1}]
+
+    out = mother.daily_bars(["600519"], days=5, local_bars=desc_local,
+                            mother=sd.parent / "no-such-sd")
+    blk = out["600519"]
+    assert blk["source"] == SRC_LOCAL_AKSHARE
+    assert [b["date"] for b in blk["bars"]] == \
+        ["2026-10-21", "2026-10-22", "2026-10-23"], "回退分支必须升序"
+    assert blk["asof"] == "2026-10-23", "asof 必须是最新日（非最老日）"
+
+
+def test_abs_sanity_rejects_unit_error(sd):
+    """H-7：close >10 万（单位级错误，如以分计价）无跨源对照也拒，回退本地。"""
+    def far_local(code, days):
+        # 日期与母库无重叠 → R1.3 跨源闸无对照依据，靠绝对量级闸兜底
+        return [{"timestamp": "2026-09-01T00:00:00", "open": 22, "high": 23,
+                 "low": 21, "close": 22.24, "volume": 100}]
+
+    db = sd / "data" / "db" / "stock_dashboard.db"
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE kline_daily SET close_qfq=250000, close_adj=250000, "
+                 "close=250000 WHERE code='600519'")
+    conn.commit()
+    conn.close()
+    mother.reset_cache()
+    try:
+        out = mother.daily_bars(["600519"], days=5, local_bars=far_local,
+                                mother=sd)
+        blk = out["600519"]
+        assert blk["source"] == SRC_LOCAL_AKSHARE
+        assert blk["bars"][0]["close"] == 22.24
+    finally:
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE kline_daily SET close_qfq=1505, close_adj=1505, "
+                     "close=1505 WHERE code='600519'")
+        conn.commit()
+        conn.close()
+        mother.reset_cache()
+
+
 def test_real_mother_contract_if_present():
     """真母库契约校验：显式指定 ``PAPER_TRADING_MOTHER_DIR``（推荐）。
 

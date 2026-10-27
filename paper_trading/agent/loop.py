@@ -999,7 +999,19 @@ class AgentTrader:
         allow_sell = set(positions)
         decided: list[dict] = []
         n_orders = 0
-        for a in actions[: self.cfg.max_orders_per_run + 5]:  # 多出的只记拒绝
+        all_actions = actions if isinstance(actions, list) else []
+        n_cap = self.cfg.max_orders_per_run + 5
+        for idx, a in enumerate(all_actions):
+            if idx >= n_cap:
+                # H-2（2026-10-27 同事审查）：超出处理上限的条目也必须进审计，
+                # 否则"AI 说了 10 条、后 2 条去哪了"无法复盘——只审不执行。
+                decided.append({
+                    "action": str(a.get("action", "hold")) if isinstance(a, dict) else "?",
+                    "symbol": str(a.get("symbol", "")) if isinstance(a, dict) else "",
+                    "volume": (a.get("volume") if isinstance(a, dict) else None),
+                    "reason": (str(a.get("reason", ""))[:120] if isinstance(a, dict) else ""),
+                    "status": f"拒绝：超出单轮处理上限 {n_cap} 条（仅审计，未执行）"})
+                continue
             if not isinstance(a, dict):
                 continue
             act = str(a.get("action", "hold")).lower()
@@ -1083,6 +1095,12 @@ class AgentTrader:
                 rec["status"] = "拒绝：数量须为100倍数"
             elif not math.isfinite(px) or px <= 0:
                 rec["status"] = "拒绝：无有效价格"
+            elif not (_ref > 0 and math.isfinite(_ref)):
+                # H-1（2026-10-27 同事审查）fail-closed：px>0 但独立基准价缺失
+                # （bars/计划价都没有）时尺度门禁会静默失效——事故教训正是
+                # "门禁静默关闭 = 同源自洽盲区"。无基准 = 拒单，不放行。
+                rec["status"] = ("拒绝：无独立基准价（bars/计划价均缺失），"
+                                 "尺度门禁无法执行（fail-closed）")
             elif vol * px > self.cfg.max_order_value:
                 rec["status"] = f"拒绝：超单笔上限{int(self.cfg.max_order_value)}元"
             elif n_orders >= self.cfg.max_orders_per_run:
