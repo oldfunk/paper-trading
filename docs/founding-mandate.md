@@ -49,5 +49,8 @@
 - [x] **M0 Pi arm64 spike 完成**（`docs/spike-m0-pi.md`）：vnpy 4.5.0 headless
       （--no-deps + 最小依赖 + ta-lib aarch64 轮子）+ rqalpha 6.4.2 均可用，
       MainEngine headless 实例化成功；遗留 M0b（模拟撮合载体/数据适配）
-- [ ] M0 桌面侧（员工 AI T5'）+ M0b → M1 启动
+- [x] **用户修正路线（2026-10-27 深夜，取代"零自研"）**：分层架构——
+      L1 计算/市场语义交社区框架、L2 功能层（AI/数据/面板/门禁）自研盖上去、
+      L3 双同事审查制；门禁必须保持 fail-closed（详见 refactor-plan §1）
+- [ ] M0 收口：akquant 挑战者 spike（T6）+ rqalpha 数据适配器原型 + H 系修复复核
 - [ ] M1-M4 执行（每阶段 parity 报告先行）
