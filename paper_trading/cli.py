@@ -1097,17 +1097,34 @@ def _replay_decision(bridge, decision_date: str, plan_id=None) -> dict:
         r = rule_by.get(sym)
         rule_dir = ("buy" if r and r["direction"] == 1 else
                     "sell" if r and r["direction"] == -1 else "hold")
+        # 口径检查（R1.5）：决策价 vs 回放 bar 收盘偏离超阈值 = 两时点数据
+        # 口径不一致（尺度污染特征），显式告警而非静默对照。
+        caliber = None
+        try:
+            dp = float(a.get("price") or 0.0)
+            bars = all_bars.get(sym) or []
+            rp = float(bars[-1].close) if bars else 0.0
+            if dp > 0 and rp > 0 and abs(dp / rp - 1.0) > 0.30:
+                caliber = (f"决策价 {dp:.2f} vs 最新收盘 {rp:.2f} 偏离 "
+                           f"{abs(dp / rp - 1.0):.0%}（疑口径不一致，"
+                           f"对照结论仅参考）")
+        except (TypeError, ValueError):
+            caliber = None
         comparison.append({"symbol": sym, "ai_action": ai_act,
                            "ai_status": a.get("status", ""),
                            "rule_signal": rule_dir, "agree": ai_act == rule_dir,
-                           "ai_basis": a.get("basis") or []})
+                           "ai_basis": a.get("basis") or [],
+                           "caliber_warning": caliber})
     n_agree = sum(1 for c in comparison if c["agree"])
+    caliber_warnings = [c["caliber_warning"] for c in comparison
+                        if c.get("caliber_warning")]
     return {"ok": True, "date": decision_date, "plan_id": d.get("plan_id"),
             "mode": d.get("mode"), "from_plan": bool(d.get("from_plan")),
             "pool_source": d.get("pool_source"), "summary": d.get("summary"),
             "ai": {"actions": actions, "conditions": d.get("conditions") or []},
             "rule_signals": rule, "comparison": comparison,
             "agreement": f"{n_agree}/{len(comparison)}",
+            "caliber_warnings": caliber_warnings,
             "decision_id": d.get("id"), "created_at": d.get("created_at")}
 
 

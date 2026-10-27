@@ -210,6 +210,44 @@ def test_replay_decision_compares_rules(monkeypatch, tmp_path):
     assert res["agreement"].endswith("/1")
 
 
+def test_replay_flags_caliber_mismatch(monkeypatch, tmp_path):
+    """R1.5 回放口径检查：决策价 vs 回放价偏离 >30% → 显式告警。"""
+    import paper_trading.cli as hb
+    from paper_trading.llm import provider as prov
+
+    # LLM 说 buy，落库决策价写成 7.9 倍（模拟事故时点的污染价）
+    plan = {"actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                         "price": None, "reason": "低估",
+                         "basis": ["recent_closes"]}], "summary": "买"}
+    monkeypatch.setattr(prov, "chat", lambda cfg, m, system="": json.dumps(plan))
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=1e9))
+    t.run(["600519"])
+    # 篡改已落库的决策价为污染价
+    day = datetime.now().date().isoformat()
+    import sqlite3
+    c = sqlite3.connect(b.account_db_path)
+    row = c.execute("SELECT id, actions_json FROM agent_decisions WHERE decision_date=?",
+                    (day,)).fetchone()
+    acts = json.loads(row[1])
+    acts[0]["price"] = acts[0].get("price") or 12.9
+    acts[0]["price"] = acts[0]["price"] * 7.9
+    c.execute("UPDATE agent_decisions SET actions_json=? WHERE id=?",
+              (json.dumps(acts), row[0]))
+    c.commit()
+    c.close()
+
+    res = hb._replay_decision(b, day)
+    assert res["ok"] and res["caliber_warnings"], "污染决策价应触发口径告警"
+    assert "偏离" in res["caliber_warnings"][0]
+    # 正常决策（价格未篡改）不告警
+    b.broker.save_agent_decision(decision_date=day + "x",
+                                 actions=[{"action": "hold", "symbol": "600519",
+                                           "price": 12.9}])
+    res2 = hb._replay_decision(b, day + "x")
+    assert res2["ok"] and not res2["caliber_warnings"]
+
+
 def test_save_agent_decision_roundtrip(tmp_path):
     b = _bridge(str(tmp_path), _fresh_bars())
     did = b.broker.save_agent_decision(
