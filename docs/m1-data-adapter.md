@@ -30,8 +30,8 @@
 | 线 | 价格来源 | 理由 |
 |---|---|---|
 | **回测（M1）** | **bundle 自洽三件套**（raw+因子+分红），不混我们两源 | 同一 store 内自洽 = 零尺度污染面；rqalpha 会计按其契约工作。**我们两源作为 parity 对照组**（同规则同窗口比对），不当喂料 |
-| **实时/模拟（M2）** | 我们两源新鲜 bar（母库 `close_qfq`/akshare）→ 自定义 DayBarStore | bundle 月度滞后（价格只到 2026-09/10），当日必须我们的；该 store 入口必须过 **R1.3 尺度闸 + NaN 门禁** |
-| **AI 上下文（L2）** | 不变（`llm_context.recent_closes` 走我们两源） | 用户路线：数据供给是我们自己的层 |
+| **实时/模拟（M2）** | **原始价**（母库 `close_raw` 优先、akshare `adjust=""` 兜底）→ 自定义 DayBarStore，复权视图交 rqalpha `adjust` | **D3 裁决（2026-10-28 修正，依据 T7 取证 route A 双重计入 2,802.42 元）**：引擎全线 route B——实盘撮合本来就是原始价，qfq 只留 AI 展示层。~~原写"喂 close_qfq"作废~~。入口过 R1.3 尺度闸 + NaN 门禁 |
+| **AI 上下文（L2）** | 不变（`llm_context.recent_closes` 走我们两源 qfq，仅展示/论据） | 用户路线：数据供给是我们自己的层；qfq 不进引擎 |
 
 - **除权日 walkthrough**（T7 验收项）：路线 B 下 ex-date 由 `adjust_bars` 调价 +
   `position_model` 分红入账，数学自洽——真实分红案例推演列入 **M1-C** 执行

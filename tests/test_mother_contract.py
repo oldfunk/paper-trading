@@ -244,7 +244,11 @@ def test_calendar_sync_prefers_mother(sd, tmp_path, monkeypatch):
     """calendar sync 母库优先：母库 trading_calendar 可用即落缓存，不再调 akshare。"""
     from paper_trading.utils import trading_calendar as tc_mod
 
-    fut = (date.today() + timedelta(days=10)).isoformat()
+    # 日期必须落在工作日（today+10 可能是周六——本测试曾因此在周三翻车）
+    fut_d = date.today() + timedelta(days=10)
+    while fut_d.weekday() >= 5:
+        fut_d += timedelta(days=1)
+    fut = fut_d.isoformat()
     conn = sqlite3.connect(sd / "data" / "db" / "stock_dashboard.db")
     conn.execute("INSERT INTO trading_calendar VALUES ('CN',?,1,'{}','test')",
                  (fut,))

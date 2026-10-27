@@ -151,19 +151,21 @@ L1 44.6% / 钱类 83% 框架可灭 / **L2 61% 是迁移后的主战场**（1.53 
 
 ### 已派发任务（认领即勾选；主 AI 只做最终裁决/门禁签核，不亲自实施）
 
-- [ ] **T9（Qoder，P0，M1-B parity 实施级）**：同规则同窗口，旧 `Backtester`
-  vs rqalpha 对照——**出方案并实现**（对照脚本放 `spikes/`，可复用 M1-A 骨架）：
-  同一 MA5/20 规则、同窗口（建议 2026-01-05→09-10）、同 10 标的、同初始资金，
-  逐项对照成交数/逐笔价格/总费用/收益，容差按 `refactor-plan` §5.1-6
-  （成交笔数差 0、费用差 <1e-6、收益差 <0.1pp）；产出 `report-t9.md` 对照表
-- [ ] **T10（Qoder，P1）**：M1-C 除权日 walkthrough——从 bundle `dividends.h5`
-  选一只真实分红票，逐步推演 rqalpha 调价+分红入账，验证
-  `m1-data-adapter.md` §2 路线 B 数学自洽；产出 `report-t10.md`
+- [x] **T9（Qoder，P0，M1-B parity 实施级）已交付并合并**（`report-t9.md` +
+  `spikes/parity_t9.py`）：三层归因实验，判定原容差结构性不可达 → 主 AI 已裁决
+  **D1–D4 + 两级门禁**（`refactor-plan` §5.2/§5.3）
+- [x] **T10（Qoder，P1）已交付并合并**（`report-t10.md` + `spikes/exdate_t10.py`）：
+  route B 除权日验证通过；rqalpha 过户费缺失/分红无红利税实测证据
 - [x] **T11（Hermes，P1）**：H-5 consume-once 裁决再复核（`questions.md` 批复节）；
   无异议，见 `report-t11.md`
-- [ ] **T12（Hermes，P0，与 T9 交叉）**：T9 对照脚本与结果的**独立复核**——
-  同窗口同参数的复现性、容差计算是否正确、有无"挑数据"（换窗口/换标的凑齐）；
-  产出 `report-t12.md`
+- [x] **T12（Hermes，P0，与 T9 交叉）T15b1/T16 已交付**（见 Batch 3 勾选）；
+  **T12 本体仍开且扩权**：
+  - [ ] **收口 T9 坦白的 26 笔未归因缺口**（`report-t9.md` §3.6：候选=once 每日
+    语义/涨跌停一字板拒单/T+1 冻结/多次触发——用 `spikes/parity_t9.py` 复跑归因）
+  - [ ] **陈旧引擎审查移交的 11 条重定位**（Qoder 移交：符号/行号已失效，
+    原始清单在 `C:\Users\yanzh\AppData\Local\Temp\qoder_engine_notes.md`，
+    按当前 HEAD 逐条判"仍在/已修"，不许按旧行号改码）
+  - 产出 `report-t12.md`
 
 **主 AI 保留职责（不再亲自写实施）**：L1 交易代码最终把关（缺陷归因 §7）、
 T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应、M2 方案拍板。
@@ -229,3 +231,20 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     （同一场景在新引擎上怎么验，留 TODO 占位）
   - [ ] 产出提交 `test(worker):` + 在报告里说明每条的通过语义
 - 验收：全绿；迁移 M1-B 时此套件必须**双跑**（旧引擎+新引擎）
+
+### Batch 3 追加（主 AI 裁决 D1–D4 后派发，2026-10-28）
+
+- [x] **T15 批次一已交付**（`report-t15-batch1.md`：阴性结果+3 测试）→ 批次二/三继续
+- [x] **T16 已交付**（`tests/test_compliance_regression.py` 166 行，全绿）
+- [ ] **T17（Qoder，P0·小）**：修「金额不足一手 → 静默 skipped」（T9 §3.2，
+  14 笔+连带 15 笔，违反纪律 4）——`engine/backtest.py` 的 skipped 已有归因，
+  缺的是**报告化**：`metrics` 显式输出 skip 分类计数 + 面板/CLI 可见；
+  补一条"必须非静默"的回归测试；`fix(worker):` 提交
+- [ ] **T18（Qoder，P0·D1 关键实验）**：分钟频率可行性——bundle 是否含 1m
+  数据（`stocks.h5` 外的 minute 文件/配置）；rqalpha 用分钟频率能否实现
+  **T+1 开盘撮合**（信号 T 收盘 → T+1 首分钟成交）；出结论：
+  可行（回测线口径统一路径）/不可行（M2 模拟线为唯一 T+1 路径）→ `report-t18.md`
+- [ ] **T19（Qoder，P0·S 级门禁实施）**：按 `refactor-plan` §5.3 实现 S 级
+  信号集合对照——基于 `spikes/parity_t9.py` 改造：同价源同锚（route B）、
+  股数语义、±1 交易日匹配、匹配率统计 + 未匹配逐笔归因表；
+  输出 `report-t19.md`（M1 签字必备件）
