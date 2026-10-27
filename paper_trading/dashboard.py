@@ -621,9 +621,13 @@ function btCN(m){
   const pr=Object.entries(m.per_rule||{}).map(([k,v])=>`${esc(k)} ${v.trades??0} 笔`).join("；");
   // 只提示「配置/数据级」的注意事项（没有 symbol 的那条），逐笔跳过原因不刷屏
   const note=(m.skipped_sample||[]).filter(s=>s&&s.why&&!s.symbol).map(s=>esc(s.why)).slice(0,2).join("；");
+  // T17（纪律 4「不静默」）：被跳过的信号按原因分类计数并展示 + 流失率，
+  // 不再只给总数或 10~20 条样本——整类流失（如「金额不足一手」）必须看得见
+  const sc=Object.entries(m.skip_counts||{}).map(([k,v])=>`${esc(k)} ${v}`).join("；");
   return `${esc(line)}<br><span class="mut">${esc(bl)}${esc(ex)}（近 ${m.days??0} 个交易日，含真实手续费）</span>`+
     (pr?`<br><span class="mut">${pr}</span>`:"")+
-    (note?`<br><span class="mut">注意：${note}</span>`:"")+curve;
+    (note?`<br><span class="mut">注意：${note}</span>`:"")+
+    (sc?`<br><span class="mut">跳过分类：${sc}（${m.skipped??0}/${m.order_attempts??0} 次尝试被跳过，流失 ${m.signal_drop_pct??0}%）</span>`:"")+curve;
 }
 async function guard(fn){
   // 写接口统一走口令 + 凭 Key 接管（与其它写操作同一套，不新增第二套鉴权）
