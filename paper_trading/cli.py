@@ -447,10 +447,11 @@ class TradingBridge:
         positions = self.broker.get_all_positions()
         cash = self.broker.get_cash()
 
-        # 获取最新价格
+        # 获取最新价格（v0.7.7：统一 bar_source——与 NAV 记录同源，
+        # 持面板显示/风控计价不一致正是事故类问题的土壤）
         latest_prices = {}
         for p in positions:
-            bars = self.data_db.get_bars(p.symbol, limit=1)
+            bars = self.get_bars(p.symbol, limit=1)
             if bars:
                 latest_prices[p.symbol] = bars[-1].close
 
@@ -498,7 +499,7 @@ class TradingBridge:
         if volume <= 0 or volume % 100 != 0:
             return {"ok": False, "error": f"Volume must be positive multiple of 100, got {volume}"}
         if price is None:
-            bars = self.data_db.get_bars(symbol, limit=1)
+            bars = self.get_bars(symbol, limit=1)   # 统一 bar_source（v0.7.7）
             if not bars:
                 return {"ok": False, "error": f"No data for {symbol}"}
             price = bars[-1].close
@@ -526,7 +527,7 @@ class TradingBridge:
         cash = self.broker.get_cash()
         latest = {symbol: price}
         for p in positions:
-            b = self.data_db.get_bars(p, limit=1)
+            b = self.get_bars(p, limit=1)     # 统一 bar_source（v0.7.7）
             if b:
                 latest[p] = b[-1].close
         nav = self.broker.get_nav(latest)
@@ -567,7 +568,7 @@ class TradingBridge:
         if direction not in ("buy", "sell"):
             return {"ok": False, "error": "direction must be buy/sell"}
         if price is None:
-            bars = self.data_db.get_bars(symbol, limit=1)
+            bars = self.get_bars(symbol, limit=1)   # 统一 bar_source（v0.7.7）
             if not bars:
                 return {"ok": False, "error": f"No data for {symbol}"}
             price = bars[-1].close
@@ -584,7 +585,7 @@ class TradingBridge:
         cash = self.broker.get_cash()
         latest = {symbol: price}
         for p in positions:
-            b = self.data_db.get_bars(p, limit=1)
+            b = self.get_bars(p, limit=1)     # 统一 bar_source（v0.7.7）
             if b:
                 latest[p] = b[-1].close
         nav = self.broker.get_nav(latest)
@@ -1521,7 +1522,7 @@ def main() -> None:
                 # dry-run：信号+风控预览，不下单不记NAV
                 all_bars = {}
                 for sym in syms:
-                    bars = bridge.data_db.get_bars(sym, limit=30)
+                    bars = bridge.get_bars(sym, limit=30)   # 统一 bar_source（v0.7.7）
                     if bars:
                         all_bars[sym] = bars
                 latest = bridge.price_map(syms)

@@ -66,8 +66,9 @@
   （文档声称 60s/300s，实际形同虚设）；`_COLUMNS` 同类问题（每次连接全清）。
   修复：键改**库路径**（`_dbkey`，跨连接稳定/多库不串），列缓存同改；
   回归测试 `test_ttl_cache_hits_across_connections`（改库吐旧值+TTL=0 回源）
-- [ ] R4.3 只读保证审计：全文件搜写操作嫌疑（`INSERT/UPDATE/DDL`、非 `mode=ro`
-  连接、`SELECT *`），单测断言连接串参数
+- [x] R4.3 只读保证审计：integration 层零写操作/零 `executescript`、连接全部
+  `mode=ro`+`query_only`+`timeout=2`+`busy_timeout=2000`；唯一 `SELECT *`
+  （financial_summary）违反 §6 承诺 → 改 PRAGMA 动态列清单（母库加列自动跟随）
 - [ ] R4.4 失败模式：母库锁库/磁盘满/查询超时下的行为（2s 硬超时是否真生效，
   构造慢查询实测）；TTL 缓存过期瞬间母库坏 → 是否静默回退不抛
 - [ ] R4.5 真库契约测试扩展：把 R1.6 的量级 sanity 固化进
@@ -110,8 +111,8 @@
   `data compare/coverage`——GET 是否只读、POST 是否全过口令+CSRF
 - [ ] R8.2 `--json` stdout 纯净性回归：全 CLI 子命令枚举跑一遍
   （R 0.6.9 修过一类，新增命令有没有漏网：data/replay/provenance）
-- [ ] R8.3 `rowsC` 折叠渲染的 XSS：新面板（provenance 表）的字段是否全走 `esc()`
-  （母库数据是外部输入！）
+- [x] R8.3 `rowsC` 折叠渲染的 XSS：provenance 表 4 列全走 `esc()`（含母库
+  返回的 source/asof 字段）✓；`st` 列为纯代码常量无注入面
 - [ ] R8.4 错误信息泄漏审计：异常栈/路径/Key 有没有进 HTTP 响应或日志
 
 ## P3 — 文档一致性 + 收尾
@@ -135,8 +136,18 @@
 | `llm_context.recent_closes` | `_mother.daily_bars`（直连） | AI 上下文收盘 | **R1.3 闸覆盖**（同函数出口） |
 | `ConditionRunner` 触发比价 | 实时报价 `quote["price"]` | 条件单触发 | 实时源独立 |
 | 条件单 `cond_value` 挂单校验 | AI 输出（无基准） | 触发价 | **R3.5 尺度闸**（vs 现价带） |
-| 手动 `buy/sell` 缺价回填 | `data_db.get_bars`（本地） | CLI 手动单 | 本地源（与母库隔离） |
+| 手动 `buy/sell`/`preview` 缺价回填 | ~~`data_db`~~ → **`bar_source`（v0.7.7 统一）** | CLI 手动单缺价 | 统一后走 R1.3 闸 |
+| `get_status` 持仓计价 | ~~`data_db`~~ → **`bar_source`（v0.7.7 统一）** | 面板/状态显示 | 与 NAV 记录同源 |
+| `run` dry-run 信号 | ~~`data_db`~~ → **`bar_source`（v0.7.7 统一）** | 试运行预览 | 与实盘 run 同源 |
+| `_detect_revisions` | `data_db`（有意保留） | 本地新旧版本对比（除权检测） | 必须比本地自身两版 |
+| `data compare/coverage` 本地侧 | `data_db`（本职） | 双源对照的 local 臂 | 本职 |
+| 回测/optimize | `data_db`（有意保留） | 已存日线快照 | 可复现性要求快照源；qfq 对齐后与 bar_source 同口径（corr≈1.0） |
 | 面板现价展示 | `data/realtime.py` 腾讯实时 | 仅展示 | 不进账本 |
+
+**R1.2/R3.1 走查发现（v0.7.7 已修）**：`get_status`、手动单/preview 风控计价、
+dry-run 信号共 6 处直读 `data_db` 绕过 `bar_source`——同一账户两套价源
+（NAV 记录用 bar_source、面板/手动单用本地），母库与本地一旦分叉即口径分裂。
+已全部统一到 `bar_source`（本地回退行为不变）；回测的快照源有意保留并记录理由。
 
 结论：**所有账本/风控价格最终只有两个源**——① `bar_source`（R1.3 跨源闸把门）、
 ② 实时报价（与 bars 天然跨源，引擎触发侧）。事故时的第三源（直连母库 hfq）

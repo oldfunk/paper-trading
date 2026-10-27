@@ -517,10 +517,22 @@ def financial_summary(codes: Iterable[str], mother: Optional[Path] = None,
             conn.close()
         return {c: unavailable("母库无 financial_summary 或不可读") for c in codes}
     try:
+        # 显式列清单（docs/mother-interface.md §6 承诺不 SELECT *）：
+        # 列名从 PRAGMA 动态取，母库加列自动跟随，不写死第二套 schema。
+        all_cols = sorted(_columns(conn, "financial_summary") - {"stock_code"})
+        if not all_cols:      # 表只有 stock_code：退化为常量列，避免 SQL 语法错
+            all_cols = ["stock_code"]
+        col_sql = ", ".join(f'"{c}"' for c in all_cols)
+
         def _fetch():
             q = (",".join("?" * len(codes)))
+            if col_sql == "stock_code":
+                select_sql = "stock_code"
+            else:
+                select_sql = f"stock_code, {col_sql}"
             rows = conn.execute(
-                f"SELECT * FROM financial_summary WHERE stock_code IN ({q})",
+                f"SELECT {select_sql} FROM financial_summary "
+                f"WHERE stock_code IN ({q})",
                 codes).fetchall()
             return [dict(r) for r in rows]
 
