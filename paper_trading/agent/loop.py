@@ -42,6 +42,10 @@ class AgentConfig:
     # 决策可审计：每条 buy/sell 必须引用上下文里真实存在的数据字段（basis）
     require_basis: bool = False  # True=缺 basis 直接拒单（fail-closed）；False=只记录
     require_stop: bool = False   # True=买入必须有 risk_stop 或卖出条件，否则拒单
+    #: 执行价 vs 基准价最大允许偏差（小数；0.30=A股最大日波幅 30%）。
+    #: 超过即拒单——挡复权口径/取错列一类的尺度错误（2026-10-27 事故：
+    #: price_map 取母库后复权 175.96 买入真实价 22.25 的票，虚付 7.9 倍）。
+    max_price_deviation: float = 0.30
     context_budget: int = 8000   # 上下文 token 预算（压缩用；当前仅记录，P3 启用）
     # AI 条件单：LLM 只出触发条件，引擎盘中每分钟执行（实时层）
     conditions_enabled: bool = True
@@ -1030,6 +1034,24 @@ class AgentTrader:
                     px = float(a.get("price") or 0.0)
                 except (TypeError, ValueError):
                     px = 0.0
+            # 尺度门禁：执行价偏离基准价超过 A 股最大日波幅 = 数据口径错误，
+            # 必须拒单（2026-10-27 事故：母库后复权价 175.96 vs 计划价 22.25）。
+            # 基准价有两个：计划价（跨时点独立支点，事故场景的救命锚）；
+            # 同源的 bars[-1].close 只防取错列/单位错（事故场景两边同污染挡不住）。
+            _ref = 0.0
+            if from_plan and a.get("price_source") == "last_close":
+                try:
+                    _ref = float(a.get("price") or 0.0)
+                except (TypeError, ValueError):
+                    _ref = 0.0
+            if not _ref:
+                _b = all_bars.get(sym) or []
+                try:
+                    _ref = float(_b[-1].close) if _b else 0.0
+                except (TypeError, ValueError, AttributeError):
+                    _ref = 0.0
+            _dev = (abs(px / _ref - 1.0)
+                    if _ref > 0 and px > 0 and math.isfinite(px) else 0.0)
             if act not in ("buy", "sell"):
                 rec["status"] = "拒绝：未知动作"
             elif basis_err:
@@ -1042,6 +1064,10 @@ class AgentTrader:
                   and rec.get("risk_stop") is None
                   and not _has_sell_condition(conditions, sym)):
                 rec["status"] = "拒绝：买入缺止损安排（risk_stop 或卖出条件）"
+            elif _dev > max(0.0, float(self.cfg.max_price_deviation)):
+                rec["status"] = (f"拒绝：执行价 {px:.2f} 偏离基准价 {_ref:.2f} "
+                                 f"达 {_dev:.0%}（超阈值 "
+                                 f"{self.cfg.max_price_deviation:.0%}，疑数据口径错误）")
             elif act == "buy" and sym not in allow_buy:
                 rec["status"] = "拒绝：不在股票池"
             elif act == "sell" and sym not in allow_sell:

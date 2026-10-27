@@ -5,7 +5,7 @@
 > 不是进度真相源——进度看 `docs/ROADMAP.md`。
 
 - 最后更新：2026-10-23
-- 当前里程碑：M1 已验收（2026-10-23）；Pi 本机 `engine.local.yaml` 开启引擎；tag `v0.7.4` 已发布（发布版 `config.yaml` 默认仍 `enabled: false`）
+- 当前里程碑：M1 已验收（2026-10-23）；Pi 本机 `engine.local.yaml` 开启引擎；tag `v0.7.5` 已发布（发布版 `config.yaml` 默认仍 `enabled: false`）
 
 ---
 
@@ -58,6 +58,9 @@
   契约测试数据级校验（本地 279 项全绿）。
   **v0.7.4**：验收热修——母库日历历史-only 时回退 akshare（防 fail-closed 停摆；
   本地 280 项全绿）。
+  **v0.7.5**：2026-10-27 价格尺度事故——按计划基准价冲正 000792 错单（`data:incident`
+  审计 + 改前备份），加执行价偏离门禁 `agent.max_price_deviation`，补
+  `require_stop`/`require_basis` config 接线（本地 282 项全绿）。
 
 ### 2.2 ROADMAP.md 勾选与进度记录
 - **现状**：每次迭代手工勾复选框 + 补一行「进度记录」。

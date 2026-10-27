@@ -115,6 +115,53 @@ def test_require_stop_accepts_with_risk_stop(monkeypatch, tmp_path):
     assert res["decisions"][0]["status"].startswith("已成交")
 
 
+def test_price_deviation_gate_rejects_scale_pollution(monkeypatch, tmp_path):
+    """2026-10-27 事故重演：执行价 175.96（母库后复权）vs 计划基准价 22.25 → 拒单。
+
+    事故中三道闸全过（涨跌停带/单笔上限都以污染价自洽），只有跨时点的
+    计划基准价能把尺度错误拦下来。阈值默认 30%（A股最大日波幅）。
+    """
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    day = datetime.now().date().isoformat()
+    bars = {"600519": b.data_db.get_bars("600519", limit=30)}
+    last_close = round(float(bars["600519"][-1].close), 2)
+    # 计划是干净口径（price_source=last_close 是计划生成时的定稿收盘）
+    b.broker.save_plan(day, ["600519"], {
+        "actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                     "price": last_close, "price_source": "last_close",
+                     "reason": "低估", "basis": ["recent_closes"]}],
+        "summary": "计划买"})
+    pend = b.broker.get_pending_plan(day)
+    # 执行时 price_map 被污染成后复权价（约 7.9 倍）
+    latest = {s: px * 7.913 for s, px in b.price_map(["600519"]).items()}
+    r = t._execute_plan(pend, bars, latest)
+    assert r["ok"] and r.get("from_plan") is True
+    st = r["decisions"][0]["status"]
+    assert "偏离基准价" in st and "拒" in st
+    assert b.broker.get_position("600519") is None
+
+
+def test_price_deviation_gate_allows_normal_move(monkeypatch, tmp_path):
+    """正常波动（含 10% 涨跌停内跳空）不触发尺度门禁。"""
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    day = datetime.now().date().isoformat()
+    bars = {"600519": b.data_db.get_bars("600519", limit=30)}
+    last_close = round(float(bars["600519"][-1].close), 2)
+    b.broker.save_plan(day, ["600519"], {
+        "actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                     "price": last_close, "price_source": "last_close",
+                     "reason": "低估", "basis": ["recent_closes"]}],
+        "summary": "计划买"})
+    pend = b.broker.get_pending_plan(day)
+    latest = {s: px * 1.09 for s, px in b.price_map(["600519"]).items()}  # +9% 跳空
+    r = t._execute_plan(pend, bars, latest)
+    st = r["decisions"][0]["status"]
+    assert "偏离基准价" not in st
+    assert b.broker.get_position("600519") is not None
+
+
 def test_has_sell_condition_helper():
     """止损门禁：卖出条件只对已持仓标的有效（非持仓卖出条件会被解析层拒）。"""
     from paper_trading.agent.loop import _has_sell_condition

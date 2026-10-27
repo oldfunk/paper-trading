@@ -209,6 +209,10 @@ class TradingBridge:
             event_min_interval_min=max(0, int(agent_kwargs.get("event_min_interval_min", 15))),
             event_max_calls_per_day=max(0, int(agent_kwargs.get("event_max_calls_per_day", 6))),
             event_max_conditions=max(1, min(10, int(agent_kwargs.get("event_max_conditions", 3)))),
+            # v0.7.5：这三个此前只有字段+门禁逻辑，未从 config.yaml 接线
+            require_stop=bool(agent_kwargs.get("require_stop", False)),
+            require_basis=bool(agent_kwargs.get("require_basis", False)),
+            max_price_deviation=float(agent_kwargs.get("max_price_deviation", 0.30)),
         )
 
     def sync_data(self, symbols: list[str]) -> dict:
