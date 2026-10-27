@@ -138,7 +138,7 @@ L1 44.6% / 钱类 83% 框架可灭 / **L2 61% 是迁移后的主战场**（1.53 
 
 ---
 
-## 当前状态与下一批（主 AI 更新 2026-10-27 深夜）
+## 当前状态与任务分配（主 AI 更新 2026-10-27 深夜 · 用户指示：主 AI 减负、多派活）
 
 - [x] T8 已交付（`report-hermes-t8-20261027.md`：H-1/2/4/6/7 修复通过、
   M 系通过、H-5 仍开 → 主 AI 已裁决 **consume-once** 并修复
@@ -147,12 +147,23 @@ L1 44.6% / 钱类 83% 框架可灭 / **L2 61% 是迁移后的主战场**（1.53 
   （adjust.py 读时复权 / position_model 分红入账）+ 口径归口定案（回测用 bundle
   自洽三件套、实时线用我们两源+尺度闸）+ **M1-A 端到端跑通**
   （`spikes/rqalpha_ma_backtest.py`：trades=108、NaN 门禁实弹验证、EXIT=0）
-- 全量测试 **317 passed**
+- 全量测试 **317 passed**（本地+Pi 双绿，v0.7.10 已部署）
 
-**下一批候选（认领请勾选并写进本文件）**：
+### 已派发任务（认领即勾选；主 AI 只做最终裁决/门禁签核，不亲自实施）
 
-- [ ] **T9（M1-B parity 取证，Qoder）**：同规则同窗口，旧 `Backtester` vs rqalpha
-  的对照方法与容差建议（按 refactor-plan §5.1-6 钱类回归），**只出方案不改码**
-- [ ] **T10（M1-C 除权日 walkthrough，Qoder）**：从 bundle `dividends.h5` 选一只
-  真实分红票，逐步推演 rqalpha 调价+分红入账，验证 `m1-data-adapter.md` §2 路线 B
-- [ ] **T11（H-5 裁决复核，Hermes）**：对 consume-once 分歧的再复核
+- [ ] **T9（Qoder，P0，M1-B parity 实施级）**：同规则同窗口，旧 `Backtester`
+  vs rqalpha 对照——**出方案并实现**（对照脚本放 `spikes/`，可复用 M1-A 骨架）：
+  同一 MA5/20 规则、同窗口（建议 2026-01-05→09-10）、同 10 标的、同初始资金，
+  逐项对照成交数/逐笔价格/总费用/收益，容差按 `refactor-plan` §5.1-6
+  （成交笔数差 0、费用差 <1e-6、收益差 <0.1pp）；产出 `report-t9.md` 对照表
+- [ ] **T10（Qoder，P1）**：M1-C 除权日 walkthrough——从 bundle `dividends.h5`
+  选一只真实分红票，逐步推演 rqalpha 调价+分红入账，验证
+  `m1-data-adapter.md` §2 路线 B 数学自洽；产出 `report-t10.md`
+- [ ] **T11（Hermes，P1）**：H-5 consume-once 裁决再复核（`questions.md` 批复节）；
+  有异议写 `report-t11.md`，无异议勾掉即可
+- [ ] **T12（Hermes，P0，与 T9 交叉）**：T9 对照脚本与结果的**独立复核**——
+  同窗口同参数的复现性、容差计算是否正确、有无"挑数据"（换窗口/换标的凑齐）；
+  产出 `report-t12.md`
+
+**主 AI 保留职责（不再亲自写实施）**：L1 交易代码最终把关（缺陷归因 §7）、
+T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应、M2 方案拍板。
