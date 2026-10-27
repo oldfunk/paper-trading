@@ -1893,6 +1893,11 @@ def main() -> None:
                                       initial_cash=args.cash, top=args.top,
                                       slippage_fixed=slip_fixed, risk=risk_cfg,
                                       minutes_by_day=grid_minutes)
+                # M2 可复现：网格/前向的全部变体共用同一数据快照，绑一次哈希
+                from paper_trading.engine.provenance import bars_fingerprint
+
+                out["data_fingerprint"] = bars_fingerprint(
+                    bars_by_sym, grid_days, grid_minutes or None)
                 emit(out, ok=not out.get("error"), error=out.get("error"))
                 return
             # backtest
@@ -1944,6 +1949,7 @@ def main() -> None:
             m["per_rule"] = res.per_rule
             m["skipped_sample"] = res.skipped[:20]
             m["intraday_days"] = res.intraday_days
+            m["fingerprint"] = res.fingerprint   # M2 可复现：数据/参数哈希
             bench = buy_and_hold(bars_by_sym, days, args.cash, fee)
             if bench:
                 m["benchmark_buy_hold"] = bench

@@ -56,6 +56,7 @@ class BacktestResult:
     skipped: list[dict] = field(default_factory=list)
     per_rule: dict[str, dict] = field(default_factory=dict)
     intraday_days: int = 0          # 有分钟线并重放了日内规则的天数（0=未重放）
+    fingerprint: dict = field(default_factory=dict)   # 数据/参数指纹（M2 可复现）
 
 
 class Backtester:
@@ -86,6 +87,9 @@ class Backtester:
         # 组合风控：默认与 config.yaml 同口径（30k/30%/95%）；显式 risk={} 关闭
         from paper_trading.risk.risk_manager import RiskManager
         self.risk = None
+        # 指纹用的生效风控参数（risk={} 表示关闭 → None）
+        self._risk_cfg = None if risk == {} else {**self.RISK_DEFAULTS,
+                                                  **(risk or {})}
         if risk != {}:
             self.risk = RiskManager(**{**self.RISK_DEFAULTS, **(risk or {})})
 
@@ -379,6 +383,18 @@ class Backtester:
         res.final_equity = equity_curve[-1]["equity"] if equity_curve else initial_cash
         res.total_fees = round(fees_total, 2)
         res.intraday_days = len(intraday_days)
+        # 可复现指纹（M2）：同 bars_hash+params_hash ⇒ 同实验；任一变化即新实验
+        try:
+            from paper_trading.engine.provenance import backtest_fingerprint
+
+            res.fingerprint = backtest_fingerprint(
+                bars_by_sym=bars_by_sym, days=days, cfg=self.cfg,
+                fee=self.fee, slippage_pct=self.slippage,
+                slippage_fixed=self.slippage_fixed,
+                risk_cfg=self._risk_cfg, initial_cash=initial_cash,
+                minutes_by_day=minutes_by_day)
+        except Exception:                   # noqa: BLE001 - 指纹故障不阻断回测
+            res.fingerprint = {}
         return res
 
     # ---------- 日内规则重放 ----------

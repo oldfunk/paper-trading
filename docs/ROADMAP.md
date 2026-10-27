@@ -166,7 +166,12 @@
 - [x] 行情数据质量守卫（v0.7.8）：`data/quality.py` 五类发现（无数据/同日重复/
   非法价/异常涨跌幅>31%/中段缺日/停牌停滞≥10 交易日），`sync_data` 落
   `op_log[data:quality]` 不静默 + CLI `data quality`；守卫故障不阻断同步。
-- [ ] 数据版本/快照：回测结果绑定数据哈希与参数哈希，可复现。
+- [x] 数据版本/快照（v0.7.9）：`engine/provenance.py` 指纹——回测结果绑定
+  `bars_hash`（K 线快照 sha256）/`minutes_hash`（分钟线）/`days_hash`（窗口）/
+  `params_hash`（规则/费用/滑点/风控/初始资金 canonical JSON）；同双哈希=同实验，
+  任一变化即新实验。`Backtester.run` 自动填充，`engine backtest` 输出带
+  fingerprint、`optimize/walkforward` 绑 `data_fingerprint`；5 项测试
+  （稳定性/敏感性/序无关/可复现/分钟哈希）。
 - [ ] 撮合细化：成交量约束、涨跌停排队近似、集合竞价简化口径集中到一处文档。
 - [ ] 基准与归因：等权买入持有之外，加入指数基准、行业/风格暴露（可选）。
 - [ ] 参数研究流程固化：样本内选择 → 样本外检验 → 前向模拟；禁止把网格第一名直接写生产。
