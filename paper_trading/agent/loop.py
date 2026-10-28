@@ -923,6 +923,13 @@ class AgentTrader:
 
         logger = get_logger(__name__)
         b = self.bridge
+        # T24 P0（Hermes 对抗审查，主 AI 修）：**消费前移到本函数第一句**。
+        # SIGKILL/SIGTERM 不执行 finally——消费留在 finally 时，进程被杀后
+        # 计划残留 pending，下 tick 会重跑已成交动作（重复下单）；且本函数
+        # 解析/补数据段在 try 之外，抛异常同样残留。前移后崩溃窗口=零
+        # （本句执行完即消费），与 H-5 consume-once 裁决语义一致：
+        # 消费即承诺"做过/尝试做过，永不自动重跑"，恢复=人工核查账本。
+        b.broker.mark_plan_done(int(pending["id"]))
         plan = pending.get("plan") or {}
         actions = plan.get("actions", [])
         if not isinstance(actions, list):
@@ -994,8 +1001,7 @@ class AgentTrader:
             res = {"ok": False,
                    "error": f"计划执行中断：{type(e).__name__}: {e}",
                    "plan_id": int(pending["id"]), "from_plan": True}
-        finally:
-            b.broker.mark_plan_done(int(pending["id"]))
+        # 消费已在函数开头（T24 P0：finally 在 SIGKILL 下不执行，故不在此处）
         logger.info(f"AI plan {pending['id']} executed")
         return res
 

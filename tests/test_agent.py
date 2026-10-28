@@ -745,6 +745,39 @@ def test_plan_buy_on_held_symbol_allowed(monkeypatch, tmp_path):
     assert b.broker.get_position("600519").total_volume == 200
 
 
+def test_plan_consumed_before_actions_begin(monkeypatch, tmp_path):
+    """T24 P0（Hermes 对抗审查）：**消费必须前移到执行第一句**。
+
+    SIGKILL/SIGTERM 不执行 finally——若消费留在 finally，进程被杀后计划
+    残留 pending，下 tick 会重跑已成交动作（重复下单）。本测试在
+    _execute_actions **执行期间**探针检查 pending 已为 None：
+    消费若回退到 finally（或 try 之后），探针即失败（测试真红）。
+    """
+    b = _bridge(str(tmp_path), _fresh_bars())
+    t = AgentTrader(b, AgentConfig(max_orders_per_run=3, max_order_value=20000.0))
+    day = datetime.now().date().isoformat()
+    b.broker.save_plan(day, ["600519"], {
+        "actions": [{"action": "buy", "symbol": "600519", "volume": 100,
+                     "price": None, "price_source": "last_close",
+                     "reason": "前移", "basis": ["recent_closes"]}],
+        "summary": "消费前移"})
+    pend = b.broker.get_pending_plan(day)
+    bars = {"600519": b.data_db.get_bars("600519", limit=30)}
+    seen = {}
+
+    orig = t._execute_actions
+
+    def spy(**kw):
+        seen["pending_during_exec"] = b.broker.get_pending_plan(day)
+        return orig(**kw)
+
+    monkeypatch.setattr(t, "_execute_actions", spy)
+    t._execute_plan(pend, bars, b.price_map(["600519"]))
+    assert seen["pending_during_exec"] is None, \
+        "执行期间计划必须已被消费（T24 P0：否则 SIGKILL 下残留 pending 会重复下单）"
+    assert b.broker.get_pending_plan(day) is None
+
+
 def test_plan_consumed_even_if_execution_crashes(monkeypatch, tmp_path):
     """H-5 定案（T8 复核后裁决）：执行崩溃也必须消费计划。
 
