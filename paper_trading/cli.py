@@ -1327,6 +1327,37 @@ def main() -> None:
                               help="门禁模式：任何标的缺 raw 或陈旧即 exit 1")
     data_raw_cov.add_argument("--json", action="store_true")
 
+    # rq（T32：rqalpha 底座的一天一会话 / 双轨影子对照 / 状态体检）
+    rq_parser = subparsers.add_parser(
+        "rq", help="rqalpha 引擎会话（模拟线；需安装 rqalpha，NEC 生产 venv 默认不装）")
+    rq_sub = rq_parser.add_subparsers(dest="rq_command")
+    for name, help_text in (("day", "跑一个模拟日（一天一进程，G-T13-9）"),
+                            ("shadow-day", "rqalpha vs 旧引擎同日双跑对账（只写影子目录）")):
+        p = rq_sub.add_parser(name, help=help_text)
+        p.add_argument("--today", required=True, help="模拟日 YYYY-MM-DD")
+        p.add_argument("--symbols", nargs="*", required=True)
+        p.add_argument("--plan", default="[]", help="JSON 动作列表")
+        p.add_argument("--bundle", default=None, help="rqalpha bundle 目录")
+        p.add_argument("--init-cash", type=float, default=100000.0)
+        p.add_argument("--force", action="store_true",
+                       help="绕过幂等闸（会重复成交，仅用于排障）")
+        p.add_argument("--allow-op-log", action="store_true",
+                       help="shadow-day：把对账结论写入当前账本 op_log")
+        p.add_argument("--json", action="store_true")
+        if name == "day":
+            p.add_argument("--state-dir", required=True,
+                           help="会话状态目录（persist + session.json）")
+            p.add_argument("--workdir", default=None)
+        else:
+            p.add_argument("--shadow-dir", required=True,
+                           help="影子目录（独立 paper_account.db + rq 状态）")
+    rq_state = rq_sub.add_parser("state", help="只读体检：状态文件/会话闸/数据门禁（不跑引擎）")
+    rq_state.add_argument("--state-dir", required=True)
+    rq_state.add_argument("--symbols", nargs="*", default=None)
+    rq_state.add_argument("--today", default=None)
+    rq_state.add_argument("--days", type=int, default=260)
+    rq_state.add_argument("--json", action="store_true")
+
     # health（T22 生产心跳/看门狗：消灭"engine 静默停摆"这类靠肉眼发现的故障）
     health_parser = subparsers.add_parser(
         "health", help="生产心跳与看门狗（engine/agent 停滞、面板宕机 → 告警+流水）")
@@ -1729,6 +1760,76 @@ def main() -> None:
                     sys.exit(3)
             else:
                 emit(bridge.llm_status())
+
+        elif args.command == "rq":
+            import json as _json
+            import os as _os
+            from pathlib import Path as _P
+
+            from paper_trading.integration.rq_engine import (rq_alpha_available,
+                                                           runner as _rq,
+                                                           shadow as _sh)
+
+            def _bundle_path(cli_arg):
+                cand = cli_arg or _os.environ.get("RQALPHA_BUNDLE") \
+                    or str(_P.home() / ".rqalpha" / "bundle")
+                return str(_P(cand).expanduser())
+
+            cmd = getattr(args, "rq_command", None)
+            plan = _json.loads(args.plan) if hasattr(args, "plan") else []
+            if cmd == "state":
+                from datetime import date as _date
+
+                from paper_trading.data.db_manager import DataDBManager
+                from paper_trading.integration.rq_engine.provider import SessionGate
+                from paper_trading.integration.rq_engine.store import (BandMissingError,
+                                                                     RawDayBarStore)
+
+                syms = args.symbols or bridge.data_db.get_pool_symbols()
+                today = _date.fromisoformat(args.today) if args.today else None
+                db = DataDBManager(args.data_db)
+                out = {"state_dir": args.state_dir,
+                       "session": SessionGate(args.state_dir).read(),
+                       "rqalpha_installed": rq_alpha_available()}
+                try:
+                    st = RawDayBarStore.from_data_db(db, syms, days=args.days, today=today)
+                    out["store"] = {"order_book_ids": st.order_book_ids(),
+                                    "stats": st.stats, "problems": st.problems[:20]}
+                except BandMissingError as e:
+                    out["store"] = {"gate_failed": str(e)}
+                emit(out)
+                if out["store"].get("gate_failed"):
+                    sys.exit(1)
+            elif cmd in ("day", "shadow-day"):
+                if not rq_alpha_available():
+                    emit(None, ok=False,
+                         error="本环境未安装 rqalpha（NEC 生产 venv 默认不装）；"
+                               "请先在隔离 venv 里装 rqalpha==6.4.2 再跑")
+                    sys.exit(2)
+                bundle = _bundle_path(args.bundle)
+                if cmd == "day":
+                    res = _rq.run_session(today=args.today, data_db=args.data_db,
+                                          bundle=bundle, symbols=args.symbols,
+                                          plan=plan, init_cash=args.init_cash,
+                                          state_dir=args.state_dir,
+                                          workdir=args.workdir, force=args.force)
+                    emit(res)
+                    if res["error"] or not res["gates"]["ok"]:
+                        sys.exit(1)
+                else:
+                    res = _sh.shadow_day(today=args.today, data_db=args.data_db,
+                                        bundle=bundle, symbols=args.symbols, plan=plan,
+                                        shadow_dir=args.shadow_dir,
+                                        production_account_db=str(bridge.broker.db_path),
+                                        init_cash=args.init_cash, force=args.force)
+                    if getattr(args, "allow_op_log", False):
+                        _sh.record_to(bridge.broker, res)
+                    emit(res)
+                    if not res["ok"]:
+                        sys.exit(1)
+            else:
+                parser.print_help()
+                sys.exit(2)
 
         elif args.command == "health":
             from paper_trading.utils import heartbeat as hb
