@@ -80,10 +80,32 @@
 - NEC 生产运行；Pi 冻结为**只读回退副本**（cron 保持停用，db 不再写入）
 - 每日核对：agent_decisions 有新记录、dashboard 正常、engine.log 无错误
 - 3 天无异常 → Pi 上 paper-trading 正式退役（保留目录只读，不删）
-- 异常回退：Pi `crontab -l` 恢复 5 条 → 停 NEC cron → Pi 接管（数据从 NEC 拷回）
+- **异常回退（T21 P0 修正后的正确顺序，与切换同一条铁律）**：
+  ① 停 NEC cron（先断源头）→ ② scp NEC db → Pi → ③ Pi 校验
+  COUNT/integrity/sha256 → ④ Pi 恢复 cron → ⑤ Pi dashboard 起服务。
+  **先停 NEC 再恢复 Pi**——绝不可先恢复 Pi cron（否则 Pi 在旧账本上先跑一轮
+  = 账本分叉 + 双活窗口）。
 
-## 数据一致性验证（T21 重点审查）
+## 执行记录（2026-10-28 14:40-14:47，主 AI 亲执行；用户指示提前切换）
 
-- 拷贝前：Pi `orders`/`nav_history`/`agent_decisions`/`op_log` 四表 COUNT
-- 拷贝后：NEC 同四表 COUNT 一致 + `PRAGMA integrity_check` = ok
+1. 冷备份：Pi 5 文件（2 db + 3 local 配置）→ 开发机 `G:\opencode\pi-backup-20261028\`
+2. Pi 停 paper-trading cron（stock-dashboard 保留）+ 停 dashboard + 等 engine 残留进程退净
+3. scp → NEC；**sha256 两库逐字节一致**；integrity ok；14 表账本 + 27,888 根日线完整
+4. NEC dashboard systemd 化（unit 照抄 Pi 改路径，enable --now，HTTP 200）
+5. NEC 启 5 条 cron（与 Pi 逐条一致，路径改 /home/nec）
+6. 验证：14:46/14:47 engine cron 连续正常触发、风控熔断态正确传递（回撤 36% held
+   10 条条件单）、Pi 0 进程 0 cron = 零双活
+
+**观察期进行中**；Pi 回退副本冻结（本机+开发机双份备份）。
+
+## 数据一致性验证（T21 审查后补齐：sha256 + 扩展表清单）
+
+- **文件级**：拷贝前后 `sha256sum` 对比两个 db（本次实测逐字节一致）
+- **结构级**：`PRAGMA integrity_check` = ok（两库）
+- **内容级**：`orders`/`nav_history`/`agent_decisions`/`op_log`/`risk_state`/
+  `t1_freeze`/`positions`/`conditional_orders`/`engine_state` COUNT 与 Pi 一致
+- **本地覆盖配置**：`engine.local.yaml`/`strategy.local.yaml`/`secrets.local.json`
+  一并 scp（T21 P1-3；`.bak*` 备份文件不迁）
+- **凭证提醒**（T21 P1-4）：admin_token 在浏览器 localStorage——NEC 面板
+  `http://192.168.50.71:8080/` 首次写操作前需用已存 API Key 重新保存一次
 - 观察期末：Pi（冻结值） vs NEC（新增量） 差值 = 观察期新增行数，逐表核对
