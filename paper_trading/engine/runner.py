@@ -449,6 +449,17 @@ def run_loop(bridge, interval_sec: int = 60, dry_run: bool = False,
                 logger.error(f"engine/{name} crashed: {type(e).__name__}: {e}")
                 res[name] = {"error": f"{type(e).__name__}: {e}"}
         out.append(res)
+        # 心跳记在轮次**末尾**：中途被 SIGKILL/断电就不跳，看门狗才分得清
+        # "没跑成" 与 "跑成但没动作"（休市跳过也算跑成）。两个模块都错 ⇒ ok=False。
+        try:
+            from paper_trading.utils import heartbeat as _hb
+
+            errs = [str(res.get(k, {}).get("error")) for k in ("rules", "conds")
+                    if isinstance(res.get(k), dict) and res.get(k).get("error")]
+            _hb.touch("engine", ok=len(errs) < 2,
+                      detail="；".join(errs)[:200])
+        except Exception:                                   # noqa: BLE001 - 心跳不拖垮交易
+            pass
         n += 1
         if max_ticks and n >= max_ticks:
             break

@@ -1183,6 +1183,14 @@ class AgentTrader:
         except Exception:                       # noqa: BLE001
             logger.warning("save agent_decision failed")
         logger.info(f"AI decide done: {len(decided)} actions, mode={mode}, from_plan={from_plan}")
+        try:
+            from paper_trading.utils import heartbeat as _hb
+
+            _hb.touch("agent", ok=True,
+                      detail=f"mode={mode} decisions={len(decided)}"
+                             + (" dry-run" if dry_run else ""))
+        except Exception:                       # noqa: BLE001 - 心跳不拖垮决策链
+            pass
         return {"ok": True, "timestamp": now, "symbols": symbols, "mode": mode,
                 "from_plan": from_plan, "pool_source": pool_source,
                 "summary": summary, "decisions": decided,

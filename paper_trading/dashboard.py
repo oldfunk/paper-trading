@@ -117,6 +117,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 </header>
 
 <div class="market-row" id="cards"></div>
+<div class="status-bar" id="healthbar" style="display:none;border-color:#e0524d;color:#e0524d"></div>
 <div class="status-bar" id="statusbar"></div>
 
 <section>
@@ -390,6 +391,14 @@ async function refresh(){
   const [s,ops,pos,ord,nav,nm,prov]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance"].map(get));
   NAMES=(nm&&nm.data)||{};
   try{const qq=await get("/api/quotes");QUOTES=(qq&&qq.data)||{};}catch(e){QUOTES={};}
+  // T22 看门狗红条：不健康才显示；恢复后后端状态翻回 healthy=true ⇒ 红条自动消失
+  try{const hh=await get("/api/health");const h=(hh&&hh.data)||{};
+    const bar=document.getElementById("healthbar");
+    if(h.healthy===false){bar.style.display="";
+      bar.innerHTML="🔴 生产健康告警："+(h.alerts||[]).map(esc).join("；")
+        +" <span class=\"mut\">看门狗 "+esc(h.checked_at||"")+"</span>";}
+    else{bar.style.display="none";bar.innerHTML="";}
+  }catch(e){}
   const st=s.data;
   document.getElementById("clock").textContent="行情截至 "+(st.data_asof||"无数据")+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
   document.getElementById("statusbar").innerHTML=`
@@ -1066,6 +1075,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path in ("/", "/index.html"):
                 self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+            elif u.path == "/api/health":
+                # 只读看门狗状态（var/health_status.json + 实时心跳体检），不碰账本
+                from paper_trading.utils import heartbeat as hb
+
+                st = hb.read_status()
+                if not st:
+                    st = hb.probe()      # 没人跑过 check：直接按心跳现状判一次
+                self._json({"ok": True, "data": st})
             elif u.path == "/api/status":
                 from paper_trading.cli import TradingBridge
 
