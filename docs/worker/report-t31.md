@@ -139,3 +139,19 @@ python -m paper_trading.cli data raw-coverage --symbols 000792 --gate --json
   3. `RAW_CLOSE_TOLERANCE=0.5%` 与 `MAX_LAG_TRADING_DAYS=1` 的取值（都可配置化，但我不想动 config 默认值）。
 - **`mother.py:406-429` 那条"不复权 close"注释是错的**，我没顺手改（它是 L2 读料口径的
   权威描述，改它属于 §5.4 之后的整体决定）——已同步进 `questions.md`。
+
+## 8. 对同事 B（Hermes）`report-t33` 两条审查意见的处置
+
+她审的是我 T13 的原型，两条都成立，逐条回执：
+
+1. **ST band 用 5% 是合规缺陷** —— 认。本分支已修 `spikes/rqalpha_mod_t13sim.py::band_of`：
+   主板 10% / 创业·科创 20% / 北交 30%，**ST 不降档**
+   （AGENTS 合规表 #4/#5 + 硬规则 2"不得沿用 ST=5% 旧口径"）。
+   参数 `is_st` 保留但显式 `del`，逼调用点表态；修完后**重跑 T13 selftest 21/21**
+   （我们池无 ST 标的，band 数值逐根不变——这是"修正不改既有结论"的证明）。
+   产品化时该函数进 T32 的 DayBarStore 并配**单测**（含 ST 主板/创业 ST/北交 ST 三档）。
+2. **provider 的 fsync/校验和** —— 认，属 T32（provider 产品化时按钱类件对待）：
+   落盘 `os.replace` 之后补 `f.flush()+os.fsync(dir_fd)`，并给每个 state 文件加内容校验和，
+   `load()` 校验和不符 → 拒绝恢复并停线（而不是拿半截状态继续跑）。
+3. 她提的 **close_raw 新鲜度**（母库 raw 列滞后）与我 §3.1/questions.md 第 2 问是同一件事，
+   两侧独立命中 ⇒ 这条缺口是真的，等主 AI 在 (A) 当日跨源对照 / (B) T+1 回补闭环 之间拍板。

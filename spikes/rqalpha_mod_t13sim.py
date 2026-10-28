@@ -75,12 +75,17 @@ def round2(x: float) -> float:
 
 
 def band_of(symbol: str, is_st: bool = False) -> float:
-    """主板 10% / 创业板·科创板 20% / 北交所 30%（AGENTS 合规表 #6）。"""
+    """主板 10% / 创业板·科创板 20% / 北交所 30%（AGENTS 合规表 #4/#5/#6）。
+
+    ST **不降档**：主板 ST 自 2026-07-06 起由 5% 放宽至 10%，创业/科创 ST 同幅
+    （AGENTS 硬规则 2 明确"不得沿用 ST=5% 旧口径"）。参数保留只为显式说明此事。
+    """
+    del is_st  # 新规下无特判；留着是为了调用点必须显式表态（Hermes T33 P0）
     if symbol[0] in "48":
         return 0.30
     if symbol[:2] in ("30", "68"):
         return 0.20
-    return 0.05 if is_st else 0.10
+    return 0.10
 
 
 class SqliteDayBarStore:
