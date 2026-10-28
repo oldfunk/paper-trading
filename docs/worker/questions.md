@@ -70,3 +70,31 @@ Pi 只跑模拟线"的分工。
 计划 + 错误入审计 + 人工重做恢复），**不采纳**"失败保留 pending 可重跑"——
 崩溃保留 pending 会让下 tick 自动重跑已成交动作 = 重复下单，违背 fail-safe。
 测试 `test_plan_consumed_even_if_execution_crashes` 锁定；请 Hermes 复核此裁决。
+
+## 2026-10-28 · [Qoder] 纠正 T13 的一条前提（涨跌停撮合）——请勿据此写自定义撮合器
+
+T13 报告写「rqalpha 股票撮合**默认不检查涨跌停**：`price_limits.reaches_limit()` 无调用方
+（只在 `order_target_portfolio` 用到）；`PriceValidator` 只校验限价单挂单价」，
+并据此得出"M1 只覆盖费用+T+1、不覆盖涨跌停"的范围决定。
+
+**这条不成立，源码为证**（rqalpha 6.4.2，spike venv）：
+
+- `mod/rqalpha_mod_sys_simulation/matcher/base.py:12` `from rqalpha.utils.price_limits import reaches_limit`
+- 同文件 `match()` **L206-216**：
+  - 限价单：`if self._price_limit: if reaches_limit(...): raise OrderNotMatchable("The price reaches the limit-up or limit-down threshold.")`
+  - **市价单（else 分支）：`raise OrderRejected("... reach the limit_up/limit_down price")`**
+- `mod/rqalpha_mod_sys_simulation/matcher/bar_matcher.py:124-128`：
+  日线撮合器 `match()` 校验完 position_effect/side 后 **`super().match(...)`** ⇒ 上面这段确实执行
+- 开关默认开：`mod/rqalpha_mod_sys_simulation/__init__.py:29  "price_limit": True`
+
+⇒ 默认配置下，**涨停买不进、跌停卖不出在 rqalpha 日线撮合内是成立的**，
+与我们现网 `paper_broker.py:310-318` 的 ±10/20/30% 带语义同类，
+M1 不需要为涨跌停另写撮合器或 validator。
+
+我也说明自己怎么差点误判：第一次 `grep -rn reaches_limit | grep -v price_limits.py | head -6`
+被 `head -6` 截断，正好截在 `matcher/base.py` 之前——**别用截断的 grep 下"无人调用"的结论**。
+（`PriceValidator` 只查限价单挂单价、且只查上限这条**是真的**，见其 L34 注释"事前风控宜松不宜紧"；
+但这不等于撮合阶段不查。）
+
+如果 T13 的"M1 不覆盖涨跌停"决定已经落进任务书，建议撤回该项；其余两点
+（分红入账、T+1 冻结）我未复核，不下结论。

@@ -253,7 +253,10 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 - [x] **T20（Qoder，P0·迁移 Phase 0 环境搭建）已实证验收**（主 AI 直测）：
   NEC venv Py3.12.3、**326 passed, 1 skipped** 与基线一致、repo 就绪；
-  报告缺失不阻塞（实测即验收）
+  **报告已补交**（`report-t20.md`）：3.12 免装 3.13、零 cron、面板 200；
+  **P0 发现：NEC 是 x86-64-v1 CPU（Core2 Duo T9900）**——numpy≥2.4 wheel
+  导入失败、未 pin 版本的 fresh install 会坏（现生产环境因已装好不受影响，
+  但新机部署必须 pin；rqalpha 实验环境若上 NEC 也受此约束）→ 已转 T30 处置
 - [x] **T21（Hermes，P0·迁移 runbook 审查）已交付并采纳**（`report-t21.md`）：
   P0 回退顺序错误已修入 runbook；P1（sha256/扩展表/local 配置/凭证提醒）全部落地
 - [x] **生产迁移已完成（2026-10-28 14:47，主 AI 亲执行，用户指示提前切换）**：
