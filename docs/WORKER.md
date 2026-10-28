@@ -297,6 +297,37 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 **新派发**：
 
+### Batch 5 · 项目内部梳理（用户要求 2026-10-29：验证接入 + 梳理结构 + 查文档漏洞）
+
+- [ ] **T27（Hermes，P0·结构文档漏洞审查）**：文档之间与"文档 vs 代码"的
+  一致性系统审查——产出 `report-t27.md`（H 系风格逐条：位置 + 现状 + 应为
+  + 风险级）。范围：
+  - [ ] **文档互查**：`AGENTS.md` / `refactor-plan-open-source.md` / `WORKER.md` /
+    `mother-interface.md` / `incident-2026-10-27.md` / `founding-mandate.md` /
+    `migration-nec.md` / `m1-data-adapter.md` ——同一事实两处陈述是否矛盾、
+    是否有过时断言（例：D1-D4 裁决后仍写"等待分钟数据"的旧句子；T25 改 AGENTS
+    后与 migration-nec 是否重复维护）、复选框状态与真实交付是否相符
+  - [ ] **代码 vs 文档**：AGENTS 硬规则（0-6）/ 纪律 3.2/5/8 各条引用的
+    `文件:行` 或行为描述当前是否仍成立；合规表 16 条"已建模/简化"状态抽查
+    （每类至少 1 条实证）；Risk Parameters 表 vs `config.yaml` 实际默认值
+  - [ ] **分层纪律落实度**：硬规则 0 的 L1/L2 划分——列出哪些模块的代码注释/
+    文档声称属 L2 但实际在算 L1 的活（影响成交价/持仓/盈亏/拒单的数值来源
+    逐个点名：现在 L1=自研 Backtester，rqalpha 未接生产——**如实记录过渡态**）
+  - [ ] P0 矛盾 → `questions.md` 喊停；P1/P2 进报告清单
+- [ ] **T28（Qoder，P0·结构地图 + 分层现状）**：产出 `docs/architecture-map.md`
+  ——项目当前的"内部梳理"权威地图：
+  - [ ] **模块地图**：`paper_trading/` 全模块清单（包/文件/行数/一句话职责），
+    按 `engine / agent / data / integration / dashboard / cli / utils` 分组
+  - [ ] **依赖方向图**：核心链路（cron → cli → engine/agent → broker → db）
+    与数据链路（akshare/母库 → source → 价源消费者）的文字版数据流，
+    标出**单向依赖违规**（谁反向 import 了不该 import 的层）
+  - [ ] **L1/L2 现状 vs 目标**：对照 `refactor-plan` §1 三层——当前每模块的
+    实际归属、M2/M3 后的目标归属、**迁移状态一览**（哪些已换/待换/永不换）
+  - [ ] **重复与死区**：明显重复实现（如多处各自的取价/格式化）、
+    从未被引用的模块（import 图验证）、测试盲区（无测试的生产模块清单）
+  - [ ] 验收：行数/清单用工具输出（cloc 或脚本统计）不许估；依赖图从
+    import 语句实测不凭记忆
+
 - [ ] **T26（Qoder，P1·长线·D1 闭合）每日 5 分钟线积累**：从现在起每日收盘后
   把池内（或全市场按需）5 分钟线落 `data.db minute_bars`（现仅 2304 根/约
   22 天）——设计：数据源与频率确认、每日 cron 或并入既有 tick、增量 upsert
