@@ -1286,6 +1286,10 @@ def main() -> None:
     data_cov.add_argument("--pool-limit", type=int, default=20)
     data_cov.add_argument("--pool-tag", default="")
     data_cov.add_argument("--no-picks", action="store_true")
+    data_cov.add_argument("--strict", action="store_true",
+                          help="严格门禁：白名单外的任何降级/不可用即失败")
+    data_cov.add_argument("--whitelist", default=None,
+                          help="降级白名单文件（每行一个 key），缺省用 docs/coverage-downgrade-whitelist.txt")
     data_cov.add_argument("--json", action="store_true")
     data_quality = data_sub.add_parser(
         "quality",
@@ -1735,6 +1739,31 @@ def main() -> None:
                                        if isinstance(x, dict) and x.get("source")})
                         if srcs:
                             summary[k] = {"sources": srcs}
+                if getattr(args, "strict", False):
+                    import os as _os
+                    wl_path = getattr(args, "whitelist", None) or "docs/coverage-downgrade-whitelist.txt"
+                    wl = set()
+                    try:
+                        with open(wl_path, encoding="utf-8") as _f:
+                            for _line in _f:
+                                _t = _line.strip()
+                                if _t and not _t.startswith("#"):
+                                    wl.add(_t)
+                    except FileNotFoundError:
+                        pass
+                    bad = []
+                    for k, v in cov.items():
+                        src = v.get("source") if isinstance(v, dict) else None
+                        avail = v.get("available") if isinstance(v, dict) else None
+                        if src is not None and ("unavailable" in str(src)
+                                                or str(src).startswith("local:")):
+                            if k not in wl:
+                                bad.append(f"{k}: {src}")
+                    if bad:
+                        emit({"symbols": syms, "violations": bad,
+                              "whitelist": sorted(wl)}, ok=False,
+                             error=("strict 门禁失败：白名单外降级 " + str(len(bad)) + " 项"))
+                        sys.exit(1)
                 emit({"symbols": syms, "pool_source": note,
                       "summary": summary, "coverage": cov})
             elif cmd == "quality":
