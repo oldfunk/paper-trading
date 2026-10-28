@@ -205,3 +205,66 @@ def fetch_minute_batch(symbols: list[str], period: str = "1",
         if i + 1 < len(symbols) and gap > 0:
             time.sleep(gap)
     return out
+
+
+# ---------- T26：每日收盘后积累 + 缺口报告 ----------
+#: A 股连续竞价分钟全集，bar 以**右端时刻**标记（09:35 = 09:30-09:35 那根）：
+#: 上午 09:31..11:30（120 根）、下午 13:01..15:00（120 根）→ 1 分钟 240 根/日。
+SESSION_START_MIN = 9 * 60 + 30
+
+
+def _trading_minutes() -> list[int]:
+    return (list(range(9 * 60 + 31, 11 * 60 + 31)) +
+            list(range(13 * 60 + 1, 15 * 60 + 1)))
+
+
+def expected_slots(period: str = "5") -> list[str]:
+    """该周期下一交易日应有的 bar 时刻（实测生产库 5 分钟 = 48 根/标的/日）。"""
+    step = max(1, int(period))
+    out = []
+    for m in _trading_minutes():
+        if (m - SESSION_START_MIN) % step == 0 or m in (11 * 60 + 30, 15 * 60):
+            out.append(f"{m // 60:02d}:{m % 60:02d}")
+    return out
+
+
+def sync_day(db, symbols, *, day: Optional[str] = None, period: str = "5",
+             days: int = MAX_DAYS, fetch=None, now: Optional[datetime] = None,
+             gap: float = GAP_SEC) -> dict:
+    """把某交易日的分钟线落库（幂等 upsert）并给出**缺口报告**。
+
+    `fetch(symbol, period, days, now) -> list[dict]` 可注入（测试用假源）。
+    数据现实：新浪 N 分钟只给最近约 22 个交易日，更早的缺口**补不回来**，
+    所以这里只报告、不假装能回填（AGENTS 纪律 4 不静默）。
+    """
+    now = now or datetime.now()
+    day = day or now.date().isoformat()
+    if fetch is None:
+        def fetch(s, p, d, n):
+            return fetch_minute(s, period=p, days=d, now=n)
+
+    written = 0
+    per_symbol: dict[str, dict] = {}
+    for i, sym in enumerate(symbols or []):
+        try:
+            rows = fetch(sym, period, days, now) or []
+        except Exception as exc:            # noqa: BLE001 - 单只失败不影响整批
+            per_symbol[sym] = {"written": 0, "error": f"{type(exc).__name__}: {str(exc)[:80]}"}
+            continue
+        day_rows = [r for r in rows if str(r.get("ts", ""))[:10] == day]
+        n = db.upsert_minute_bars(sym, day_rows, period=period) if day_rows else 0
+        written += n
+        have = db.minute_ts_on(sym, day, period=period)
+        missing = [f"{day}T{s}" for s in expected_slots(period)
+                   if f"{day}T{s}" not in have]
+        per_symbol[sym] = {"written": n, "bars": len(have), "missing": len(missing),
+                           "missing_sample": missing[:6]}
+        if i + 1 < len(symbols) and gap > 0:
+            time.sleep(gap)
+    return {"day": day, "period": str(period), "symbols": len(symbols or []),
+            "written": written,
+            "expected_per_symbol": len(expected_slots(period)),
+            "per_symbol": per_symbol,
+            "no_data": sorted(s for s, v in per_symbol.items() if not v.get("written")),
+            "gapped": sorted(s for s, v in per_symbol.items() if v.get("missing")),
+            "errors": sorted(s for s, v in per_symbol.items() if v.get("error"))}
