@@ -207,10 +207,24 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   必须样本外、0 笔成交不参与排名、基准超额）要在 rqalpha 上原样复活，
   且叠加 **NaN 门禁 + 我们的 provenance 指纹** → 可复现实验注册表
 - 任务：
-  - [ ] 对照现实现逐语义映射（每条纪律 → rqalpha 对应物或缺口清单）
-  - [ ] 设计实验注册表格式：bundle 版本 + 参数哈希 + 数据指纹 + 指标有限性证明
-  - [ ] 产出 `docs/worker/report-t14.md`：映射表 + 缺口 + 实施步骤（先设计不写码）
-- 验收：映射表每行有现代码 `文件:行` 出处
+  - [x] 对照现实现逐语义映射（每条纪律 → rqalpha 对应物或缺口清单）——
+    `report-t14.md` §2 八条纪律逐行给现代码 `文件:行` + rqalpha `文件:行`
+  - [x] 设计实验注册表格式：bundle 版本 + 参数哈希 + 数据指纹 + 指标有限性证明
+    —— §4 `experiments` 表 + 状态机（`ok/excluded_zero_trade/invalid_nan/failed`）
+    + `exp_id = hash(bars|params|days|engine_ver)` 的可复现性判据
+  - [x] 产出 `docs/worker/report-t14.md`：映射表 + 缺口 + 实施步骤（先设计不写码）
+- 验收：映射表每行有现代码 `文件:行` 出处 ✅（§7 出处自检）
+- **交付要点（Qoder 2026-10-28，`worker/t14` 纯文档）**：
+  ① **rqalpha 6.4.2 core 没有任何寻优设施**（全库 grep `optimize` 零命中，
+  只有 `utils/concurrent.py:40` 一个带进度的进程池）⇒ 网格/排名/0 笔剔除/样本外切分/
+  基准超额**五件纪律全是我们 L2 的活**，移植只把"评估一个变体"换成一次 rqalpha 会话；
+  ② 基准建议**自算等权买入持有**（用同一段 rqalpha 会话跑 buy-and-hold），
+  因为 analyser 的 benchmark 是指数口径且在 bundle 覆盖不足时**直接抛错**
+  （`mod.py:203`，T13 §3 S1 现场撞过）；
+  ③ **一 trial 一进程**（G-T13-9），否则被 `Environment` 单例清空后的日志掩盖真因；
+  ④ 顺带发现 **P1 缺陷**：`walk_forward()` 承诺的过拟合量度其实没算
+  （`optimize.py:251-252` 的 `oracle` 与 `picked` 是同一行、`picked` 全文未被使用），
+  修法见 §6，建议与实施步骤 S3 合并做。
 
 ### T15（Hermes，P0·长线，预计 3-5 天）L2 对抗性测试战役——狩猎新缺陷
 
