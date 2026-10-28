@@ -374,6 +374,40 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 ### M1 关闭后追加（主 AI 2026-10-29 · M1 签字关闭，见 `docs/m1-signoff.md`）
 
+### M2 拍板后实施批（主 AI 2026-10-29 · `refactor-plan` §5.4 已拍板，M2 启动）
+
+- [x] **T13 ✅ 已验收合并**（`report-t13.md` + 原型两件）：21/21 门禁真重启实测、
+  3 P0/5 P1 清单、断点续跑方案、9 条门禁建议——**M2 拍板全部采纳**
+  （§5.4：close_raw 供给 / provider 钱类件 / 双保险新鲜度 / vwap→只用 current_bar /
+  band 供给责任=我方）
+- [ ] **T31（Qoder，P0·M2 数据侧）close_raw 供给管道**：
+  - [ ] 读取链：母库 `close_raw` 优先（`mother.py:406-441` 口径）+ akshare
+    `adjust=""` 兜底 + 本地落库（`daily_bars` 加 `close_raw` 列或独立表——
+    **不许原地改写既有 qfq 列**，AI 展示层还靠它）
+  - [ ] **口径标签机制**：数据写入带 `adjust` 标签；`source.py`/适配层入口
+    校验 `adjust != "raw"` → **拒绝供数给引擎**（fail-closed，G-T13-1）
+  - [ ] G-T13-2 因子新鲜度门禁（回测线：因子末日 < 今日 ⇒ 拒跑）
+  - [ ] T26 同步：五分线积累按 raw 口径落（或双列）
+  - [ ] 测试 + `report-t31.md`
+- [ ] **T32（Qoder，P0·M2 适配器产品化）T13 原型 → 产品件**：
+  - [ ] 三件套评审进产品（建议 `paper_trading/integration/rqalpha/`）：
+    DayBarStore（raw + prev_close + band 三字段必供）、DataSource
+    （bundle 元数据 + available_data_range 覆盖）、**FilePersistProvider
+    按钱类件对待**（重启 cash/qty/closable/frozen 逐字段相等单测）
+  - [ ] G-T13-3/5/6/7/8/9：band 缺失拒跑、幂等会话闸（配置指纹 fail-closed）、
+    禁 sys_analyser、空转断言、ORDER_CREATION_REJECT 监听入 op_log、一天一进程
+  - [ ] **双轨影子 runner**：rqalpha 与 PaperBroker 同日并行跑（rqalpha 侧
+    只影子不实发）、每日对账（cash/qty/费用）差异入 `op_log[parity:diff]`
+  - [ ] 测试 + `report-t32.md`；spikes 原型保留为对照件
+- [ ] **T33（Hermes，P0·M2 审查）拍板与原型双重审查**：
+  - [ ] 审 §5.4 拍板：9 条 G-T13 门禁判据**是否可测**（每条给出测试方案草案
+    或指出不可测）；close_raw 方案有无第三条 P0（如母库 close_raw 新鲜度/
+    与 qfq 的一致性校验缺位）
+  - [ ] 审 T13 原型代码（钱类视角）：FilePersistProvider 的原子写/指纹/
+    恢复语义找漏洞；SqliteDayBarStore 的 band 计算与 AGENTS #6/#7 合规表
+    逐档核对（10/20/30%、ST、四舍五入）
+  - [ ] 产出 `report-t33.md`；P0 → `questions.md` 喊停（M2 动工前必须清零）
+
 - [ ] **T30（Qoder，P0·部署安全）requirements 版本 pin**：T20 发现 NEC 是
   x86-64-v1 CPU（Core2 Duo T9900）——**numpy≥2.4 的 wheel 在此架构导入失败**，
   未 pin 的 fresh install 必坏（现生产因已装好暂不受影响，但任何重装/新机
