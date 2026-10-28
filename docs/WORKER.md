@@ -253,17 +253,18 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 - [ ] **T20（Qoder，P0·迁移 Phase 0 环境搭建）**：NEC（`ssh nec`，Linux Mint
   x86_64 / 2 核 / 5.9G RAM / Python 3.12.3）上搭建生产环境——
-  - [ ] `git clone` paper-trading 到 `~/paper-trading`
-  - [ ] 建 venv：先用系统 **Python 3.12** 装依赖跑 `pytest -q`；
+  - [x] `git clone` paper-trading 到 `~/paper-trading`
+  - [x] 建 venv：先用系统 **Python 3.12** 装依赖跑 `pytest -q`；
     若非因代码本身的问题而不过绿，改装 3.13（deadsnakes PPA）再跑；
     记录最终选择与理由
-  - [ ] 全量测试必须 **326 passed, 1 skipped**（与 Pi/本地同基线）
-  - [ ] dashboard 起 systemd 服务，`curl 127.0.0.1:8080/` 200
-  - [ ] **绝对禁止**：启用任何 paper-trading cron（双活=重复下单，P1 由主 AI
+  - [x] 全量测试必须 **326 passed, 1 skipped**（与 Pi/本地同基线）
+  - [x] dashboard 起 systemd 服务，`curl 127.0.0.1:8080/` 200
+  - [x] **绝对禁止**：启用任何 paper-trading cron（双活=重复下单，P1 由主 AI
     统一启用）；**禁止**改动 Pi 上任何东西
-  - [ ] 产出 `report-t20.md`：venv Python 版本、测试结果、服务状态、
+  - [x] 产出 `report-t20.md`（**已交付**：326 passed/1 skipped、3.12 免装 3.13、面板 200、无 cron；发现 NEC 为 x86-64-v1 CPU ⇒ numpy≥2.4 wheel 不可用）：
+  venv Python 版本、测试结果、服务状态、
     3.12 兼容性结论（影响后续 rqalpha/依赖选型）
-- [ ] **T21（Hermes，P0·迁移 runbook 审查）**：审查主 AI 的迁移 runbook
+- [x] **T21（Hermes，P0·迁移 runbook 审查）**：审查主 AI 的迁移 runbook
   （`docs/migration-nec.md`，T20 并行起草）——重点：① 有无双活窗口
   ② 回退路径是否真可回退 ③ 数据一致性验证是否充分（拷完 db 后怎么证明
   没丢账本）④ cron 清单与 Pi 现状逐条对照（漏一条=漏一个功能）；
