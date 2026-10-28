@@ -50,7 +50,7 @@ python -m paper_trading.cli data coverage --json
 python -m paper_trading.cli data compare --symbols 600036 --json
 ```
 
-### Cron Integration
+### Cron Integration（生产机 NEC；路径已同步）
 
 ```bash
 # v0.6.5 推荐：固定交易时段 + 收盘计划 + 开盘执行 + 事件复盘；
@@ -58,22 +58,22 @@ python -m paper_trading.cli data compare --symbols 600036 --json
 # 不再读取 strategy.local.yaml 的 agent_schedule 队列。
 
 # 开盘执行（09:30–10:00 内每 5 分钟：只消费当天 pending 计划，无计划即静默）
-(crontab -l 2>/dev/null; echo "30,35,40,45,50,55 9 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "30,35,40,45,50,55 9 * * 1-5 cd /home/nec/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
 # 收盘计划（16:30–18:30 每 5 分钟：数据定稿后做下一交易日计划，成功即幂等停止）
-(crontab -l 2>/dev/null; echo "*/5 16-18 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "*/5 16-18 * * 1-5 cd /home/nec/paper-trading && venv/bin/python -m paper_trading.cli agent tick --json >> agent.log 2>&1") | crontab -
 # 事件驱动复盘（盘中每分钟检查，避开整点/错开 tick；无异动/冷却/预算用完时零 LLM 调用）
-(crontab -l 2>/dev/null; echo "1-59 9-11,13-14 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli agent event --json >> agent.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "1-59 9-11,13-14 * * 1-5 cd /home/nec/paper-trading && venv/bin/python -m paper_trading.cli agent event --json >> agent.log 2>&1") | crontab -
 # 规则引擎 + 条件单（每分钟单轮；engine.enabled=false 时只判定并落 blocked_disabled）
-(crontab -l 2>/dev/null; echo "* 9-15 * * 1-5 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.engine --once --json >> engine.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "* 9-15 * * 1-5 cd /home/nec/paper-trading && venv/bin/python -m paper_trading.engine --once --json >> engine.log 2>&1") | crontab -
 # 交易日历（每周同步一次未来交易日到 var/trading_calendar.json，只留最近 45 天+未来；失败回退周末）
-(crontab -l 2>/dev/null; echo "0 10 * * 6 cd /home/pi/paper-trading && venv/bin/python -m paper_trading.cli calendar sync --json >> calendar.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "0 10 * * 6 cd /home/nec/paper-trading && venv/bin/python -m paper_trading.cli calendar sync --json >> calendar.log 2>&1") | crontab -
 ```
 
 `run_lock` 会检查锁文件里的 PID 与进程启动标识：进程被 SIGKILL/断电后残留的锁会自动接管，不需要人工删 `paper_trading.lock`；仍在运行的守护进程（`engine --interval` 会全天持锁）不会被等待方误删。akshare 日线/名称/日历调用都有硬超时，网络 stall 时按失败返回，不会长期持锁拖死盘中止损。
 
 事件复盘与引擎**不共用**同一把锁：`agent event` 用 `paper_trading.event.lock`（上一轮 LLM 复盘没跑完就跳过本轮），只有会下单的入口（sync/run/buy/sell/tick 执行/面板 fire）才占全局 `paper_trading.lock`。否则一次 120s 的复盘会把每分钟引擎挡在门外，推迟止损 1–3 分钟。
 
-Pi 日志轮转：`deploy/logrotate.paper-trading`（daily + 5M + 保留 14 份 + `copytruncate`），安装：
+NEC 日志轮转（生产机；Pi 冻结期不适用）：`deploy/logrotate.paper-trading`（daily + 5M + 保留 14 份 + `copytruncate`），安装：
 
 ```bash
 sudo cp deploy/logrotate.paper-trading /etc/logrotate.d/paper-trading
@@ -219,8 +219,20 @@ After any trading operation, verify:
 - [ ] 同标的当日已有卖出成交后没有买入成交（离场优先，买入条件作废并记拒因）
 - [ ] 每个交易日收盘后有一条 `nav:close` 快照（无交易也记，NAV 序列无空洞；判重按业务日 `result.date`，补记历史日也不重复）
 
-## Pi Deployment Sync
+## Deployment Sync（生产机 = NEC，2026-10-28 起）
 
-`~/paper-trading` on Pi is a git clone tracking `origin/main` (read-only deploy key).
+生产机是 **NEC**（`192.168.50.71`，Linux Mint x86_64 / Py 3.12）；`~/paper-trading`
+是跟踪 `origin/main` 的 git clone（只读部署密钥）。**Pi 已冻结为回退副本**
+（0 进程 0 cron，观察期 2-3 交易日），观察期结束前不要回收 Pi 上的数据。
+
+迁移过程、逐字节校验（sha256）、回退顺序与扩展表清单的**唯一真相源是
+`docs/migration-nec.md`**——本节只放指引，不复制内容（避免两处说法漂移）。
+
 Update ONLY via `git pull` — never scp/rsync files (that breaks LF endings and bypasses history).
 `data.db` / `paper_account.db` / `venv/` are gitignored and survive pulls untouched.
+
+已知环境坑（踩过，写在这里省时间）：
+- **NEC 是 x86-64-v1 老 CPU（Core2 Duo）**：numpy ≥2.4 的官方 wheel 基线是 v2，装了会
+  `import numpy` 失败（`requirements.txt` 目前只有下限 ⇒ 新机器默认解析即坏，需钉 `numpy<2.4`）。
+- **cron 里 `systemctl --user` 需要 `XDG_RUNTIME_DIR=/run/user/1000`**，否则探测一律 unknown。
+- **ufw 需为 :8080 放行局域网来源**，否则"面板挂了"与"防火墙拦了"从症状上无法区分。
