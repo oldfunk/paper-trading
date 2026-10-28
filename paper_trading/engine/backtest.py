@@ -661,6 +661,14 @@ def metrics(res: BacktestResult, days: int) -> dict:
     mu = sum(rets) / len(rets) if rets else 0.0
     var = (sum((r - mu) ** 2 for r in rets) / len(rets)) if len(rets) > 1 else 0.0
     sharpe = (mu / (var ** 0.5) * (244 ** 0.5)) if var > 0 else 0.0
+    # 纪律 4「不静默」：被跳过的信号必须**分类**可见。旧行为只报 skipped 总数，
+    # CLI/面板再截 10~20 条样本 ⇒ 整类流失（如「金额不足一手」14 笔 + 连带
+    # 「无可卖持仓」15 笔，见 worker/report-t9.md F 表）在汇总里完全看不出来。
+    skip_counts: dict[str, int] = {}
+    for k in res.skipped:
+        why = str(k.get("why") or "").split("：")[0].strip() or "未归类"
+        skip_counts[why] = skip_counts.get(why, 0) + 1
+    attempts = len(res.trades) + len(res.skipped)
     return {
         "start": res.start, "end": res.end, "days": days,
         "initial_cash": round(res.initial_cash, 2),
@@ -680,4 +688,9 @@ def metrics(res: BacktestResult, days: int) -> dict:
         "fee_drag_pct": round(res.total_fees / res.initial_cash * 100, 2)
         if res.initial_cash else 0.0,
         "skipped": len(res.skipped),
+        # T17：分类计数 + 尝试数 + 流失率，供 CLI/面板做"不静默"可见性
+        "skip_counts": dict(sorted(skip_counts.items(), key=lambda x: -x[1])),
+        "order_attempts": attempts,
+        "signal_drop_pct": (round(len(res.skipped) / attempts * 100, 1)
+                            if attempts else 0.0),
     }
