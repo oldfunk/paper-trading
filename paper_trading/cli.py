@@ -1303,6 +1303,21 @@ def main() -> None:
                               help="回看窗口（交易日/缺口扫描天数，默认 30）")
     data_quality.add_argument("--json", action="store_true")
 
+    # health（T22 生产心跳/看门狗：消灭"engine 静默停摆"这类靠肉眼发现的故障）
+    health_parser = subparsers.add_parser(
+        "health", help="生产心跳与看门狗（engine/agent 停滞、面板宕机 → 告警+流水）")
+    health_parser.add_argument("--json", action="store_true")
+    health_sub = health_parser.add_subparsers(dest="health_command")
+    health_check_p = health_sub.add_parser(
+        "check", help="看门狗跑一轮（cron 每 10 分钟调；不健康则退出码 1）")
+    health_check_p.add_argument("--engine-max-age", type=int, default=None,
+                                help="engine 心跳最大允许年龄（秒，默认 300）")
+    health_check_p.add_argument("--agent-max-age", type=int, default=None,
+                                help="agent 心跳最大允许年龄（秒，默认 64800）")
+    health_check_p.add_argument("--json", action="store_true", help="输出 JSON 格式")
+    health_show_p = health_sub.add_parser("show", help="显示心跳与健康状态（只读）")
+    health_show_p.add_argument("--json", action="store_true", help="输出 JSON 格式")
+
     # agent
     agent_parser = subparsers.add_parser(
         "agent", help="AI 交易员（固定运行时刻 + 事件驱动；旧定时队列仅兼容）")
@@ -1690,6 +1705,38 @@ def main() -> None:
                     sys.exit(3)
             else:
                 emit(bridge.llm_status())
+
+        elif args.command == "health":
+            from paper_trading.utils import heartbeat as hb
+
+            hc = getattr(args, "health_command", None) or "show"
+            th = {}
+            if getattr(args, "engine_max_age", None):
+                th["engine"] = int(args.engine_max_age)
+            if getattr(args, "agent_max_age", None):
+                th["agent"] = int(args.agent_max_age)
+            if hc == "check":
+                prev = hb.read_status()
+                st = hb.check(thresholds=th or None)
+                ev = hb.transitioned(prev, st)
+                if ev:
+                    # 只在状态翻转时落流水：健康期不刷屏，故障期一条"降级"、
+                    # 恢复期一条"恢复"（面板红条随之自动消失，不留陈旧告警）
+                    try:
+                        bridge.broker.log_operation(
+                            "data:health", {"event": ev}, bool(st["healthy"]),
+                            {"alerts": st["alerts"], "dashboard": st["dashboard"],
+                             "checks": st["checks"]}, None, None)
+                    except Exception as e:               # noqa: BLE001
+                        logger.warning(f"data:health log_operation failed: {e}")
+                    print(f"[health] {'✅ 恢复' if ev == 'recovered' else '🔴 故障'}："
+                          f"{'；'.join(st['alerts']) or '正常'}", file=sys.stderr)
+                emit(st)
+                if not st["healthy"]:
+                    sys.exit(1)
+            else:
+                emit({"heartbeats": hb.load(), "status": hb.read_status(),
+                      "probe": hb.probe(thresholds=th or None)})
 
         elif args.command == "calendar":
             from paper_trading.utils.trading_calendar import (
