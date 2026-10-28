@@ -260,3 +260,39 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   Pi 静默（0 进程 0 cron）、NEC 生产运行（engine cron 分钟级正常触发、
   风控熔断态正确传递、dashboard systemd 200）；数据 sha256 逐字节一致；
   执行记录见 `migration-nec.md`；**Pi 冻结为回退副本，观察期 2-3 交易日**
+
+---
+
+## Batch 4（主 AI 派发 2026-10-28 下午 · 迁移后 + M1/M2 关键路径）
+
+> 背景：生产已迁 NEC；母库对照发现 **40 键降级**（NEC stock-dashboard 副本
+> `kline_daily`/`dividend`/`instrument`/`benchmark`/`calendar`/`news` 全为 0，
+> Pi 母库 1007 万行是权威）——同步策略待用户拍板，T23 先固化对照方法论。
+
+- [ ] **T22（Qoder，P0·运维 fail-loud）NEC 生产心跳监控**：
+  Pi 连续自重启无告警、靠用户肉眼发现——这类"静默故障"必须消灭。设计并实现：
+  - [ ] 心跳件：定期记录 engine/agent 最后成功轮次（如写 `var/heartbeat.json`）
+  - [ ] 看门狗 cron：每 10 分钟检查心跳年龄 + dashboard systemd 活性，
+    超阈值（engine >5min 未跳动）→ 面板显著告警 + `op_log[data:health]`；
+    **不引入外网依赖**（纯本地/局域网）
+  - [ ] 恢复检测：故障恢复后告警自动消除，不留陈旧红条
+  - [ ] 测试 + `report-t22.md`：注入停滞的手工验证步骤
+- [ ] **T23（Hermes，P0·数据完整性门禁）迁移后 coverage 对照固化**：
+  主 AI 手工发现 Pi vs NEC `data coverage` 71 键中 **40 键降级**——固化为
+  可重复验证：① 对照脚本（两机 coverage 输出逐键 diff，容忍降级白名单必须
+  显式列举）② `report-t23.md` 列全 40 键及数据归属 ③ 设计 `data coverage
+  --strict` 或独立测试作为"数据不缺"的**永久门禁**（用户红线：不能缺任何
+  数据）；**只诊断不修数据**（母库同步待用户拍板）
+- [ ] **T24（Hermes，P1·挑战）L2 崩溃恢复对抗——信号语义专项**：
+  NEC 是 systemd/cron 世界，进程随时可能被 SIGKILL（升级/断电/OOM）。
+  对抗审查点（H 系列风格：文件:行 + 复现 + 风险级）：
+  - [ ] `agent/loop.py` 计划执行在 **SIGKILL/SIGTERM/断电**下的状态一致性
+    （注意：`finally` 在 SIGKILL 下**不会执行**——与 H-5 consume-once 裁决
+    交叉验证：哪些信号下计划残留 pending？下 tick 重跑的实际后果？）
+  - [ ] `engine --once` 中途被杀：锁残留接管语义（AGENTS 称 PID 标识可自动
+    接管——在真 SIGKILL 下验证）、账本写一半（SQLite 事务边界）
+  - [ ] cron 轮次重叠（上轮未完下轮启动）时 `run_lock` 实际行为
+  - [ ] 产出 `report-t24.md`；P0 立即 `questions.md` 喊停
+- [ ] **T25（Qoder，P2·小活）部署文档同步 NEC**：AGENTS.md「Pi Deployment
+  Sync」一节 + Cron 示例路径 `/home/pi` → `/home/nec`（生产真相已变）；
+  以 `docs/migration-nec.md` 为新真相源，AGENTS 只改指引不复制内容
