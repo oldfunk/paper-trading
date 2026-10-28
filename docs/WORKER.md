@@ -362,6 +362,15 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   `C:\Users\yanzh\AppData\Local\Temp\t19_capture.json` 逐日快照比对归因
   （111 条事件 × 21 根收盘，无需重跑）→ 并入 `report-t12.md` 增补节
 
+### M1 关闭后追加（主 AI 2026-10-29 · M1 签字关闭，见 `docs/m1-signoff.md`）
+
+- [ ] **T30（Qoder，P0·部署安全）requirements 版本 pin**：T20 发现 NEC 是
+  x86-64-v1 CPU（Core2 Duo T9900）——**numpy≥2.4 的 wheel 在此架构导入失败**，
+  未 pin 的 fresh install 必坏（现生产因已装好暂不受影响，但任何重装/新机
+  部署即踩雷）：① 盘点现役环境实际版本（NEC venv freeze 关键包）② 给
+  `requirements.txt` 加上限 pin（numpy<2.4 或按实测兼容线）③ 本地+NEC 双端
+  fresh-venv 实测可装可跑 340 ④ `report-t30.md` 记录兼容矩阵
+
 ### Batch 4 任务定义（历史，主 AI 派发 2026-10-28 下午）
 
 > 背景：生产已迁 NEC；母库对照发现 **40 键降级**——**用户裁决（2026-10-28）：
