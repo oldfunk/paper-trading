@@ -503,6 +503,45 @@ def daily_bars(codes: Iterable[str], days: int = 250,
     return out
 
 
+def raw_close_map(codes: Iterable[str], days: int = 30,
+                  mother: Optional[Path] = None,
+                  ttl: float = TTL_QUOTES) -> dict:
+    """母库**不复权**列：`{code: {date: {"close": close_raw, "volume":, "amount":}}}`。
+
+    T31 用它做 raw 管道的**独立同日对照**（谁写引擎谁不能被引擎的数据自证）。
+    实测（NEC 生产母库 2026-10-28）：母库只有 `close_raw/volume/amount` 是不复权，
+    `open/high/low/close` 四列都是**前复权**（600519 2016-01-04：
+    open 172.87 / close 166.54 = close_qfq，而 close_raw=210.02 = 交易所价）
+    ⇒ 母库不能供 raw OHLC，只能供 raw 收盘与量额；raw OHLC 由 akshare
+    `stock_zh_a_daily(adjust="")` 供（同日实测与 close_raw/volume/amount 完全一致）。
+    """
+    out: dict = {}
+    conn = _conn(mother)
+    if conn is None:
+        return out
+    try:
+        if not _has(conn, "kline_daily", ("code", "trade_date", "close_raw")):
+            return out
+        for code in dict.fromkeys(str(c).strip().zfill(6) for c in (codes or [])):
+            def _fetch():
+                rows = conn.execute(
+                    """SELECT trade_date, close_raw, volume, amount
+                       FROM kline_daily WHERE code = ?
+                       ORDER BY trade_date DESC LIMIT ?""",
+                    (code, int(days))).fetchall()
+                return {str(dict(r)["trade_date"])[:10]: dict(r) for r in rows}
+            try:
+                out[code] = _cached(f"rawclose:{_dbkey(conn)}:{code}:{days}", ttl, _fetch)
+            except Exception:               # noqa: BLE001 - 单只失败不影响其他
+                out[code] = {}
+    finally:
+        try:
+            conn.close()
+        except Exception:                   # noqa: BLE001
+            pass
+    return out
+
+
 # ---------- 基本面 / 财务 / 股息 / 基准 / 新闻 / 筛选 / 论点 / 追踪 ----------
 
 def financial_summary(codes: Iterable[str], mother: Optional[Path] = None,

@@ -33,6 +33,11 @@ class DataDBManager:
         finally:
             conn.close()
 
+    @staticmethod
+    def _has_column(conn, table: str, column: str) -> bool:
+        return any(r["name"] == column
+                   for r in conn.execute(f"PRAGMA table_info({table})"))
+
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.execute("""
@@ -51,6 +56,32 @@ class DataDBManager:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_bars_symbol_time
                 ON daily_bars(symbol, timestamp)
+            """)
+            # T31 G-T13-1 口径标签：既有 daily_bars 一直是**前复权**
+            # （akshare_fetcher.py 默认 adjust="qfq"），加列打标签而不改写任何值——
+            # AI 展示层还靠这口径，引擎侧一律改读 daily_bars_raw。
+            if not self._has_column(conn, "daily_bars", "adjust"):
+                conn.execute("ALTER TABLE daily_bars ADD COLUMN adjust TEXT DEFAULT 'qfq'")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS daily_bars_raw (
+                    symbol TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume INTEGER NOT NULL,
+                    amount REAL,
+                    turn REAL DEFAULT 0.0,
+                    adjust TEXT NOT NULL DEFAULT 'raw',
+                    source TEXT,
+                    checked INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (symbol, timestamp)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_raw_symbol_time
+                ON daily_bars_raw(symbol, timestamp)
             """)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS stock_pool (
@@ -76,6 +107,8 @@ class DataDBManager:
                 CREATE INDEX IF NOT EXISTS idx_minute_symbol_ts
                 ON minute_bars(symbol, ts)
             """)
+            if not self._has_column(conn, "minute_bars", "adjust"):
+                conn.execute("ALTER TABLE minute_bars ADD COLUMN adjust TEXT DEFAULT 'raw'")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS quote_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,6 +176,7 @@ class DataDBManager:
                 close=r["close"],
                 volume=r["volume"],
                 turn=r["turn"],
+                adjust=r["adjust"] if "adjust" in r.keys() else None,
             )
             for r in rows
         ]
@@ -158,6 +192,110 @@ class DataDBManager:
                 (symbol,),
             ).fetchone()
         return row[0] if row and row[0] else None
+
+    # ---- raw 口径（T31：引擎只准读这里）--------------------------------
+    def upsert_raw_bars(self, bars: list[Bar], source: str = "",
+                        checked: bool = False,
+                        checked_dates: Optional[set] = None) -> int:
+        """写入原始价日线。`adjust` 必须真是 'raw'，否则拒写（fail-closed）。
+
+        `checked_dates`（{'YYYY-MM-DD'}）逐行标记"该日已与独立源同日对照通过"——
+        母库最新日的 `close_raw` 实测为 NULL（20/20 只），所以整批一刀切会把
+        已验证的旧日一起降级，逐行标记才可用；下一轮补跑会自动把该日翻成已验证。
+        """
+        if not bars:
+            return 0
+        bad = [b for b in bars if (b.adjust or "raw") != "raw"]
+        if bad:
+            raise ValueError(
+                f"upsert_raw_bars 收到非 raw 口径 {len(bad)} 根"
+                f"（adjust={bad[0].adjust!r}）——口径混用是 2026-10-27 事故类，拒写")
+        cd = checked_dates or set()
+        with self._connect() as conn:
+            conn.executemany(
+                """INSERT OR REPLACE INTO daily_bars_raw
+                   (symbol, timestamp, open, high, low, close, volume,
+                    amount, turn, adjust, source, checked)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'raw', ?, ?)""",
+                [
+                    (b.symbol, b.timestamp.isoformat(), b.open, b.high, b.low,
+                     b.close, b.volume, b.amount, b.turn, source,
+                     1 if (checked or str(b.timestamp)[:10] in cd) else 0)
+                    for b in bars
+                ],
+            )
+        return len(bars)
+
+    def get_raw_bars(self, symbol: str, start: Optional[str] = None,
+                     end: Optional[str] = None,
+                     limit: Optional[int] = None) -> list[Bar]:
+        """原始价日线（时间升序）。与 `get_bars` 同语义，只是读 raw 表。"""
+        sql = "SELECT * FROM daily_bars_raw WHERE symbol = ?"
+        params: list = [symbol]
+        if start:
+            sql += " AND timestamp >= ?"
+            params.append(start)
+        if end:
+            sql += " AND timestamp <= ?"
+            params.append(end)
+        if limit:
+            sql += " ORDER BY timestamp DESC LIMIT ?"
+            params.append(int(limit))
+        else:
+            sql += " ORDER BY timestamp ASC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        bars = [
+            Bar(symbol=r["symbol"], timestamp=datetime.fromisoformat(r["timestamp"]),
+                open=r["open"], high=r["high"], low=r["low"], close=r["close"],
+                volume=r["volume"], turn=r["turn"] or 0.0, amount=r["amount"],
+                adjust=r["adjust"])
+            for r in rows
+        ]
+        if limit:
+            bars.reverse()
+        return bars
+
+    def raw_latest(self, symbol: str) -> Optional[str]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(timestamp) FROM daily_bars_raw WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def raw_latest_checked(self, symbol: str) -> Optional[str]:
+        """最近一次**经独立源同日对照过**的 raw bar 日期（无则 None）。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(timestamp) FROM daily_bars_raw WHERE symbol = ? AND checked = 1",
+                (symbol,),
+            ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def raw_row_flags(self, symbol: str) -> dict:
+        """单标的 raw 数据的口径自检结论（供 `data raw-coverage` 与引擎闸）。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT timestamp, open, high, low, close, volume, amount, checked
+                   FROM daily_bars_raw WHERE symbol = ? ORDER BY timestamp""",
+                (symbol,),
+            ).fetchall()
+        out = {"symbol": symbol, "bars": len(rows), "last": None, "last_checked": None,
+               "missing_amount": 0, "non_positive": 0, "ohlc_inconsistent": 0}
+        if not rows:
+            return out
+        out["last"] = rows[-1]["timestamp"]
+        ck = [r["timestamp"] for r in rows if r["checked"]]
+        out["last_checked"] = ck[-1] if ck else None
+        for r in rows:
+            if not all(r[c] and r[c] > 0 for c in ("open", "high", "low", "close")):
+                out["non_positive"] += 1
+            if not (r["high"] >= max(r["open"], r["close"]) >= min(r["open"], r["close"]) >= r["low"]):
+                out["ohlc_inconsistent"] += 1
+            if not r["amount"]:
+                out["missing_amount"] += 1
+        return out
 
     def add_stock_to_pool(self, symbol: str, name: str = "") -> None:
         with self._connect() as conn:
@@ -201,18 +339,23 @@ class DataDBManager:
     # ---------- 分钟线与实时快照（盘中量化用） ----------
 
     def upsert_minute_bars(self, symbol: str, rows: list[dict]) -> int:
-        """写入 1 分钟 K 线（rows: [{ts, open, high, low, close, volume, amount}]）。"""
+        """写入分钟线（rows: [{ts, open, high, low, close, volume, amount}]）。
+
+        口径 = **原始价**（T26/T31 同步）：新浪 N 分钟接口给的是交易所实时价，
+        不做复权；实测 5 分钟最后一根收盘与当日 `daily_bars_raw.close` 一致，
+        所以这里显式打 `adjust='raw'`，让引擎侧的口径闸也能覆盖分钟线。
+        """
         if not rows:
             return 0
         with self._connect() as conn:
             conn.executemany(
                 """INSERT INTO minute_bars
-                   (symbol, ts, open, high, low, close, volume, amount)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   (symbol, ts, open, high, low, close, volume, amount, adjust)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'raw')
                    ON CONFLICT(symbol, ts) DO UPDATE SET
                      open=excluded.open, high=excluded.high, low=excluded.low,
                      close=excluded.close, volume=excluded.volume,
-                     amount=excluded.amount""",
+                     amount=excluded.amount, adjust='raw'""",
                 [(symbol, r["ts"], float(r["open"]), float(r["high"]),
                   float(r["low"]), float(r["close"]),
                   float(r.get("volume") or 0), float(r.get("amount") or 0))
@@ -223,7 +366,7 @@ class DataDBManager:
         """最近 N 根分钟线（按时间升序返回）。"""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM (SELECT ts, open, high, low, close, volume, amount"
+                "SELECT * FROM (SELECT ts, open, high, low, close, volume, amount, adjust"
                 " FROM minute_bars WHERE symbol = ? ORDER BY ts DESC LIMIT ?)"
                 " ORDER BY ts ASC", (symbol, int(limit))).fetchall()
         return [dict(r) for r in rows]

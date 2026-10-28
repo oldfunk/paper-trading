@@ -1303,6 +1303,30 @@ def main() -> None:
                               help="回看窗口（交易日/缺口扫描天数，默认 30）")
     data_quality.add_argument("--json", action="store_true")
 
+    # T31 原始价管道（引擎唯一允许的口径）
+    data_raw_fetch = data_sub.add_parser(
+        "fetch-raw", help="采集不复权日线并与母库 close_raw 同日对照后落库")
+    data_raw_fetch.add_argument("--symbols", nargs="*")
+    data_raw_fetch.add_argument("--pool-from", default="config")
+    data_raw_fetch.add_argument("--pool-limit", type=int, default=20)
+    data_raw_fetch.add_argument("--pool-tag", default="")
+    data_raw_fetch.add_argument("--no-picks", action="store_true")
+    data_raw_fetch.add_argument("--days", type=int, default=30)
+    data_raw_fetch.add_argument("--no-mother-ref", action="store_true",
+                                help="不与母库对照（单源，checked=0；只用于排障）")
+    data_raw_fetch.add_argument("--json", action="store_true")
+    data_raw_cov = data_sub.add_parser(
+        "raw-coverage", help="原始价日线的覆盖/新鲜度/对照情况（只读）")
+    data_raw_cov.add_argument("--symbols", nargs="*")
+    data_raw_cov.add_argument("--pool-from", default="config")
+    data_raw_cov.add_argument("--pool-limit", type=int, default=20)
+    data_raw_cov.add_argument("--pool-tag", default="")
+    data_raw_cov.add_argument("--no-picks", action="store_true")
+    data_raw_cov.add_argument("--days", type=int, default=30)
+    data_raw_cov.add_argument("--gate", action="store_true",
+                              help="门禁模式：任何标的缺 raw 或陈旧即 exit 1")
+    data_raw_cov.add_argument("--json", action="store_true")
+
     # health（T22 生产心跳/看门狗：消灭"engine 静默停摆"这类靠肉眼发现的故障）
     health_parser = subparsers.add_parser(
         "health", help="生产心跳与看门狗（engine/agent 停滞、面板宕机 → 告警+流水）")
@@ -1820,6 +1844,38 @@ def main() -> None:
                 q = quality_check(bridge.data_db, syms, days=args.days)
                 # 有发现≠命令失败（数据照常可用，发现进 findings 供审计）
                 emit({"symbols": syms, "pool_source": note, **q})
+            elif cmd == "fetch-raw":
+                from paper_trading.data import raw_feed
+
+                syms, note, _, _ = _resolve_syms(bridge, args)
+                ref = None
+                if not getattr(args, "no_mother_ref", False):
+                    def ref(s, d):
+                        return _m.raw_close_map(s, days=d)
+                res = raw_feed.sync_raw(bridge.data_db, syms, days=args.days,
+                                        reference=ref)
+                res["pool_source"] = note
+                # 拒收是口径事件，必须进流水（AGENTS 纪律 4 不静默）
+                if res["rejected"]:
+                    bridge.broker.log_operation(
+                        "data:raw_reject", {"symbols": res["rejected"]}, False,
+                        {"results": [r for r in res["results"]
+                                     if r["status"] == "rejected"]}, None, None)
+                emit(res)
+            elif cmd == "raw-coverage":
+                from paper_trading.data import raw_feed
+
+                syms, note, _, _ = _resolve_syms(bridge, args)
+                flags = {s: bridge.data_db.raw_row_flags(s) for s in syms}
+                fresh = raw_feed.raw_freshness(bridge.data_db, syms)
+                bad = [s for s in syms
+                       if fresh[s].get("stale")
+                       or flags[s]["non_positive"] or flags[s]["ohlc_inconsistent"]]
+                out = {"symbols": syms, "pool_source": note, "flags": flags,
+                       "freshness": fresh, "violations": bad}
+                emit(out)
+                if getattr(args, "gate", False) and bad:
+                    sys.exit(1)
             else:
                 parser.print_help()
                 sys.exit(2)
