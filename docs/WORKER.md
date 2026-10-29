@@ -725,16 +725,35 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     **已进 questions.md 等拍板，我不自选**
   - ➡️ 待办：第二个验证日（10-30 15:40 后同一条链）由我跑或 §5 cron 装好后自动产出；
     另请一并定"影子期 cron 用 `stock_pool` 表 38 只还是 `config.yaml` 的 10 只"
-- [ ] **T45（Qoder，P0·M3 切换方案）切换 runbook**（参照 `migration-nec.md`
-  的经验与 checklist 传统，产出于 `docs/migration-m3.md`）：
-  - [ ] 切换日流程：账本归档（`paper_account.db` 冷备+只读保留）→ **切换日
-    新开账**（新引擎账本起点=切换日 NAV 对齐，历史只读可查）→ cron 换线
-    （旧引擎 5 条停、新引擎线启用，**顺序铁律同 Pi→NEC：先停旧再启新**）→
-    验证步（首单/费用/T+1/NAV/面板/留痕）
-  - [ ] **回退方案**：config 开关一键切回旧线的精确步骤 + 回退后账本衔接
-    说明（新开账 vs 归档账的边界）
-  - [ ] 逐条 cron/服务/路径清单对照（漏一条=漏一个功能——T21 教训）
-  - [ ] `report-t45.md`；**切换操作本身由主 AI 亲执行**
+- [x] **T45（Qoder，P0·M3 切换方案）切换 runbook**（`worker/t45`，堆叠在 t42/t40/t41 之上，
+    **待 review 按序合并**；产出 `docs/migration-m3.md`，沿用 `migration-nec.md` 传统）
+  - [x] 切换日流程四步全部写成可执行动作：§4 Phase 1 ①-⑤（含 `crontab` 先备份、
+    归档后 `chmod 444` 只读保留一个版本周期、新开账 NAV 对齐归档最后一天、
+    **④ 必须在 ① 之后**——顺序铁律引 `migration-nec.md:75-76` 原文"不可双活一秒"）
+  - [x] 回退方案：§5.1 现状下的手工 6 步（明确**禁止跨账合并**：旧线 `avg_cost` 含费、
+    rqalpha `avg_price` 不含费，合并必错）；§5.2 最小开关规格（关键坑：新键**必须**加进
+    `engine/config.py:27-37` 的 `DEFAULTS` 白名单，否则 `config.py:59/64` 会静默丢弃）；
+    §5.3 账本衔接边界 + 指纹副作用（换机/换路径/改 `trading.*` 都会让同日拒续跑）
+  - [x] 逐条 cron/服务/路径清单：§3 共 19 行（cron 五条按 `AGENTS.md:53-70` 原文逐条标注
+    停/保留/新增，另有面板 unit、两个 venv、bundle+sha、state 目录、三把锁、
+    `engine.local.yaml`/`strategy.local.yaml`/`secrets.local.json` carry-over、
+    logrotate 里**仍是 `/home/pi` 的过时路径**、tag 与合入顺序）
+  - [x] `report-t45.md`（含逐条核销清单）；切换操作留给主 AI 亲执行（§7 是待填执行记录表）
+  - 🔴 **runbook 第一节写的是"现在还不能切"——4 个缺口都有 file:line 证据**：
+    G1 新线不写账本（`rq_engine/runner.py:216-218` 只出 evidence；`rq_engine/` 里唯一
+    的 PaperBroker 用法是 `--shadow-dir` 对照，`shadow.py:48-54/72`）；
+    G2 新线没有 NAV 记录器（`record_nav` 调用点全在旧线：`agent/loop.py:524/1171`、
+    `cli.py:371/442`、`main.py:133`；`runner.py:90` 那句只是意图注释）⇒ 切换后面板净值当天断供；
+    G3 **"config 开关一键切回"不存在**（全仓 `use_rqalpha|execution_backend|engine_backend|backend`
+    零命中，`engine/config.py:27-37` 无该键；说法只在 `refactor-plan-open-source.md:97/320` 与 §5.6）；
+    G4 归档/新开账工具不存在（只有 `deploy/incident-*.py:23-25`、`db_manager.py:75/105` 手工冷备，
+    `nav:revision` 只在 `ROADMAP.md:120/214` 出现，代码无写入点）。
+    ⇒ 需要主 AI 派实现任务，或把 M3 语义显式改成"影子期正式化"（与 `:98` 的
+    "cron 切 rqalpha 常驻"文本对齐）
+  - ⚠️ 另外两条要主 AI 在切换设计里显式决定：① `agent tick` **一条命令同时管**
+    "开盘执行计划"(09:30-10:00) 与"收盘做计划"(16:30-18:30)（`agent/loop.py:684-690`）
+    ⇒ 整条停掉会连带断掉 AI 计划链；② 新线"一天一进程"+`SessionGate` 与"每分钟一跳"
+    排程冲突 ⇒ 建议 09:35/15:05 两轮、每轮独立 state、单独一把锁（`var/rq.lock`）
 - [ ] **T46（Qoder，P0·切换后检查体系）检查清单 + 验证工具**：
   - [ ] `docs/m3-checklist.md`：第一小时 / 第一天 / 第一周三段逐项——
     T+1 冻结正确、费用三件套扣对（佣金地板/印花税单边/过户费）、NAV 收盘
