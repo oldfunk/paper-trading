@@ -142,11 +142,22 @@ def test_engine_raw_bars_fails_closed_without_data(db):
 
 
 def test_engine_raw_bars_returns_fresh_raw(db):
-    db.upsert_raw_bars([mkbar("000792", date(2026, 10, 28), 22.10)])
+    """T50-C 起：当日那根必须**有独立参照**（checked）才喂引擎，所以这里显式给 checked_dates。"""
+    db.upsert_raw_bars([mkbar("000792", date(2026, 10, 28), 22.10)],
+                       checked_dates={"2026-10-28"})
     src = BarSource(db, source="local")
     bars = src.engine_raw_bars("000792", limit=5, today=date(2026, 10, 28))
     assert len(bars) == 1 and bars[0].adjust == "raw"
     assert src.last_engine_reject is None
+
+
+def test_engine_raw_bars_gate_can_be_disabled_for_troubleshooting(db):
+    """`require_today_reference=False` 是显式排障口：放行，但默认值必须是开着的。"""
+    db.upsert_raw_bars([mkbar("000792", date(2026, 10, 28), 22.10)])
+    src = BarSource(db, source="local")
+    bars = src.engine_raw_bars("000792", limit=5, today=date(2026, 10, 28),
+                              require_today_reference=False)
+    assert len(bars) == 1 and src.last_engine_reject is None
 
 
 def test_engine_raw_bars_refuses_stale(db):

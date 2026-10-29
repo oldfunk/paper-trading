@@ -94,7 +94,8 @@ class PtPaperMod(AbstractMod):
         self._store = RawDayBarStore.from_data_db(
             db, list(mod_config.symbols), days=int(getattr(mod_config, "days", 260)),
             today=today, require_bands=bool(getattr(mod_config, "require_bands", True)),
-            st_set=set(getattr(mod_config, "st_set", None) or ()))
+            st_set=set(getattr(mod_config, "st_set", None) or ()),
+            require_today_reference=bool(getattr(mod_config, "require_today_reference", True)))
         env.set_data_source(PaperDataSource(
             env.config.base, self._store,
             override_available_range=bool(getattr(mod_config, "override_available_range", True))))
@@ -135,6 +136,7 @@ class PtPaperMod(AbstractMod):
             "orders": self._orders,
             "rejects": self._rejects,
             "store_stats": getattr(self._store, "stats", {}),
+            "gate_rejected": getattr(self._store, "gate_rejected", {}),
             "provider": self._provider.snapshot() if self._provider else None,
             "cost": {"transfer_fee_rate": self._cost_rate,
                      "wrapped": self._cost_wrapped,

@@ -198,15 +198,17 @@ def intraday_reference(symbols, *, quotes: Optional[dict] = None,
                        get_quotes=None) -> dict:
     """当日独立参照：腾讯实时快照（与 akshare/新浪**不同源**，符合独立基准原则）。
 
-    拿不到就返回 {}——当日缺参照不判死，由 `raw_flip_watch()` 负责 T+1 停线。
+    T50-A：这条路径**就是**给盘后用的（母库 T 日 `close_raw` 是 NULL），所以默认
+    入口带 `allow_closing=True`——否则 15:00 以后 `get_quotes` 直接回空，
+    "当日跨源对照"永远拿不到参照（report-t42 §4 的实测）。
+    注入 `get_quotes`/`quotes` 的调用方（测试、其它口径）保持原契约，不受影响。
     """
     if quotes is None:
         fn = get_quotes
         if fn is None:
-            try:
-                from paper_trading.data.realtime import get_quotes as fn
-            except Exception:               # noqa: BLE001 - 无网络/依赖缺失
-                return {}
+            def fn(codes):
+                from paper_trading.data.realtime import get_quotes as _gq
+                return _gq([str(c) for c in codes], allow_closing=True)
         try:
             quotes = fn([str(s) for s in symbols]) or {}
         except Exception:                   # noqa: BLE001
@@ -466,6 +468,24 @@ def sync_raw(db, symbols, *, days: int = 30,
             "intraday_no_today_bar": no_today_bar,
             "flip_watch": {k: v for k, v in flip.items() if k != "per_symbol"},
             "rejected": [r["symbol"] for r in results if r["status"] == "rejected"]}
+
+
+def today_reference_state(db, symbol: str,
+                          today: Optional[date] = None) -> dict:
+    """**今天这根 bar 有没有独立参照**（T50-C 的判据，喂引擎前必须问一次）。
+
+    三态：
+    - `checked`     今天这根已同日对照过（母库或盘后收盘快照）⇒ 可以喂引擎；
+    - `unchecked`   今天这根在库里但 `checked=0` ⇒ **不许喂**（fail-closed）；
+    - `no_today_bar` 今天这根还没采到 ⇒ 不由本判据管（新鲜度闸 `raw_freshness`
+      会把它当陈旧处理），所以这里只报状态、不做二次停线。
+    """
+    today_d = _as_date(today or date.today())
+    d = today_d.isoformat()
+    flags = db.raw_date_flags(str(symbol), since=d, until=d)
+    if not flags:
+        return {"state": "no_today_bar", "date": d}
+    return {"state": "checked" if flags.get(d) else "unchecked", "date": d}
 
 
 def raw_freshness(db, symbols, today: Optional[date] = None,

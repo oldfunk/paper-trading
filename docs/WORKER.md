@@ -816,10 +816,34 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   rqalpha 结算对账的边界划分与双账本风险）；每方案给：止损延迟上界、
   state/账本一致性风险、实施工作量、回退难度；**带 T13/T45 约束原文**；
   `report-t48.md` → 我拍板后实施
-- [ ] **T50（Qoder，P0·小）盘后防线修复**（裁决 1）：(a) 盘后专用新鲜度
-  （收盘快照缓存，18:00 后采集可用当日对照）→ (c) `source.py:76-104` 引擎
-  取数口查 `checked`（当日无参照 bar fail-closed 不喂）；顺序不可反；
-  回归测试（盘后采集能对照、无参照 bar 进不了引擎）+ `report-t50.md`
+- [x] **T50（Qoder，P0·小）盘后防线修复**（`worker/t50`，**待 review**；裁决 1）
+  - [x] (a) 盘后专用新鲜度：`realtime.py` 新增 `is_closing_snapshot()`
+    （当天 + ts≥15:00 + 时龄 ≤`QUOTE_CLOSING_MAX_AGE=9h`，**跨日自动作废**）、
+    `quote_usable(allow_closing=)`、`get_quotes(allow_closing=, now=)`；
+    撮合/风控仍走 `quote_fresh` 180 秒，一字未改；`intraday_reference` 默认入口带上
+    `allow_closing`。**真机（NEC 19:32 真实快照）：`intraday_checked 0→38`、
+    `intraday_missing 38→0`，今日 38 行 checked=1 从 0→38，全库 28,264→28,302**
+  - [x] (c) 当日无参照 bar 不喂引擎：`raw_feed.today_reference_state()` 三态 +
+    **两道闸同装**——`source.engine_raw_bars`（文档承诺的口）与
+    `RawDayBarStore.from_data_db`（**真正喂 rqalpha 的那条**）；被挡标的记
+    `gate_rejected` 并进 evidence。**真机：抹掉 600036 当日参照 ⇒ store 只供 000651、
+    框架以"没有市场数据"拒单、`gate_rejected={"600036":"today_bar_unchecked"}`、
+    旧线照买 ⇒ `position_delta=-1000` 把"挡"显式照出来**
+  - [x] 顺序 (a)→(c) 未反（先 (c) 会让每天 15:35–母库更新之间全线停摆）；(b) 未做（按裁决否决）
+  - [x] 回归测试 + `report-t50.md`：新增 **15 条**（含 (a)→(c) 因果链、四种错形状快照、
+    跨日作废、双路径 get_quotes 对照）；既有 `test_engine_raw_bars_returns_fresh_raw`
+    按新语义补 `checked_dates`（它原验的正是"无参照也放行"）；
+    `spikes/mutation_t50.py` 四个源码级变异 2/1/1/1 条必红、还原 54 全绿；
+    全套 **515 passed / 9 skipped**（基线 499/9 零回归）
+  - 🔴 **顺手撞破：`BarSource.engine_raw_bars` 这个"引擎唯一取数口"是纸面的**——
+    全仓生产代码没人调它，真正的喂料是 `store.py:95 db.get_raw_bars` 直连
+    ⇒ 只按派发文改 `source.py` 的话 (c) **完全不生效**。已两道闸都装并写明哪道才是真的
+  - ⚠️ 行为变更（影子期/切换须知）：当日采集失败 ⇒ 那只标的**当天不下单**（以前会用未验证的价）；
+    `require_today_reference` 已进会话指纹（换档需新 state，别用 `--force`）；
+    现网 `data.db` 今日 38 行仍是 `checked=0`（我只写 scratch），
+    **下一次授权采集或 15:40 cron 首跑前，新线对"今天"不下单**（by design）
+  - ➡️ 两个待你定的小点：① 母库沪市近端滞后（18 只停在 10-23/10-27）是否转母项目；
+    ② `m3 verify` 要不要新增一项读 `evidence.gate_rejected`（我不在 T50 里顺手扩已验收的 T46 面）
 - [ ] **T51（Qoder，P1·口径唯一）费率三真相源收敛**（T43 地图发现）：
   `models/types.py:119-122` / `engine/backtest.py:22 FeeModel` /
   `rq_engine/costs.py:31-36` 三处费率 + `cli.py:2173/2228` 与
