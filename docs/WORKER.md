@@ -526,15 +526,6 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 ### Batch 7 · M2 收尾与拍板落地（Qoder 4 件 + Hermes 继续在途）
 
-- [ ] **T34（Qoder，P0·数据侧修正批次）**：§5.5 裁决 1+2 落地——
-  ① `mother.py` 注释如实 + 21 行 `adj="raw"` 错标改 `"qfq"` + 标签一致性测试；
-  ② `raw_feed.sync_raw` 加当日跨源对照（实时快照 vs raw 收盘 >0.5% 拒收，
-  ~20 行+测试）；③ G-T13-1 判据原文增补"T+1 必须翻转否则停线"并落测试；
-  产出 `report-t34.md`
-- [ ] **T35（Qoder，P0·钱类数据层）minute_bars 主键重建**：period 入主键
-  （`(symbol, ts, period)`）+ 现网 2,304 行迁移（先备份）+ upsert/分道/清理
-  全链回归 + 覆盖风险测试（1 分钟与 5 分钟同刻并存互不覆盖）；
-  产出 `report-t35.md`（§5.5 裁决 6）
 - [x] **T36（Qoder，P1·缺陷修复）walk_forward oracle/picked**（`worker/t36`，**待 review**）
   - 修法：重排**之前**按样本内顺序取 `in_best=oos_rows[0]`、`oracle=max(oos_rows, key=oos)`；
     新增 `in_best_oos_excess_pct/_symbol/_params`、`oracle_oos_params`、
