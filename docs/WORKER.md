@@ -745,9 +745,31 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   - [ ] 每一项标注"红了怎么办"（回退 or 归因 or 容忍）——**任何钱类项红
     ⇒ 立即回退**（§5.6 底线）
   - [ ] `report-t46.md`；工具给 Hermes 审一遍再交付
-- [ ] **T43（Qoder，P1·独立穿插）T28 架构地图催办**：`docs/architecture-map.md`
-  （Batch 5 派发未交：模块清单工具统计、import 实测依赖图、L1/L2 现状 vs 目标、
-  重复/死代码/测试盲区）——与 T40-42 无依赖，随时做
+- [x] **T43（Qoder，P1·独立穿插）T28 架构地图催办**（`worker/t43`，基于 main，**待 review**）
+  - [x] 模块清单工具统计：**72 模块 / 16,517 行 / 45 个测试文件**，
+    按包 14 行表（模块数/行数/层/职责），数字出自可重跑的 `spikes/arch_map_scan.py`
+    （AST 标准库，无新依赖），输出留 `spikes/arch_map_data.json`
+  - [x] import 实测依赖图：49 条内部边、四层（入口/编排/能力/契约），
+    扇入第一是 `models`(16) 与 `utils`(14)（方向正确，下层不回头）；
+    并写明**静态图看不见 rqalpha 反射装载的 mod**（`rqalpha_mod_ptpaper`），别把图当完备
+  - [x] L1/L2 现状 vs 目标：引 `refactor-plan-open-source.md:15-27` 原文定义，
+    八项能力逐条对照（撮合/T+1/费用/回测/风控/NAV/AI 链/数据供给）；
+    待退役 L1 约 **2,984 行**，新线 `rq_engine/` 只有 **1,336 行**，
+    差额正是 T45 §0 的 G1（不写账本）/G2（没有 NAV 记录器）
+  - [x] 重复/死代码/测试盲区：费率 **3 个真相源**（`models/types.py:119-122`、
+    `engine/backtest.py:22 FeeModel`、`rq_engine/costs.py:31-36`；
+    `cli.py:2173/2228` 与 `dashboard.py:906` 仍各自 new ⇒ 改 config 费率回测/面板可能不跟）、
+    价格映射 2 处（`cli.py:325` vs `engine/runner.py:49`）；
+    死码只认 `main.py`（188 行，全仓自引用，建议先标 deprecated、M3 后再删）；
+    测试盲区 51/72 被提到，真盲区首位是 `portfolio/portfolio.py`（NAV 公式仅 61 行无直接测试）
+  - ⚠️ **我先误判后撤回的四条也写进地图开头**（工具看不见 `__init__` 再导出）：
+    `integration/analysis.py`、`llm/presets.py` 不是死码；"日历重复 19 处"其实
+    `is_trading_day` 只有 `utils/trading_calendar.py:230` 一处定义；
+    "股票池 3 处重复"是一处实现三处调用；启发式还把 cron 入口 `engine/__main__.py` 误报为零引用。
+    ⇒ 教训写进文档：静态启发式给候选，删东西的结论必须逐个 grep + 读码验证
+  - ➡️ 顺带撞出的计划文本偏差：**M1 说"rqalpha 接管日线回测"，但 `engine backtest`
+    至今仍跑旧 `Backtester`（696 行）** ⇒ 切换评审时别把回测/面板的数字当成"已经用框架"
+  - 纯文档 + 只读脚本，未改产品代码、未删任何模块
 - [ ] **T44（Hermes，P0·审查）T38/T39 钱类件复核**：TransferFeeOverlay
   （H 系视角：套层重复挂载/基金类遗漏/费率变更时会话指纹漂移的恢复语义）+
   T39 三发现的严重性复核（漏验窗口/盲区/--no-mother-ref 是否还有第四件）+
