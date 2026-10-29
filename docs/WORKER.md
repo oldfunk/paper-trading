@@ -442,12 +442,24 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     逐档核对（10/20/30%、ST、四舍五入）
   - [ ] 产出 `report-t33.md`；P0 → `questions.md` 喊停（M2 动工前必须清零）
 
-- [ ] **T30（Qoder，P0·部署安全）requirements 版本 pin**：T20 发现 NEC 是
-  x86-64-v1 CPU（Core2 Duo T9900）——**numpy≥2.4 的 wheel 在此架构导入失败**，
-  未 pin 的 fresh install 必坏（现生产因已装好暂不受影响，但任何重装/新机
-  部署即踩雷）：① 盘点现役环境实际版本（NEC venv freeze 关键包）② 给
-  `requirements.txt` 加上限 pin（numpy<2.4 或按实测兼容线）③ 本地+NEC 双端
-  fresh-venv 实测可装可跑 340 ④ `report-t30.md` 记录兼容矩阵
+- [x] **T30（Qoder，P0·部署安全）requirements 版本 pin**（`worker/t30` 分支，**待 review**）
+  - ① 现役盘点：NEC `venv/bin/pip list` → Python 3.12.3 / numpy **2.2.6** / pandas 3.1.0 /
+    akshare 1.20.1 / pytest 9.2.0（现网"看起来没事"只因包早已装好，上限缺失只在重装/新机暴露）
+  - ② 上限：`numpy>=1.26,<2.4`（**唯一有实测失败证据的一条**；下限同步抬到 1.26 以匹配
+    pandas 3.x 实际要求）+ `akshare<2.0`、`pandas<4.0` 两条**护栏**（可驳）；
+    `pyyaml/pytest` **不设上限**（无失败证据，加天花板只会添解冲突成本）
+  - ③ **NEC fresh venv 实测**（临时 venv + 临时 clone，用完即删，不碰生产 venv）：
+    解析到 `numpy 2.3.5 / pandas 3.1.0 / akshare 1.20.2 / pytest 9.2.0`，
+    `pip check` 干净，**340 passed, 1 skipped** 与基线逐条一致；
+    **反例**：同一台机 `pip install numpy pandas`（不 pin）→
+    `RuntimeError: NumPy was built with baseline optimizations: (X86_V2)`
+    ——装得上、跑不了，本轮现场复现。
+    本地这一腿给的是**较轻证据**（如实标注）：`pip --dry-run` 解析出同一组版本
+    （`numpy-2.3.5/akshare-1.20.2/pytest-9.2.0`）+ 现役 Py3.14 环境 **340 passed, 1 skipped**；
+    本地完整 fresh venv 因 `lxml/mini-racer` 安装卡十分钟被我终止——
+    架构相关的决定证据是 NEC 那台 v1 机器（见 report-t30 §3）
+  - ④ 兼容矩阵 + 上限的代价（长期停 2.3.x / 换 v2+ 机器 / 源码编译三选一）
+    + M2 装 rqalpha 时 h5py 等二进制依赖需重测 v1 —— 见 `report-t30.md` §4/§5
 
 ### Batch 4 任务定义（历史，主 AI 派发 2026-10-28 下午）
 
