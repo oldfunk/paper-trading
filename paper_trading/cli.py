@@ -1314,6 +1314,9 @@ def main() -> None:
     data_raw_fetch.add_argument("--days", type=int, default=30)
     data_raw_fetch.add_argument("--no-mother-ref", action="store_true",
                                 help="不与母库对照（单源，checked=0；只用于排障）")
+    data_raw_fetch.add_argument("--no-intraday", action="store_true",
+                                help="当日不做腾讯实时跨源对照（只用于排障；会留下"
+                                     "intraday_missing 流水）")
     data_raw_fetch.add_argument("--json", action="store_true")
     data_raw_cov = data_sub.add_parser(
         "raw-coverage", help="原始价日线的覆盖/新鲜度/对照情况（只读）")
@@ -1967,8 +1970,16 @@ def main() -> None:
                     def ref(s, d):
                         return _m.raw_close_map(s, days=d)
                 res = raw_feed.sync_raw(bridge.data_db, syms, days=args.days,
-                                        reference=ref)
+                                        reference=ref,
+                                        intraday={} if getattr(args, "no_intraday",
+                                                                False) else None)
                 res["pool_source"] = note
+                # 当日没拿到独立参照也要留痕（T+1 必须翻转，否则 raw-coverage 停线）
+                if res.get("intraday_missing"):
+                    bridge.broker.log_operation(
+                        "data:raw_no_intraday_ref",
+                        {"symbols": len(syms), "missing_rows": res["intraday_missing"]},
+                        True, {"flip_watch": res.get("flip_watch")}, None, None)
                 # 拒收是口径事件，必须进流水（AGENTS 纪律 4 不静默）
                 if res["rejected"]:
                     bridge.broker.log_operation(
@@ -1982,11 +1993,19 @@ def main() -> None:
                 syms, note, _, _ = _resolve_syms(bridge, args)
                 flags = {s: bridge.data_db.raw_row_flags(s) for s in syms}
                 fresh = raw_feed.raw_freshness(bridge.data_db, syms)
-                bad = [s for s in syms
-                       if fresh[s].get("stale")
-                       or flags[s]["non_positive"] or flags[s]["ohlc_inconsistent"]]
+                # G-T13-1 增补（§5.5 裁决 2-B）：当日可 checked=0，但 T+1 必须翻转
+                try:
+                    ref_asof = _m.raw_close_asof(syms)
+                except Exception:               # noqa: BLE001 - 母库不可用则按无参照判
+                    ref_asof = {}
+                flip = raw_feed.raw_flip_watch(bridge.data_db, syms, ref_asof=ref_asof)
+                bad = sorted(set(
+                    [s for s in syms
+                     if fresh[s].get("stale") or flags[s]["non_positive"]
+                     or flags[s]["ohlc_inconsistent"]] + flip["violations"]))
                 out = {"symbols": syms, "pool_source": note, "flags": flags,
-                       "freshness": fresh, "violations": bad}
+                       "freshness": fresh, "flip_watch": flip, "violations": bad,
+                       "waiting_reference": flip.get("warnings", [])}
                 emit(out)
                 if getattr(args, "gate", False) and bad:
                     sys.exit(1)

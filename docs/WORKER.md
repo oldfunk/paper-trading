@@ -526,11 +526,23 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 ### Batch 7 · M2 收尾与拍板落地（Qoder 4 件 + Hermes 继续在途）
 
-- [ ] **T34（Qoder，P0·数据侧修正批次）**：§5.5 裁决 1+2 落地——
-  ① `mother.py` 注释如实 + 21 行 `adj="raw"` 错标改 `"qfq"` + 标签一致性测试；
-  ② `raw_feed.sync_raw` 加当日跨源对照（实时快照 vs raw 收盘 >0.5% 拒收，
-  ~20 行+测试）；③ G-T13-1 判据原文增补"T+1 必须翻转否则停线"并落测试；
-  产出 `report-t34.md`
+- [x] **T34（Qoder，P0·数据侧修正批次）**：§5.5 裁决 1+2 落地（`worker/t34`，**待 review**）
+  - [x] ① `mother.py` 注释如实 + 标签改 `"qfq"` + 参数化测试锁死
+    （**事实校正**：生产母库 `close_qfq` 的 NULL 行数是 **0**（NULL 的是 `close_raw/close_adj` 各 21 行）
+    ⇒ 那条 `adj="raw"` 分支当前**不可达**，属"母库回填一变就错"的潜在缺陷而非已错 21 行；
+    按裁决仍改了，并新增 `mother.raw_close_asof()`（验料源自身新鲜度））
+  - [x] ② 当日跨源对照：`raw_feed.intraday_reference()`（腾讯实时，与 akshare 不同源）
+    + `check_raw_bars(..., intraday, day, enforce_intraday)`，收盘后才强制、同日才比、
+    偏差 >0.5% **整只拒收**；顺带修了**时区坑**（`session_closed()` 原来用机器本地钟，
+    生产机非 +08 时会静默不对照，现统一折算北京时间）
+  - [x] ③ G-T13-1 增补判据落成 `raw_flip_watch()`：三态区分
+    `waiting_reference`（母库没给参照→只告警）/ `checked_not_flipped`（参照到了我们没重跑→**停线**）/
+    `raw_stale`、`no_raw_data`（→停线）；`data raw-coverage --gate` 并入该判据
+  - [x] ④ 真机实测（NEC 生产 venv + `/tmp` 临时库，跑完删）：
+    `intraday_enforced=true, intraday_no_today_bar=3` —— **15:09 HKT 新浪当天日 K 还没出**，
+    对照会空跑 ⇒ 新增显式计数并建议采集时刻挪到 ≥15:30（cron 由你定，我没动）；
+    `flip_watch: violations=[] warnings=[000651,600519] stop_line=false`（母库滞后不误停线）
+  - 测试 +21 条；全套 **418 passed, 4 skipped**（基线 397+1，零回归）；产出 `report-t34.md`
 - [ ] **T35（Qoder，P0·钱类数据层）minute_bars 主键重建**：period 入主键
   （`(symbol, ts, period)`）+ 现网 2,304 行迁移（先备份）+ upsert/分道/清理
   全链回归 + 覆盖风险测试（1 分钟与 5 分钟同刻并存互不覆盖）；
