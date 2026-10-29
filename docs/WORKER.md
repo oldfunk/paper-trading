@@ -787,3 +787,46 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   T39 三发现的严重性复核（漏验窗口/盲区/--no-mother-ref 是否还有第四件）+
   T38 自撞破的佣金 P1 修复复核（万 2.5 是否真的进了会话指纹与撮合两侧）；
   产出 `report-t44.md`，P0 → questions.md
+
+---
+
+## Batch 10 · M3 直达硬前提（主 AI 派发 2026-10-29 深夜 · 批复见 questions.md）
+
+> T40-T46 六件已验收合并（499 passed 9 skipped）。T45 亮出的四缺口 G1-G4
+> 是"现在还不能切"的全部原因——**T47 补齐它们 = M3 硬前提**；T48 解执行模型。
+> Qoder 三件 + 顺手一件 + T51；Hermes 审查件。
+
+- [ ] **T47（Qoder，P0·M3 硬前提）四缺口补齐**（runbook `migration-m3.md` G1-G4）：
+  - [ ] **G1 新线写账本**：rq_engine runner 接 PaperBroker 适配（影子 evidence
+    路径升级为正式执行路径；`shadow.py` 的对照用法保留），成交/拒单/费用落
+    `orders/fills/op_log`——钱类件，逐字段测试 + 变异
+  - [ ] **G2 NAV 记录器**：新线每日收盘 `record_nav`（对齐旧线 `nav:close`
+    语义：业务日判重、无交易也记、幂等）——面板净值不断供
+  - [ ] **G3 回退开关**：config 键（**必须进 `engine/config.py:27-37` DEFAULTS
+    白名单**否则静默丢弃）+ 状态进 session_fingerprint + 落 `op_log`；
+    切换/回退各一次演练测试
+  - [ ] **G4 归档/新开账工具**：`cli` 子命令（冷备 → chmod 444 → 新开账
+    NAV 对齐 → 留痕 `op_log[ledger:archive]`），幂等可重入
+  - [ ] 顺手：`fetch-raw --start/--end`（裁决 3）
+  - [ ] `report-t47.md`；按协议附裁决核销清单
+- [ ] **T48（Qoder，P0·M3 执行模型方案）**：保留**每分钟执行语义**的方案
+  对比（不改码，出方案）——① 每分钟短窗口进程（T13 已证 start=end=今日
+  可行，量 5s/次开销与 state 重放开销）② 常驻长窗口（逐日推进；T13 §4.4
+  重复结算、§4.7 进程内重入两坑的解法）③ 分层混合（盘中快路径 + 日终
+  rqalpha 结算对账的边界划分与双账本风险）；每方案给：止损延迟上界、
+  state/账本一致性风险、实施工作量、回退难度；**带 T13/T45 约束原文**；
+  `report-t48.md` → 我拍板后实施
+- [ ] **T50（Qoder，P0·小）盘后防线修复**（裁决 1）：(a) 盘后专用新鲜度
+  （收盘快照缓存，18:00 后采集可用当日对照）→ (c) `source.py:76-104` 引擎
+  取数口查 `checked`（当日无参照 bar fail-closed 不喂）；顺序不可反；
+  回归测试（盘后采集能对照、无参照 bar 进不了引擎）+ `report-t50.md`
+- [ ] **T51（Qoder，P1·口径唯一）费率三真相源收敛**（T43 地图发现）：
+  `models/types.py:119-122` / `engine/backtest.py:22 FeeModel` /
+  `rq_engine/costs.py:31-36` 三处费率 + `cli.py:2173/2228` 与
+  `dashboard.py:906` 各自 new ⇒ 改 config 费率回测/面板可能不跟着变
+  （违反纪律 7 口径唯一）：收敛为单一来源（config 为真相源，其余引用）+
+  反射测试锁死 + `report-t51.md`
+- [ ] **T49（Hermes，P0·审查）**：审 T45 runbook（G1-G4 修法方向、回退 §5
+  的账本衔接边界）+ T46 工具（它自点三盯点：`direction==-1` 判卖出对不对、
+  `entry_day` 只有旧线写 ⇒ T+1 检查可能永远查不出的盲区、母库 warn 松紧）+
+  T47 交付后的钱类件复核；P0 → questions.md
