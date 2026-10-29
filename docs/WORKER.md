@@ -637,3 +637,40 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     checked 距今几个交易日（`raw_feed.py:192-218`），`data raw-coverage --gate` 对此
     报 `violations=[]`（盲区）。细节与修法见 report-t39 §6-B
   - 另：现网母库其实可达（`/home/nec/stock-dashboard/data/db/stock_dashboard.db`），
+
+---
+
+## Batch 9 · 影子期正式运行（主 AI 派发 2026-10-29 深夜 · 批复见 questions.md）
+
+> T38/T39 已验收合并（453+9skip 生产口径；NEC 引擎 venv 461+1）。三件拍板：
+> 授权现网 raw 回填 / T39 §6-B 三缺陷派修 / 留痕现在切现网。
+> **Qoder 四件连发：T41→T40→T42 有依赖顺序（先修管道再回填再挂 cron），T43 独立。**
+
+- [ ] **T41（Qoder，P0·先行）raw 管道加固**（T39 §6-B 三缺陷）：
+  - [ ] 参照窗口对齐：母库参照查询覆盖采集窗口（days*2+10 自然日对应交易日），
+    消灭"590 行只验 400"的漏验
+  - [ ] `raw_flip_watch` **逐日检查**（每个采集日都要 checked 或显式
+    no-reference 原因），消灭"只看最后 checked 距今"的 `violations=[]` 盲区
+  - [ ] `--no-mother-ref` 语义修正：真不读母库（reference=None 不得回退）
+    或改名为实际语义；不许名不副实
+  - [ ] 回归测试 + `report-t41.md`
+- [ ] **T40（Qoder，P0·依赖 T41）生产 raw 回填**（已授权行情库）：
+  - [ ] `data fetch-raw` pool 38 只全量回填 `daily_bars_raw`（账本红线不变）；
+    历史深度与 daily_bars 对齐，缺口如实报告
+  - [ ] `data raw-coverage --gate` 全绿 + `raw_flip_watch` 三态核对
+  - [ ] 回填后**重跑 `rq shadow-day`**（现网真数据影子对账）并贴对账结果
+  - [ ] `report-t40.md`
+- [ ] **T42（Qoder，P0·依赖 T40）影子期启动**：
+  - [ ] `rq shadow-day` 默认账本指生产 `paper_account.db`（scratch 用
+    `--account-db` 覆盖）；首个**现网 `op_log[parity:diff]`** 落库贴证据
+  - [ ] 影子 cron 草稿提请：采集（≥15:35）→ `rq shadow-day` → `raw-coverage
+    --gate` 全链；**cron 行写进 report 由我装**（NEC crontab 我改）
+  - [ ] `report-t42.md`：首日全链耗时 + 留痕样本 + cron 建议行
+- [ ] **T43（Qoder，P1·独立穿插）T28 架构地图催办**：`docs/architecture-map.md`
+  （Batch 5 派发未交：模块清单工具统计、import 实测依赖图、L1/L2 现状 vs 目标、
+  重复/死代码/测试盲区）——与 T40-42 无依赖，随时做
+- [ ] **T44（Hermes，P0·审查）T38/T39 钱类件复核**：TransferFeeOverlay
+  （H 系视角：套层重复挂载/基金类遗漏/费率变更时会话指纹漂移的恢复语义）+
+  T39 三发现的严重性复核（漏验窗口/盲区/--no-mother-ref 是否还有第四件）+
+  T38 自撞破的佣金 P1 修复复核（万 2.5 是否真的进了会话指纹与撮合两侧）；
+  产出 `report-t44.md`，P0 → questions.md
