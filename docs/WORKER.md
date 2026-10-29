@@ -700,15 +700,31 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     参数含义含糊，要不要加 `--start/--end` 等你定
   - 顺带发现（不在 T40 范围，未动）：`DataDBManager._connect()` 没设 `busy_timeout`，
     与 cron 并发写会直接 `SQLITE_BUSY` 报错而不是等
-- [ ] **T42（Qoder，P0·依赖 T40）~~影子期一周~~ → 切换前对账验证**（§5.6 节奏
-  变更：用户拍板直取 M3）：
-  - [ ] `rq shadow-day` 默认账本指生产 `paper_account.db`（scratch 用
-    `--account-db` 覆盖）；首个**现网 `op_log[parity:diff]`** 落库贴证据
-  - [ ] **切换前对账验证日**：回填后连续 1-2 个交易日跑全链（采集 ≥15:35 →
-    shadow-day → raw-coverage --gate），`cash/fee/fill_delta` 全零即出
-    **"切换就绪"结论**（T39 首跑已全零差，这是积累留痕天数）
-  - [ ] cron 行草稿提请（切换后转正用，由我装）
-  - [ ] `report-t42.md`：验证日对账汇总 + 切换就绪结论
+- [x] **T42（Qoder，P0·依赖 T40）~~影子期一周~~ → 切换前对账验证**（`worker/t42`，
+    堆叠在 `worker/t40`→`worker/t41` 之上，**待 review 按序合并**；§5.6 节奏变更）
+  - [x] **首个现网 `op_log[parity:diff]` 已落库**：id=327，
+    `result={"cash_delta":0.0,"fee_delta":0.0,"fill_delta":0,
+    "rqalpha_cash":743559.3428,"legacy_cash":743559.3428}`（写之前该库 parity 行数=0）；
+    写前冷备 `paper_account.db.pre-t42-20261029-182221.bak`
+  - [x] 全链三步 2026-10-29 实跑（采集 18:22 >15:35 → shadow-day 现网真数据 → `--gate`）：
+    `cash/fee/fill_delta` 全 0、`violations=[]`、gate 退出码 0
+    （`audit={audited:28339, verified:28264, unflipped:0, waiting:37, complete:true}`）；
+    场景含创业板 20% 带（300750）与"无持仓卖出被拒且原因可读"；费用逐笔手算与两侧一致
+  - [x] 账本红线核对（写现网账本必须留这一栏）：`account.cash` 71,922.004、
+    持仓 5 只、`orders/fills/nav_history/agent_plans/conditional_orders` = 12/11/15/17/37
+    **前后逐位不变**；`op_log` 325→327（只多 `data:raw_no_intraday_ref` + `parity:diff` 两行审计）；
+    影子成交落在 `--shadow-dir`，与生产同路径直接 RuntimeError 的拒绝逻辑再次生效
+  - [x] cron 草稿提请（report-t42 §5，15:40 三步，由主 AI 装）
+  - ⚠️ **"切换就绪"我给成有条件**：这一跑照出一件 P1——**当日跨源对照（裁决 2 的 A 半边）
+    在 ≥15:35 的采集时点上恒不成立**：`realtime.py:149-150` 非交易时段直接 return {}，
+    `realtime.py:19/54` 的 180 秒新鲜度又丢掉腾讯收盘最后一笔（实测时间戳 16:14:45），
+    而同刻 `fetch_batch` 能正常拿到 000651=37.58（与新浪收盘一致）⇒ 是我们自己的闸把防线关了；
+    叠加 `source.py:76-104` 引擎取数口不查 `checked=1` ⇒ 当日 bar 无独立参照就被吃下。
+    三个修法 (a) 盘后专用新鲜度 / (b) 采集挪盘中（不建议，新浪日K 15:35 才发）/
+    (c) 当日那根必须 checked 才喂引擎（选它就得先做 (a)，否则每天该时段停摆）——
+    **已进 questions.md 等拍板，我不自选**
+  - ➡️ 待办：第二个验证日（10-30 15:40 后同一条链）由我跑或 §5 cron 装好后自动产出；
+    另请一并定"影子期 cron 用 `stock_pool` 表 38 只还是 `config.yaml` 的 10 只"
 - [ ] **T45（Qoder，P0·M3 切换方案）切换 runbook**（参照 `migration-nec.md`
   的经验与 checklist 传统，产出于 `docs/migration-m3.md`）：
   - [ ] 切换日流程：账本归档（`paper_account.db` 冷备+只读保留）→ **切换日
