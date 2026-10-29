@@ -38,6 +38,62 @@ class DataDBManager:
         return any(r["name"] == column
                    for r in conn.execute(f"PRAGMA table_info({table})"))
 
+    @staticmethod
+    def _pk_columns(conn, table: str) -> list:
+        return [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")
+                if r["pk"]]
+
+    def _migrate_minute_pk(self, conn) -> dict:
+        """T35（§5.5 裁决 6）：`minute_bars` 主键补 `period`。
+
+        旧主键 `(symbol, ts)` 会让**同一时刻的 1 分钟与 5 分钟互相覆盖**
+        （`ON CONFLICT` 静默改写）——这是钱类数据层的定时炸弹，现在拆。
+        安全顺序：先备份文件 → 建新表 → 整表搬运 → **行数核对** → 才 drop/rename；
+        任一步异常由 `_connect()` 回滚，旧表原样保留。
+        迁移只做一次：新表主键已含 period 时直接跳过。
+        """
+        table = "minute_bars"
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                            (table,)).fetchone():
+            return {"migrated": False, "reason": "no_table"}
+        if "period" in self._pk_columns(conn, table):
+            return {"migrated": False, "reason": "already"}
+
+        bak = self.db_path.with_name(self.db_path.name + ".pre-t35.bak")
+        if not bak.exists():
+            import contextlib
+
+            with contextlib.closing(sqlite3.connect(str(bak))) as dst:
+                conn.backup(dst)
+
+        n_old = int(conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"])
+        cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
+        want = ["symbol", "ts", "open", "high", "low", "close", "volume", "amount",
+                "adjust", "period"]
+        select = ", ".join(c if c in cols else f"'{v}' AS {c}"
+                           for c, v in zip(want, ["", "", 0, 0, 0, 0, 0, 0,
+                                                   "raw", "5"]))
+        conn.execute(f"""CREATE TABLE {table}_t35 (
+            symbol TEXT NOT NULL, ts TEXT NOT NULL, open REAL NOT NULL,
+            high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
+            volume REAL DEFAULT 0, amount REAL DEFAULT 0,
+            adjust TEXT DEFAULT 'raw', period TEXT NOT NULL DEFAULT '5',
+            PRIMARY KEY (symbol, ts, period))""")
+        conn.execute(f"INSERT INTO {table}_t35 ({', '.join(want)}) SELECT {select} "
+                     f"FROM {table}")
+        n_new = int(conn.execute(f"SELECT COUNT(*) c FROM {table}_t35").fetchone()["c"])
+        if n_new != n_old:
+            raise RuntimeError(
+                f"minute_bars 主键迁移中止：搬运行数不一致（旧 {n_old} → 新 {n_new}），"
+                f"旧表保持原样，已备份 {bak.name}")
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(f"ALTER TABLE {table}_t35 RENAME TO {table}")
+        conn.execute(f"""CREATE INDEX IF NOT EXISTS idx_minute_symbol_ts
+                         ON {table}(symbol, ts)""")
+        logger.info("minute_bars 主键已升级为 (symbol, ts, period)：%d 行迁移完成，"
+                    "备份见 %s", n_new, bak.name)
+        return {"migrated": True, "rows": n_new, "backup": bak.name}
+
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.execute("""
@@ -100,7 +156,9 @@ class DataDBManager:
                     close REAL NOT NULL,
                     volume REAL DEFAULT 0,
                     amount REAL DEFAULT 0,
-                    PRIMARY KEY (symbol, ts)
+                    adjust TEXT DEFAULT 'raw',
+                    period TEXT NOT NULL DEFAULT '5',
+                    PRIMARY KEY (symbol, ts, period)
                 )
             """)
             conn.execute("""
@@ -109,12 +167,9 @@ class DataDBManager:
             """)
             if not self._has_column(conn, "minute_bars", "adjust"):
                 conn.execute("ALTER TABLE minute_bars ADD COLUMN adjust TEXT DEFAULT 'raw'")
-            # T26：1 分钟与 5 分钟混在同一张表里时，回测/保留窗口都无从区分。
-            # 默认 '5' 是如实标注：现网 2,304 行全部来自 engine/runner.py 的
-            # `fetch_minute(..., period="5")` 路径（实测 48 根/标的/日），
-            # `minute pull` 的默认周期也是 5。
             if not self._has_column(conn, "minute_bars", "period"):
                 conn.execute("ALTER TABLE minute_bars ADD COLUMN period TEXT DEFAULT '5'")
+            self._migrate_minute_pk(conn)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS quote_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,10 +415,10 @@ class DataDBManager:
                 """INSERT INTO minute_bars
                    (symbol, ts, open, high, low, close, volume, amount, adjust, period)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'raw', ?)
-                   ON CONFLICT(symbol, ts) DO UPDATE SET
+                   ON CONFLICT(symbol, ts, period) DO UPDATE SET
                      open=excluded.open, high=excluded.high, low=excluded.low,
                      close=excluded.close, volume=excluded.volume,
-                     amount=excluded.amount, adjust='raw', period=excluded.period""",
+                     amount=excluded.amount, adjust='raw'""",
                 [(symbol, r["ts"], float(r["open"]), float(r["high"]),
                   float(r["low"]), float(r["close"]),
                   float(r.get("volume") or 0), float(r.get("amount") or 0), str(period))

@@ -1,4 +1,4 @@
-# WORKER — 协作协议与任务箱（主 AI ↔ 员工 AI）
+﻿# WORKER — 协作协议与任务箱（主 AI ↔ 员工 AI）
 
 > 你是本仓库的员工 AI（打下手 + 找问题）。主 AI（我）负责交易代码的最终把关、
 > 部署与发布。本文件通过 git 同步——**开工先 `git pull --ff-only`，完工推回去**。
@@ -526,6 +526,7 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 ### Batch 7 · M2 收尾与拍板落地（Qoder 4 件 + Hermes 继续在途）
 
+AD
 - [x] **T34（Qoder，P0·数据侧修正批次）**：§5.5 裁决 1+2 落地（`worker/t34`，**待 review**）
   - [x] ① `mother.py` 注释如实 + 标签改 `"qfq"` + 参数化测试锁死
     （**事实校正**：生产母库 `close_qfq` 的 NULL 行数是 **0**（NULL 的是 `close_raw/close_adj` 各 21 行）
@@ -543,11 +544,20 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     对照会空跑 ⇒ 新增显式计数并建议采集时刻挪到 ≥15:30（cron 由你定，我没动）；
     `flip_watch: violations=[] warnings=[000651,600519] stop_line=false`（母库滞后不误停线）
   - 测试 +21 条；全套 **418 passed, 4 skipped**（基线 397+1，零回归）；产出 `report-t34.md`
-- [ ] **T35（Qoder，P0·钱类数据层）minute_bars 主键重建**：period 入主键
-  （`(symbol, ts, period)`）+ 现网 2,304 行迁移（先备份）+ upsert/分道/清理
-  全链回归 + 覆盖风险测试（1 分钟与 5 分钟同刻并存互不覆盖）；
-  产出 `report-t35.md`（§5.5 裁决 6）
-- [ ] **T36（Qoder，P1·缺陷修复）walk_forward oracle/picked**：`optimize.py:251-252`
+- [x] **T35（Qoder，P0·钱类数据层）minute_bars 主键重建**（`worker/t35`，**待 review**；
+  基于 main，不依赖 t34）：`(symbol, ts)` → **`(symbol, ts, period)`** 在线迁移
+  - 迁移顺序是硬的：判需要 → **先备份 `<db>.pre-t35.bak`** → 建新表整表搬运 →
+    **行数核对**（不等即抛错回滚、旧表原样）→ drop/rename/重建索引；幂等，二次打开不重复
+  - **生产真实副本演练**：2,304 行 → 2,304 行、主键升级、备份内仍是旧主键（可回滚）、
+    **生产 data.db 未被触碰**（mtime 未变）；顺带核到现网分钟数据只有 3 只
+    （000858/002192/600036 各 768 行 = 48×16 交易日）
+  - 读写侧同步收紧：`upsert` 冲突目标含 period；`runner._today_minutes` 与
+    `backtest.load_minutes` **显式 period="5"**（否则主键有了周期、读侧仍混粒度）
+  - 覆盖风险回归测试到位（同刻 1 分钟与 5 分钟并存互不覆盖）+ 6 条配套；共 **+7 测**，
+    全套 **404 passed, 4 skipped**（基线 397+1，零回归）；产出 `report-t35.md`
+  - ⚠️ 待你定：迁移是**打开即自动做**（默认，理由：裁决说"定时炸弹现在拆"）
+    还是改成只由显式命令触发（`report-t35.md` §5-1，改法约 10 行）
+] **T36（Qoder，P1·缺陷修复）walk_forward oracle/picked**：`optimize.py:251-252`
   oracle 与 picked 同一行、picked 全文未使用 ⇒ 样本外检验失真（违背纪律 7）；
   fix + 回归（oracle 必须独立于 picked 污染）+ 产出 `report-t36.md`
 - [ ] **T37（Qoder，P1·部署）lock 文件 + rqalpha 二进制 spike**：

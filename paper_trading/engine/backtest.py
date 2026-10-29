@@ -567,7 +567,8 @@ def load_minutes(data_db, syms: list[str], days: list[str]) -> dict:
     out: dict = {}
     for sym in syms or []:
         try:
-            rows = data_db.get_minute_bars(sym, limit=4000)
+            # T35：分钟回测同样按周期取数（现网/采集默认 5 分钟）
+            rows = data_db.get_minute_bars(sym, limit=4000, period="5")
         except Exception:       # noqa: BLE001 - 表不存在/读失败都退化为无分钟数据
             continue
         for r in rows:

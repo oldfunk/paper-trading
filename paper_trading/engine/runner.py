@@ -306,7 +306,9 @@ class EngineRunner:
 
     def _today_minutes(self, sym: str, now, day: str) -> list[tuple]:
         out: list[tuple] = []
-        for r in self.b.data_db.get_minute_bars(sym, limit=600):
+        # T35：显式要 5 分钟周期——主键含 period 后，读侧也必须声明周期，
+        # 否则将来 1 分钟数据进来会把日内规则的粒度搅浑（minute.py 的"不混粒度"约定）
+        for r in self.b.data_db.get_minute_bars(sym, limit=600, period="5"):
             ts = str(r.get("ts") or "")
             if not ts.startswith(day):
                 continue
