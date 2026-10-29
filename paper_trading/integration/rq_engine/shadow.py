@@ -6,11 +6,15 @@
 - **旧自研侧**（`PaperBroker.submit_order`）：现网账本逻辑，作为对照基线。
 
 两侧的产出（现金/持仓/费用）逐字段相减，差值就是"引擎语义差"。
-差值超出容差 → 不合并、不停线，但**必须留痕**：`op_log[parity:diff]`。
+差值超出容差 → 不合并、不停线，但**必须留痕**：`op_log[parity:diff]`
+（§5.5 裁决 4 + 主 AI 批复 ①：默认写生产账本，`--no-op-log` 才关；
+`record_to` 有 action 白名单断言，只许 `parity:diff` 这一个 action 从这里进 op_log）。
 
 安全边界（红线 1）：本模块**只写自己影子目录里的库**，
 `shadow_dir` 必填且必须与生产 `paper_account.db` 不同路径——
 构造时会显式比对并拒绝相同路径，绝不误写现网账本。
+唯一会碰生产库的动作是 `record_to` 往 `op_log` 追加一行审计记录，
+它不改余额/持仓/NAV（`log_operation` 只 INSERT op_log）。
 """
 from __future__ import annotations
 
@@ -20,26 +24,33 @@ from typing import Optional
 
 from .runner import run_session
 
-#: 费用/现金容差（元）。rqalpha 默认费率无过户费（report-t13 §1 / T29 §3），
-#: 所以买卖都会差 0.001%；对齐费率前这是**已知差**，不该当故障。
+#: 现金容差（元）。
 CASH_TOLERANCE = 1.0
-FEE_TOLERANCE_RATIO = 0.01
+#: 费用容差（元）。T38 裁决 5 落地后两侧费率口径完全一致（佣金/印花税走
+#: `sys_transaction_cost` 倍率，过户费由 `costs.py` 的 overlay 补），
+#: 验收信号就是 **fee_delta 归零**，所以这里从"相对 1%"收紧成绝对值。
+#: 留 1 分是 float 乘加尾差与四舍五入的余量，不是"已知差异"的容身之处。
+FEE_ABS_TOLERANCE = 0.01
+#: op_log 白名单（裁决 4 的防护）：影子路径只允许这一个 action 落生产 op_log。
+OP_LOG_ACTIONS = frozenset({"parity:diff"})
 
 
 def _legacy_side(*, today: str, bars_by_symbol: dict, plan: list, shadow_db: Path,
-                 init_cash: float) -> dict:
+                 init_cash: float, fee: Optional[dict] = None) -> dict:
     """旧引擎影子账：同一天按收盘价限价撮合，产出现金/持仓/费用。
 
     两侧必须**同一口径起点**，否则对账比的是参数差异而不是引擎语义差异：
     `TradingConfig` 默认 initial_cash=100 万、固定滑点 0.01 元
     （`models/types.py:117-127`），rqalpha 侧滑点为 0——这里显式对齐。
+    费率（`fee`）也显式对齐：rqalpha 侧同一份费率进 `sys_transaction_cost`
+    倍率 + 过户费 overlay（`costs.py`），不各拿各的默认值。
     """
     from paper_trading.broker.paper_broker import PaperBroker
     from paper_trading.models import Order, TradingConfig
     from paper_trading.models.types import OrderType
 
-    cfg = TradingConfig(initial_cash=float(init_cash), slippage_fixed=0.0,
-                        slippage_pct=0.0, use_slippage_pct=False)
+    cfg = TradingConfig(**dict(fee or {}), initial_cash=float(init_cash),
+                        slippage_fixed=0.0, slippage_pct=0.0, use_slippage_pct=False)
     broker = PaperBroker(db_path=shadow_db, config=cfg)
     fees = 0.0
     fills: list = []
@@ -83,12 +94,13 @@ def _legacy_side(*, today: str, bars_by_symbol: dict, plan: list, shadow_db: Pat
 
 
 def _rq_side(*, today: str, data_db: str, bundle: str, symbols: list, plan: list,
-             shadow_dir: Path, init_cash: float, force: bool) -> dict:
+             shadow_dir: Path, init_cash: float, force: bool,
+             fee: Optional[dict] = None) -> dict:
     """rqalpha 影子账：自己的状态目录，绝不与生产共用。"""
     res = run_session(today=today, data_db=data_db, bundle=bundle, symbols=symbols,
                       plan=plan, init_cash=init_cash,
                       state_dir=str(shadow_dir / "rq_state"),
-                      workdir=str(shadow_dir / "rq"), force=force)
+                      workdir=str(shadow_dir / "rq"), force=force, fee=fee)
     post = (res.get("snapshots") or [{}])[-1] if res.get("snapshots") else {}
     ev = res.get("evidence") or {}
     fees = round(sum(t.get("cost") or 0 for t in ev.get("trades") or []), 4)
@@ -104,6 +116,8 @@ def _rq_side(*, today: str, data_db: str, bundle: str, symbols: list, plan: list
         "rejects": ev.get("rejects") or [], "error": res.get("error"),
         "gates": res.get("gates"), "fingerprint": res.get("fingerprint"),
         "handler_dates": res.get("handler_dates"),
+        # 过户费 overlay 到底装没装、收了几笔，跟着对账结果一起出（验收要能自查）
+        "cost": ev.get("cost") or {},
     }
 
 
@@ -117,11 +131,12 @@ def parity_diff(rq: dict, legacy: dict, *, tolerance: float = CASH_TOLERANCE) ->
             out["violations"].append(f"cash_delta {out['cash_delta']} > {tolerance}")
     if rq.get("fees") is not None and legacy.get("fees") is not None:
         out["fee_delta"] = round(float(rq["fees"]) - float(legacy["fees"]), 4)
-        base = max(float(legacy["fees"]), 1e-9)
-        if abs(out["fee_delta"]) / base > FEE_TOLERANCE_RATIO:
+        if abs(out["fee_delta"]) > FEE_ABS_TOLERANCE:
+            base = max(float(legacy["fees"]), 1e-9)
             out["violations"].append(
-                f"fee_delta {out['fee_delta']} 相对 {out['fee_delta'] / base:.4%} "
-                f"> {FEE_TOLERANCE_RATIO:.2%}（先核对费率与过户费口径）")
+                f"fee_delta {out['fee_delta']} 超绝对容差 {FEE_ABS_TOLERANCE}"
+                f"（相对 {out['fee_delta'] / base:.4%}）：先核对佣金/印花税倍率与"
+                f"过户费 overlay 是否装上（evidence.cost.wrapped）")
     rq_pos, lg_pos = rq.get("positions") or {}, legacy.get("positions") or {}
     for sym in sorted(set(rq_pos) | set(lg_pos)):
         a = (rq_pos.get(sym) or {}).get("quantity", 0)
@@ -138,8 +153,14 @@ def parity_diff(rq: dict, legacy: dict, *, tolerance: float = CASH_TOLERANCE) ->
 def shadow_day(*, today: str, data_db: str, bundle: str, symbols: list, plan: list,
                shadow_dir: str, production_account_db: Optional[str] = None,
                init_cash: float = 100_000.0, force: bool = False,
+               fee: Optional[dict] = None,
                fresh: bool = True) -> dict:
-    """同日双跑 + 对账。`shadow_dir` 必填；与生产账本同路径直接拒绝。"""
+    """同日双跑 + 对账。`shadow_dir` 必填；与生产账本同路径直接拒绝。
+
+    `fee` 是**两侧共用**的费率口径（`commission_rate / commission_min /
+    stamp_duty_rate / transfer_fee_rate`）；不传就用 `TradingConfig` 默认值，
+    也就是现网账本的万 2.5 + 最低 5 元 + 千 0.5 卖出印花 + 0.001% 双向过户费。
+    """
     sd = Path(shadow_dir).resolve()
     prod = Path(production_account_db).resolve() if production_account_db else None
     legacy_db = sd / "paper_account.db"
@@ -158,18 +179,24 @@ def shadow_day(*, today: str, data_db: str, bundle: str, symbols: list, plan: li
     bars_by_symbol = {s: db.get_raw_bars(s, limit=30, end=f"{today}T23:59:59") for s in want}
     rq = _rq_side(today=today, data_db=str(data_db), bundle=bundle,
                   symbols=sorted(want), plan=plan, shadow_dir=sd, init_cash=init_cash,
-                  force=force)
+                  force=force, fee=fee)
     legacy = _legacy_side(today=today, bars_by_symbol=bars_by_symbol, plan=plan,
-                          shadow_db=legacy_db, init_cash=init_cash)
+                          shadow_db=legacy_db, init_cash=init_cash, fee=fee)
     diff = parity_diff(rq, legacy)
     return {"today": today, "plan": plan, "shadow_dir": str(sd),
-            "rqalpha": rq, "legacy": legacy, "diff": diff,
+            "fee": dict(fee or {}), "rqalpha": rq, "legacy": legacy, "diff": diff,
             "ok": not diff["violations"] and rq.get("error") is None}
 
 
-def record_to(broker, res: dict) -> None:
-    """把对账结论写进 op_log[parity:diff]（由调用方显式传 broker，避免误写生产）。"""
-    broker.log_operation("parity:diff",
+def record_to(broker, res: dict, action: str = "parity:diff") -> None:
+    """把对账结论写进 `op_log[parity:diff]`（默认路径，裁决 4）。
+
+    白名单断言是拍板要求的防护：**只允许这一个 action 从这里进生产 op_log**，
+    防止以后有人顺手拿同一个函数写别的动作，把"影子留痕"变成万能写入口。
+    """
+    if action not in OP_LOG_ACTIONS:
+        raise ValueError(f"op_log 白名单只允许 {sorted(OP_LOG_ACTIONS)}，拒绝 {action!r}")
+    broker.log_operation(action,
                          {"today": res["today"], "symbols": sorted(res["diff"]["position_delta"]),
                           "violations": res["diff"]["violations"]},
                          res["ok"],
@@ -185,4 +212,5 @@ def purge(shadow_dir: str) -> None:
     shutil.rmtree(Path(shadow_dir), ignore_errors=True)
 
 
-__all__ = ["shadow_day", "parity_diff", "record_to", "purge"]
+__all__ = ["shadow_day", "parity_diff", "record_to", "purge", "OP_LOG_ACTIONS",
+           "CASH_TOLERANCE", "FEE_ABS_TOLERANCE"]

@@ -1150,6 +1150,21 @@ def _replay_decision(bridge, decision_date: str, plan_id=None) -> dict:
             "decision_id": d.get("id"), "created_at": d.get("created_at")}
 
 
+def log_data_migrations(bridge) -> int:
+    """把本次打开数据库真正执行过的结构迁移写进 `op_log[data:migrate]`（T38 批复 ②）。
+
+    只写审计流水，不碰余额/持仓；一条迁移记录一行，取走即清空（重复调用不重复留痕）。
+    迁移是"打开即自动"的（§5.5 裁决 6 + 批复 ②），所以留痕必须挂在同一个入口上，
+    否则事后无法证明某天的 `minute_bars`/口径标签是在哪一步成形的。
+    """
+    rows = getattr(bridge.data_db, "migrations", None) or []
+    n = len(rows)
+    for mig in list(rows):
+        bridge.broker.log_operation("data:migrate", mig, True, mig, None, None)
+    del rows[:]        # 取走即清空：同一进程里重复调用不许把审计流水刷成噪声
+    return n
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Paper Trading Framework - CLI"
@@ -1344,8 +1359,8 @@ def main() -> None:
         p.add_argument("--init-cash", type=float, default=100000.0)
         p.add_argument("--force", action="store_true",
                        help="绕过幂等闸（会重复成交，仅用于排障）")
-        p.add_argument("--allow-op-log", action="store_true",
-                       help="shadow-day：把对账结论写入当前账本 op_log")
+        p.add_argument("--no-op-log", action="store_true",
+                       help="shadow-day：这次不落 op_log[parity:diff]（默认会落，裁决 4）")
         p.add_argument("--json", action="store_true")
         if name == "day":
             p.add_argument("--state-dir", required=True,
@@ -1622,6 +1637,10 @@ def main() -> None:
         emit(None, ok=False, error=f"Init failed: {e}")
         sys.exit(1)
 
+    # T38（批复 ②）：data 库结构迁移一发生就留痕——迁移是"打开即自动"的，
+    # 没有留痕的话，事后没人能证明某天的数据形状是在哪一步变过的。
+    log_data_migrations(bridge)
+
     try:
         if args.command == "status":
             emit(bridge.get_status())
@@ -1824,22 +1843,33 @@ def main() -> None:
                     sys.exit(2)
                 bundle = _bundle_path(args.bundle)
                 if cmd == "day":
+                    bc = bridge.broker.config
                     res = _rq.run_session(today=args.today, data_db=args.data_db,
                                           bundle=bundle, symbols=args.symbols,
                                           plan=plan, init_cash=args.init_cash,
                                           state_dir=args.state_dir,
-                                          workdir=args.workdir, force=args.force)
+                                          workdir=args.workdir, force=args.force,
+                                          fee={"commission_rate": bc.commission_rate,
+                                               "commission_min": bc.commission_min,
+                                               "stamp_duty_rate": bc.stamp_duty_rate,
+                                               "transfer_fee_rate": bc.transfer_fee_rate})
                     emit(res)
                     if res["error"] or not res["gates"]["ok"]:
                         sys.exit(1)
                 else:
+                    # 费率口径从现网 broker 配置带过去，两侧同源（否则对账比的是配置）
+                    bc = bridge.broker.config
                     res = _sh.shadow_day(today=args.today, data_db=args.data_db,
                                         bundle=bundle, symbols=args.symbols, plan=plan,
                                         shadow_dir=args.shadow_dir,
                                         production_account_db=str(bridge.broker.db_path),
-                                        init_cash=args.init_cash, force=args.force)
-                    if getattr(args, "allow_op_log", False):
-                        _sh.record_to(bridge.broker, res)
+                                        init_cash=args.init_cash, force=args.force,
+                                        fee={"commission_rate": bc.commission_rate,
+                                             "commission_min": bc.commission_min,
+                                             "stamp_duty_rate": bc.stamp_duty_rate,
+                                             "transfer_fee_rate": bc.transfer_fee_rate})
+                    if not getattr(args, "no_op_log", False):
+                        _sh.record_to(bridge.broker, res)   # 裁决 4：默认留痕
                     emit(res)
                     if not res["ok"]:
                         sys.exit(1)

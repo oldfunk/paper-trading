@@ -15,6 +15,7 @@ from rqalpha.core.events import EVENT
 from rqalpha.interface import AbstractMod
 
 from paper_trading.data.db_manager import DataDBManager
+from paper_trading.integration.rq_engine import costs
 from paper_trading.integration.rq_engine.provider import (FilePersistProvider,
                                                         PersistStateError)
 from paper_trading.integration.rq_engine.store import RawDayBarStore
@@ -25,16 +26,31 @@ from paper_trading.integration.rq_engine.data_source import PaperDataSource
 class PtPaperMod(AbstractMod):
     def __init__(self) -> None:
         self._mc = None
+        self._env = None
         self._store = None
         self._provider = None
         self._counts: Counter = Counter()
         self._trades: list = []
         self._orders: list = []
         self._rejects: list = []
+        self._cost_wrapped: list = []      # T38：过户费 overlay 装了哪几种合约
+        self._cost_rate: float = 0.0
 
     # -- 事件采集（G-T13-7/8 的证据来源）----
     def _count(self, event):
         self._counts[str(getattr(event.event_type, "value", event.event_type)).upper()] += 1
+
+    def _install_costs(self, event) -> None:
+        """补过户费（裁决 5）——挂在 POST_BEFORE_TRADING 上是**顺序要求**，不是偏好：
+
+        `ptpaper` 的 priority 是 50，比 `sys_transaction_cost`（默认 100）先 start_up
+        （`mod/__init__.py:68` 按 priority 排序后依次 start_up），所以在自己的
+        `start_up` 里根本还看不到框架的 decider。等第一个"盘前"事件派发时，
+        所有 mod 都已 start_up，才是稳定的插入点。
+        """
+        if self._cost_wrapped:
+            return
+        self._cost_wrapped = costs.install_transfer_fee(self._env, self._cost_rate)
 
     def _on_trade(self, event):
         t = getattr(event, "trade", None)
@@ -71,6 +87,8 @@ class PtPaperMod(AbstractMod):
     # -- 生命周期 --
     def start_up(self, env, mod_config) -> None:
         self._mc = mod_config
+        self._env = env
+        self._cost_rate = float(getattr(mod_config, "transfer_fee_rate", 0.0) or 0.0)
         today = date.fromisoformat(mod_config.today)
         db = DataDBManager(mod_config.db)
         self._store = RawDayBarStore.from_data_db(
@@ -103,6 +121,8 @@ class PtPaperMod(AbstractMod):
             except Exception:                   # noqa: BLE001
                 pass
         env.event_bus.add_listener(EVENT.TRADE, self._on_trade)
+        if self._cost_rate > 0:
+            env.event_bus.add_listener(EVENT.POST_BEFORE_TRADING, self._install_costs)
 
     def tear_down(self, code, exception=None):
         ev = getattr(self._mc, "evidence", "") if self._mc else ""
@@ -116,6 +136,10 @@ class PtPaperMod(AbstractMod):
             "rejects": self._rejects,
             "store_stats": getattr(self._store, "stats", {}),
             "provider": self._provider.snapshot() if self._provider else None,
+            "cost": {"transfer_fee_rate": self._cost_rate,
+                     "wrapped": self._cost_wrapped,
+                     "deciders": (costs.overlay_stats(self._env)
+                                  if self._env is not None else [])},
             "exit_code": str(getattr(code, "value", code)),
             "exception": str(exception) if exception else None,
         }, ensure_ascii=False, indent=1), encoding="utf-8")

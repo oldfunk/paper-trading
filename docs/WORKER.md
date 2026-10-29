@@ -580,15 +580,32 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 ### Batch 8 · 影子期启动件（主 AI 派发 2026-10-29，批复见 questions.md）
 
-- [ ] **T38（Qoder，P0·裁决 4+5 联动）影子留痕 + 过户费 decider**：
-  - [ ] `--allow-op-log` → **默认写生产账本**（action=parity:diff 白名单断言锁死，
-    只许这一个 action 进 op_log）+ `--no-op-log` 关闭旗 + 测试（默认落库/
-    白名单拒绝其他 action/关闭旗生效）
-  - [ ] **D4 过户费 decider**：自定义 `AbstractTransactionCostDecider` 补
-    0.001% 双向过户费（T29/T32 已量化）；**联动验收信号：影子对账
-    `fee_delta` 归零**（此前显式 0.001% 预期差逻辑相应收敛）
-  - [ ] T35 迁移留痕顺手项：`op_log[data:migrate]`（若 T35 补丁更早就先做）
-  - [ ] 测试 + `report-t38.md`；按协议新条款附**裁决逐条核销清单**
+- [x] **T38（Qoder，P0·裁决 4+5 联动）影子留痕 + 过户费 decider**（`worker/t38`，**待 review**）
+  - [x] `--allow-op-log` → **默认写生产账本**：`cli.py:1362` 换成 `--no-op-log` 关闭旗，
+    `cli.py:1846-1872` 默认调 `record_to`；`shadow.py:35` `OP_LOG_ACTIONS={parity:diff}`
+    + `shadow.py:191-198` 白名单断言（6 个非法 action 实测全部 ValueError 且 broker 未被触达）
+  - [x] **D4 过户费 decider**：新模块 `rq_engine/costs.py` —— `TransferFeeOverlay`
+    **包住**框架已注册的股票 decider，把 0.001% 双向加进 `TransactionCost.other_fees`
+    （框架现金扣减与资金校验都读 `.total`，`interface.py:745-752`）；只作用于 CS，
+    装载挂 `POST_BEFORE_TRADING`（`ptpaper` priority=50 比 `sys_transaction_cost` 先
+    start_up，`mod/__init__.py:68`，挂 start_up 根本看不到框架 decider）；
+    后置门禁 `TransferFeeNotInstalled` 兜"没装上"（`runner.py:162-166`）。
+    **验收信号达成**：22 万元单子两侧费用 **57.2 == 57.2、`fee_delta=0.0`、现金一致**
+  - [x] "预期差逻辑收敛"：删 `FEE_TOLERANCE_RATIO`（相对 1%）→ `FEE_ABS_TOLERANCE=0.01`
+    绝对容差；T32 旧用例前提被推翻，改写 + 新增（`tests/test_rqalpha_adapter.py:247-272`）
+  - [x] T35 迁移留痕：`db_manager.py:20-29` 登记三类迁移 + `cli.py:1153-1166/1642`
+    写 `op_log[data:migrate]`（取走即清空，重复调用不重复留痕）；
+    顺带修 `daily_bars` 建表缺 `adjust` 列导致**每个新库都误报一次迁移**（`db_manager.py:120`）
+  - [x] 测试 + `report-t38.md`：新增 23 条（18 条不需 rqalpha）+ 迁移留痕 3 条；
+    e2e **16/16 PASS**（`spikes/e2e_t38.py`，含 S3 变异检查：overlay 装不上 →
+    门禁停线 + `fee_delta=-2.2` + `cash_delta 2.2` 同时报）；
+    全套 **461 passed/1 skipped**（有 rqalpha）与 **453 passed/9 skipped**（生产口径），
+    基线 431/4 ⇒ 零回归
+  - ⚠️ **交付时撞破我自己的 P1（T32 缺陷）**：产品化 `build_config` 从没带
+    `sys_transaction_cost` ⇒ 引擎一直在用框架默认**佣金万八**（现网万 2.5）。
+    T29/T32 没暴露是因为单子太小、两侧都撞 5 元最低佣金把差额盖住了
+    （22 万元单差 121 元）。费率对齐留在 spikes 里没搬进产品件 = 我的疏漏，
+    现按"费率进会话指纹"修复；副作用见 report-t38 §5.5（指纹变了，旧 state_dir 会判漂移）
 - [ ] **T39（Qoder，P0·M2 影子期启动）NEC 引擎环境落位**：
   - [ ] NEC 建**独立引擎 venv**（按 `requirements-rqalpha.lock.txt`，先装
     `numpy<2.4` 再装 rqalpha——T37 实测姿势；不与交易/面板 venv 混装）

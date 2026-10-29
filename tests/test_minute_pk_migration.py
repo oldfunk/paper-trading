@@ -4,7 +4,9 @@
 迁移前 1 分钟与 5 分钟在同一时刻会互相覆盖（旧主键 `(symbol, ts)`）；
 迁移后必须并存，且既有行一行不丢、动手前先有备份文件。
 """
+import json
 import sqlite3
+import types
 from datetime import datetime
 
 import pytest
@@ -117,3 +119,47 @@ def test_fresh_db_already_has_new_pk(tmp_path):
         pk = [r["name"] for r in conn.execute("PRAGMA table_info(minute_bars)") if r["pk"]]
     assert pk == ["symbol", "ts", "period"]
     assert not (tmp_path / "fresh.db.pre-t35.bak").exists()  # 新库不需要备份
+
+
+# ---------- T38 批复 ②：迁移必须留痕（打开即自动 ⇒ 没留痕就是无痕改动）----------
+def test_migration_is_recorded(tmp_path):
+    p = tmp_path / "data.db"
+    make_legacy_db(p, LEGACY_ROWS)
+    db = DataDBManager(p)
+    assert len(db.migrations) == 1
+    rec = db.migrations[0]
+    assert rec["kind"] == "pk_rebuild" and rec["table"] == "minute_bars"
+    assert rec["pk"] == ["symbol", "ts", "period"]
+    assert rec["rows"] == 5 and rec["backup"] == "data.db.pre-t35.bak"
+    assert rec["db"] == str(p) and "at" in rec
+
+
+def test_second_open_and_fresh_db_record_nothing(tmp_path):
+    """留痕只能有一次：重复打开不许再写 op_log（否则审计流水会被噪声淹掉）。"""
+    p = tmp_path / "data.db"
+    make_legacy_db(p, LEGACY_ROWS)
+    assert len(DataDBManager(p).migrations) == 1
+    assert DataDBManager(p).migrations == []
+    assert DataDBManager(tmp_path / "fresh.db").migrations == []
+
+
+def test_cli_helper_lands_one_op_log_row(tmp_path):
+    """`log_data_migrations` 把迁移一行一条写进账户库 op_log（只写审计，不碰余额）。"""
+    from paper_trading.broker.paper_broker import PaperBroker
+    from paper_trading.cli import log_data_migrations
+
+    data_db = DataDBManager(tmp_path / "d.db")          # 新库：没有迁移
+    account = PaperBroker(db_path=str(tmp_path / "a.db"))
+    ns = types.SimpleNamespace(data_db=data_db, broker=account)
+    assert log_data_migrations(ns) == 0
+    assert [o["action"] for o in account.get_op_log(10)] == []
+
+    make_legacy_db(tmp_path / "legacy.db", LEGACY_ROWS)
+    ns.data_db = DataDBManager(tmp_path / "legacy.db")
+    assert log_data_migrations(ns) == 1
+    rows = [o for o in account.get_op_log(10) if o["action"] == "data:migrate"]
+    assert len(rows) == 1
+    # op_log.params 是 JSON 文本（`get_op_log` 原样返回行），留痕必须自己可读
+    assert json.loads(rows[0]["params"])["kind"] == "pk_rebuild"
+    assert rows[0]["ok"] == 1
+    assert log_data_migrations(ns) == 0                # 已迁完，不再重复留痕

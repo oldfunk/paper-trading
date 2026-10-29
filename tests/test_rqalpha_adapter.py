@@ -244,14 +244,29 @@ def test_gates_warn_on_double_settlement():
 
 
 # ---------- 影子对账（纯算术部分）----------
-def test_parity_diff_accepts_known_fee_gap():
-    """过户费未对齐时的已知差（T29：rqalpha 无过户费，买卖各差 0.001%）。"""
+def test_parity_diff_rejects_the_old_transfer_fee_gap():
+    """T38 裁决 5 之后，"过户费差 0.001%"不再是已知差：过户费已进引擎，
+    这种形状就是费率口径漂移（佣金万八没换算掉也是同一个量级的错），必须报。
+
+    旧版本此用例断言"gap 可接受"（T29 前提：框架无过户费）——前提被 T38 推翻，
+    留着它就等于允许 fee_delta 一直不归零。
+    """
     rq = {"cash": 97774.0, "fees": 5.0, "positions": {"000792.XSHE": {"quantity": 100}},
           "fills": [1], "error": None}
     legacy = {"cash": 97773.98, "fees": 5.02221,
               "positions": {"000792.XSHE": {"quantity": 100}}, "fills": [1]}
     d = parity_diff(rq, legacy)
-    assert d["cash_delta"] == pytest.approx(0.02) and not d["violations"]
+    assert any("fee_delta" in v for v in d["violations"])
+    assert not any("cash_delta" in v for v in d["violations"])   # 2 分现金差在容差内
+
+
+def test_parity_diff_clean_when_fees_match():
+    rq = {"cash": 97774.0, "fees": 5.02221, "positions": {"000792.XSHE": {"quantity": 100}},
+          "fills": [1], "error": None}
+    legacy = {"cash": 97774.0, "fees": 5.02221,
+              "positions": {"000792.XSHE": {"quantity": 100}}, "fills": [1]}
+    d = parity_diff(rq, legacy)
+    assert d["fee_delta"] == 0.0 and d["cash_delta"] == 0.0 and not d["violations"]
 
 
 def test_parity_diff_flags_position_and_fill_mismatch():

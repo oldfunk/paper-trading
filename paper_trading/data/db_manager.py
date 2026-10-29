@@ -18,7 +18,15 @@ class DataDBManager:
 
     def __init__(self, db_path: str | Path = "data.db") -> None:
         self.db_path = Path(db_path)
+        #: 本次打开真正执行过的结构迁移（T38：CLI 拿它写 `op_log[data:migrate]`）
+        self.migrations: list[dict] = []
         self._init_schema()
+
+    def _record_migration(self, **rec) -> None:
+        rec.setdefault("at", datetime.now().isoformat())
+        rec.setdefault("db", str(self.db_path))
+        self.migrations.append(rec)
+        logger.info("data 库结构迁移: %s", rec)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -92,6 +100,9 @@ class DataDBManager:
                          ON {table}(symbol, ts)""")
         logger.info("minute_bars 主键已升级为 (symbol, ts, period)：%d 行迁移完成，"
                     "备份见 %s", n_new, bak.name)
+        self._record_migration(table=table, kind="pk_rebuild",
+                              pk=["symbol", "ts", "period"],
+                              rows=n_new, backup=bak.name)
         return {"migrated": True, "rows": n_new, "backup": bak.name}
 
     def _init_schema(self) -> None:
@@ -106,6 +117,7 @@ class DataDBManager:
                     close REAL NOT NULL,
                     volume INTEGER NOT NULL,
                     turn REAL DEFAULT 0.0,
+                    adjust TEXT DEFAULT 'qfq',
                     PRIMARY KEY (symbol, timestamp)
                 )
             """)
@@ -116,8 +128,12 @@ class DataDBManager:
             # T31 G-T13-1 口径标签：既有 daily_bars 一直是**前复权**
             # （akshare_fetcher.py 默认 adjust="qfq"），加列打标签而不改写任何值——
             # AI 展示层还靠这口径，引擎侧一律改读 daily_bars_raw。
+            # 新建库的 CREATE 已带 adjust，下面这条 ALTER 只服务 T31 之前建的老库；
+            # 留痕（T38 批复 ②）也因此只会在"真的动过既有库"时才有内容。
             if not self._has_column(conn, "daily_bars", "adjust"):
                 conn.execute("ALTER TABLE daily_bars ADD COLUMN adjust TEXT DEFAULT 'qfq'")
+                self._record_migration(table="daily_bars", kind="add_column",
+                                      column="adjust", default="qfq")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS daily_bars_raw (
                     symbol TEXT NOT NULL,
@@ -167,8 +183,12 @@ class DataDBManager:
             """)
             if not self._has_column(conn, "minute_bars", "adjust"):
                 conn.execute("ALTER TABLE minute_bars ADD COLUMN adjust TEXT DEFAULT 'raw'")
+                self._record_migration(table="minute_bars", kind="add_column",
+                                      column="adjust", default="raw")
             if not self._has_column(conn, "minute_bars", "period"):
                 conn.execute("ALTER TABLE minute_bars ADD COLUMN period TEXT DEFAULT '5'")
+                self._record_migration(table="minute_bars", kind="add_column",
+                                      column="period", default="5")
             self._migrate_minute_pk(conn)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS quote_log (

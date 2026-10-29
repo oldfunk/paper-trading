@@ -18,6 +18,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
+from . import costs
 from .provider import SessionGate, SessionGateError, config_fingerprint
 from .store import to_order_book_id
 
@@ -56,9 +57,18 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
                  require_bands: bool = True,
                  override_available_range: bool = True,
                  matching_type: str = "current_bar",
+                 fee: Optional[dict] = None,
                  extra: Optional[dict] = None) -> dict:
-    """一个模拟日的 rqalpha 配置（纯函数，便于离线测试）。"""
+    """一个模拟日的 rqalpha 配置（纯函数，便于离线测试）。
+
+    `fee` 是现网费率（`{commission_rate, commission_min, stamp_duty_rate,
+    transfer_fee_rate}`，见 `costs.py`）。**不传就用现网默认值**，
+    绝不用框架默认——框架股票佣金是万八，现网是万 2.5（T38 实测口径差）。
+    """
     persist = bool(state_dir)
+    fee = dict(fee or {})
+    transfer_fee_rate = float(fee.pop("transfer_fee_rate", costs.TRANSFER_FEE_RATE))
+    cost_cfg = costs.stock_cost_mod_config(**fee)
     cfg = {
         "base": {
             "start_date": today,
@@ -79,6 +89,8 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
             # analyser 的日记录与基准序列长度不一致 → rqrisk/risk.py:30 assert 炸，
             # 一天跑完却按失败退出。指标继续由我们的 nav_history 记录器出。
             "sys_analyser": {"enabled": False},
+            # T38 裁决 5：佣金/印花税钉到现网费率（框架默认万八，见 costs.py 模块头）
+            "sys_transaction_cost": cost_cfg,
             "sys_simulation": {
                 "enabled": True,
                 "matching_type": matching_type,   # §5.4：raw 无成交额口径 → 只用 current_bar
@@ -98,6 +110,7 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
                 "state_dir": state_dir,
                 "evidence": evidence,
                 "pre_load": True,
+                "transfer_fee_rate": transfer_fee_rate,   # 框架没有这项，mod 里补
             },
         },
     }
@@ -118,6 +131,9 @@ def session_fingerprint(cfg: dict) -> str:
         "matching_type": cfg["mod"]["sys_simulation"]["matching_type"],
         "price_limit": cfg["mod"]["sys_simulation"]["price_limit"],
         "slippage": cfg["mod"]["sys_simulation"]["slippage"],
+        # T38：费率也改账本语义，必须进指纹（改了费率还想续跑昨天的状态 = 两本账混着算）
+        "cost": cfg["mod"]["sys_transaction_cost"],
+        "transfer_fee_rate": cfg["mod"]["ptpaper"]["transfer_fee_rate"],
         "bundle": base["data_bundle_path"],
         "db": cfg["mod"]["ptpaper"]["db"],
         "symbols": sorted(cfg["mod"]["ptpaper"]["symbols"]),
@@ -126,7 +142,8 @@ def session_fingerprint(cfg: dict) -> str:
 
 
 def check_session_gates(evidence: dict, plan: list, *, handler_calls: int,
-                        settle_expected: int = 1) -> dict:
+                        settle_expected: int = 1,
+                        expect_transfer_fee: bool = False) -> dict:
     """会话后置门禁（纯函数，可离线测）。"""
     counts = evidence.get("event_counts") or {}
     trades = evidence.get("trades") or []
@@ -140,6 +157,13 @@ def check_session_gates(evidence: dict, plan: list, *, handler_calls: int,
     ordered = [p for p in plan if p.get("action") in ("buy", "sell") and p.get("volume")]
     if ordered and not trades and not rejects:
         errors.append("IdleSpin: 计划有下单，但既无成交也无拒单原因（静默失败）")
+    # T38 裁决 5：要收过户费却没装上 = 费率口径悄悄回到"框架无过户费"，
+    # 影子对账的 fee_delta 会假装归零，必须停线（框架哪天改了注册方式就是它先响）。
+    if expect_transfer_fee:
+        cost = evidence.get("cost") or {}
+        if not cost.get("wrapped"):
+            errors.append("TransferFeeNotInstalled: 配了过户费率，但没有一个合约 decider "
+                          f"被套上 overlay（cost={cost}）")
     settlement = counts.get("SETTLEMENT", 0)
     warn = []
     if settlement > settle_expected:
@@ -178,7 +202,8 @@ def describe_error(exc: BaseException) -> str:
 def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: list,
                 init_cash: float = INIT_CASH_DEFAULT, state_dir: str = "",
                 workdir: Optional[str] = None, force: bool = False,
-                require_bands: bool = True, matching_type: str = "current_bar") -> dict:
+                require_bands: bool = True, matching_type: str = "current_bar",
+                fee: Optional[dict] = None) -> dict:
     """跑一个模拟日（**G-T13-9：一个进程只允许一次**）。"""
     global _SESSION_USED
     if _SESSION_USED:
@@ -194,7 +219,7 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
     cfg = build_config(today=today, data_db=data_db, bundle=bundle, symbols=symbols,
                        init_cash=init_cash, state_dir=state_dir,
                        evidence=evidence_path, require_bands=require_bands,
-                       matching_type=matching_type)
+                       matching_type=matching_type, fee=fee)
     fp = session_fingerprint(cfg)
 
     gate = SessionGate(state_dir) if state_dir else None
@@ -217,7 +242,8 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
     evidence = (json.loads(Path(evidence_path).read_text(encoding="utf-8"))
                 if Path(evidence_path).exists() else {})
     verdict = check_session_gates(evidence, plan, handler_calls=len(st.handler_dates),
-                                  settle_expected=1 if not state_dir else 1)
+                                  settle_expected=1 if not state_dir else 1,
+                                  expect_transfer_fee=cfg["mod"]["ptpaper"]["transfer_fee_rate"] > 0)
     done = False
     if gate and err is None and verdict["ok"]:
         gate.mark_done(date.fromisoformat(today), fp,
