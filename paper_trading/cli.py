@@ -1345,6 +1345,25 @@ def main() -> None:
                               help="门禁模式：任何标的缺 raw 或陈旧即 exit 1")
     data_raw_cov.add_argument("--json", action="store_true")
 
+    # m3（T46：切换后验证——每项自带"红了怎么办"，钱类红 ⇒ 立即回退）
+    m3_parser = subparsers.add_parser(
+        "m3", help="M3 切换后检查体系（verify：钱类/审计/链路逐项绿红）")
+    m3_sub = m3_parser.add_subparsers(dest="m3_command")
+    m3_verify = m3_sub.add_parser(
+        "verify", help="跑切换后检查清单（默认人读输出，--json 出机器读）")
+    m3_verify.add_argument("--today", default=None, help="验证日（默认今天，YYYY-MM-DD）")
+    m3_verify.add_argument("--symbols", nargs="*")
+    m3_verify.add_argument("--pool-from", default="config")
+    m3_verify.add_argument("--pool-limit", type=int, default=20)
+    m3_verify.add_argument("--pool-tag", default="")
+    m3_verify.add_argument("--no-picks", action="store_true")
+    m3_verify.add_argument("--days", type=int, default=60,
+                           help="行情台账审计窗口（自然日，与 fetch-raw 同一口径）")
+    m3_verify.add_argument("--heartbeat", default=None, help="心跳文件路径（默认 var/heartbeat.json）")
+    m3_verify.add_argument("--money-only", action="store_true",
+                           help="只看钱类项（切换日第一小时用）")
+    m3_verify.add_argument("--json", action="store_true")
+
     # rq（T32：rqalpha 底座的一天一会话 / 双轨影子对照 / 状态体检）
     rq_parser = subparsers.add_parser(
         "rq", help="rqalpha 引擎会话（模拟线；需安装 rqalpha，NEC 生产 venv 默认不装）")
@@ -1876,6 +1895,36 @@ def main() -> None:
             else:
                 parser.print_help()
                 sys.exit(2)
+
+        elif args.command == "m3":
+            from datetime import date as _date
+            from pathlib import Path as _PP
+
+            from paper_trading.utils import m3_verify as _m3
+
+            if (getattr(args, "m3_command", None) or "verify") != "verify":
+                parser.print_help()
+                sys.exit(2)
+            today = args.today or _date.today().isoformat()
+            syms, note, _, _ = _resolve_syms(bridge, args)
+            hb_path = getattr(args, "heartbeat", None) or None
+            res = _m3.verify_all(broker=bridge.broker, data_db=bridge.data_db,
+                                 symbols=syms, today=today,
+                                 cfg=bridge.broker.config, days=args.days,
+                                 heartbeat_path=(_PP(hb_path) if hb_path else None))
+            res["pool_source"] = note
+            if getattr(args, "money_only", False):
+                res["items"] = [i for i in res["items"] if i["money"]]
+                res["shown"] = "money-only"
+            if getattr(args, "json", False):
+                emit(res)
+            else:
+                print(_m3.format_text(res))
+            # 红=不通过；钱类红=按 §5.6 底线立即回退（退出码分开，cron 可分别告警）
+            if res["rollback_required"]:
+                sys.exit(3)
+            if res["red"]:
+                sys.exit(1)
 
         elif args.command == "health":
             from paper_trading.utils import heartbeat as hb

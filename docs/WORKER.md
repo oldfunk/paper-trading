@@ -754,41 +754,34 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     "开盘执行计划"(09:30-10:00) 与"收盘做计划"(16:30-18:30)（`agent/loop.py:684-690`）
     ⇒ 整条停掉会连带断掉 AI 计划链；② 新线"一天一进程"+`SessionGate` 与"每分钟一跳"
     排程冲突 ⇒ 建议 09:35/15:05 两轮、每轮独立 state、单独一把锁（`var/rq.lock`）
-- [ ] **T46（Qoder，P0·切换后检查体系）检查清单 + 验证工具**：
-  - [ ] `docs/m3-checklist.md`：第一小时 / 第一天 / 第一周三段逐项——
-    T+1 冻结正确、费用三件套扣对（佣金地板/印花税单边/过户费）、NAV 收盘
-    记录、条件单触发链、AI 计划执行链、审计留痕完整、面板数据一致、
-    影子对账记录连续
-  - [ ] 可自动化项做成命令（如 `python -m paper_trading.cli m3 verify`：
-    逐项检查出绿勾/红叉），人工项写清判定方法
-  - [ ] 每一项标注"红了怎么办"（回退 or 归因 or 容忍）——**任何钱类项红
-    ⇒ 立即回退**（§5.6 底线）
-  - [ ] `report-t46.md`；工具给 Hermes 审一遍再交付
-- [x] **T43（Qoder，P1·独立穿插）T28 架构地图催办**（`worker/t43`，基于 main，**待 review**）
-  - [x] 模块清单工具统计：**72 模块 / 16,517 行 / 45 个测试文件**，
-    按包 14 行表（模块数/行数/层/职责），数字出自可重跑的 `spikes/arch_map_scan.py`
-    （AST 标准库，无新依赖），输出留 `spikes/arch_map_data.json`
-  - [x] import 实测依赖图：49 条内部边、四层（入口/编排/能力/契约），
-    扇入第一是 `models`(16) 与 `utils`(14)（方向正确，下层不回头）；
-    并写明**静态图看不见 rqalpha 反射装载的 mod**（`rqalpha_mod_ptpaper`），别把图当完备
-  - [x] L1/L2 现状 vs 目标：引 `refactor-plan-open-source.md:15-27` 原文定义，
-    八项能力逐条对照（撮合/T+1/费用/回测/风控/NAV/AI 链/数据供给）；
-    待退役 L1 约 **2,984 行**，新线 `rq_engine/` 只有 **1,336 行**，
-    差额正是 T45 §0 的 G1（不写账本）/G2（没有 NAV 记录器）
-  - [x] 重复/死代码/测试盲区：费率 **3 个真相源**（`models/types.py:119-122`、
-    `engine/backtest.py:22 FeeModel`、`rq_engine/costs.py:31-36`；
-    `cli.py:2173/2228` 与 `dashboard.py:906` 仍各自 new ⇒ 改 config 费率回测/面板可能不跟）、
-    价格映射 2 处（`cli.py:325` vs `engine/runner.py:49`）；
-    死码只认 `main.py`（188 行，全仓自引用，建议先标 deprecated、M3 后再删）；
-    测试盲区 51/72 被提到，真盲区首位是 `portfolio/portfolio.py`（NAV 公式仅 61 行无直接测试）
-  - ⚠️ **我先误判后撤回的四条也写进地图开头**（工具看不见 `__init__` 再导出）：
-    `integration/analysis.py`、`llm/presets.py` 不是死码；"日历重复 19 处"其实
-    `is_trading_day` 只有 `utils/trading_calendar.py:230` 一处定义；
-    "股票池 3 处重复"是一处实现三处调用；启发式还把 cron 入口 `engine/__main__.py` 误报为零引用。
-    ⇒ 教训写进文档：静态启发式给候选，删东西的结论必须逐个 grep + 读码验证
-  - ➡️ 顺带撞出的计划文本偏差：**M1 说"rqalpha 接管日线回测"，但 `engine backtest`
-    至今仍跑旧 `Backtester`（696 行）** ⇒ 切换评审时别把回测/面板的数字当成"已经用框架"
-  - 纯文档 + 只读脚本，未改产品代码、未删任何模块
+- [x] **T46（Qoder，P0·切换后检查体系）检查清单 + 验证工具**（`worker/t46`，
+    堆叠在 t45/t42/t40/t41 之上，**待 review 按序合并**）
+  - [x] `docs/m3-checklist.md`：第一小时 6 项 / 第一天 9 项 / 第一周 8 项，
+    派发点名的八项全覆盖（T+1、费用三件套=佣金地板/印花税单边/过户费、NAV 收盘、
+    条件单触发链、AI 计划执行链、审计留痕、面板数据一致、影子对账连续），
+    另加切换日更要命的**双活检测**两项（含"ssh 回 Pi 查残留 cron"）
+  - [x] 可自动化项做成命令：新模块 `paper_trading/utils/m3_verify.py`（10 项检查 +
+    汇总 + 渲染）+ CLI `m3 verify`（人读 ✅❌⚠️⚪ / `--json` / `--money-only` /
+    `--days` / `--today` / `--symbols` / `--heartbeat`）；人工项每条写"怎么跑/期望/红了怎么办"
+  - [x] 每项标"红了怎么办"，**钱类项红⇒立即回退**：`money`/`on_red` 字段 +
+    `rollback_required`；退出码 **0 绿 / 1 非钱类红 / 3 钱类红(=立即回退) / 2 工具自身失败**，
+    cron 可分别告警；人读输出末行直接印「❗钱类项红 ⇒ 按 §5.6 底线立即回退
+    （步骤见 docs/migration-m3.md §5.1）」
+  - [x] 真实跑的证据（`spikes/smoke_m3_verify.py` 可重跑）：正常态 7 绿/2 警/0 红 exit 0；
+    把佣金 18.79 改成 99.0 ⇒ `fees` 红 `{"commission":80.21}` **exit 3**；
+    `--money-only` 正确只列 4 项钱类
+  - [x] 测试 `tests/test_m3_verify_t46.py` **29 条**；`spikes/mutation_t46.py` 六个源码级变异
+    实测分别 2/1/1/1/1/1 条必红，还原后 29 全绿；全套 **499 passed / 9 skipped**
+    （main 基线 453/9 + T41 的 17 + 本任务 29，零回归）
+  - ⚠️ **按派发"工具给 Hermes 审一遍再交付"**：我没有自审通过。给 Hermes 标了三个最该盯的点：
+    ① `fees` 依赖 `fills.direction==-1` 判卖出；② `t_plus_one` 依赖 `positions.entry_day`
+    （旧线才有这列 ⇒ 新线若不写这列，T+1 永远查不出问题，是 T45 §0 G1 的衍生缺口）；
+    ③ `raw_gate` 母库不可用时给 warn 而非红，这个松紧是否合适请审
+  - ⚠️ 诚实边界：工具**只读**（全 SELECT，无 INSERT/UPDATE/DDL），且它只回答
+    "钱对不对/账齐不齐/线活着没"，**不重跑撮合**；清单 §5 专列了"工具不覆盖的"
+    （首单归属锚点 `m3:switch` 还不存在、涨跌停无法在生产账本里验、除权日影响待因子到位）。
+    另外 T45 §0 的 G1/G2 不关闭时，本工具上线第一天就会稳定红 `nav`/`audit_trail`——
+    那不是工具的错，是它把缺口照出来了
 - [ ] **T44（Hermes，P0·审查）T38/T39 钱类件复核**：TransferFeeOverlay
   （H 系视角：套层重复挂载/基金类遗漏/费率变更时会话指纹漂移的恢复语义）+
   T39 三发现的严重性复核（漏验窗口/盲区/--no-mother-ref 是否还有第四件）+
