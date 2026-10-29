@@ -57,11 +57,18 @@ class PtPaperMod(AbstractMod):
         if t is None:
             return
         tc = getattr(t, "transaction_cost", 0)
+        total = float(getattr(tc, "total", tc) or 0)
+        # 费用**三分量**必须逐笔留：账本的 orders/fills 是佣金/印花税/过户费三列，
+        # 只给一个合计数就得靠猜拆分（T47-G1：猜出来的费用拆分是账本腐烂的起点）。
+        commission = float(getattr(t, "commission", 0) or 0)
+        tax = float(getattr(t, "tax", 0) or 0)
         self._trades.append({
             "symbol": t.order_book_id, "datetime": str(t.datetime),
             "side": str(getattr(t.side, "value", t.side)).upper(),
             "price": round(float(t.last_price), 4), "volume": int(t.last_quantity),
-            "cost": round(float(getattr(tc, "total", tc) or 0), 4),
+            "cost": round(total, 4),
+            "commission": round(commission, 6), "tax": round(tax, 6),
+            "other_fees": round(total - commission - tax, 6),
             "position_effect": str(getattr(t.position_effect, "value",
                                            t.position_effect)).upper()})
 

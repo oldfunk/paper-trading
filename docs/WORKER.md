@@ -796,19 +796,44 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 > 是"现在还不能切"的全部原因——**T47 补齐它们 = M3 硬前提**；T48 解执行模型。
 > Qoder 三件 + 顺手一件 + T51；Hermes 审查件。
 
-- [ ] **T47（Qoder，P0·M3 硬前提）四缺口补齐**（runbook `migration-m3.md` G1-G4）：
-  - [ ] **G1 新线写账本**：rq_engine runner 接 PaperBroker 适配（影子 evidence
-    路径升级为正式执行路径；`shadow.py` 的对照用法保留），成交/拒单/费用落
-    `orders/fills/op_log`——钱类件，逐字段测试 + 变异
-  - [ ] **G2 NAV 记录器**：新线每日收盘 `record_nav`（对齐旧线 `nav:close`
-    语义：业务日判重、无交易也记、幂等）——面板净值不断供
-  - [ ] **G3 回退开关**：config 键（**必须进 `engine/config.py:27-37` DEFAULTS
-    白名单**否则静默丢弃）+ 状态进 session_fingerprint + 落 `op_log`；
-    切换/回退各一次演练测试
-  - [ ] **G4 归档/新开账工具**：`cli` 子命令（冷备 → chmod 444 → 新开账
-    NAV 对齐 → 留痕 `op_log[ledger:archive]`），幂等可重入
-  - [ ] 顺手：`fetch-raw --start/--end`（裁决 3）
-  - [ ] `report-t47.md`；按协议附裁决核销清单
+- [x] **T47（Qoder，P0·M3 硬前提）四缺口补齐**：`worker/t47`（堆叠在 `worker/t48`），
+    runbook `migration-m3.md` G1-G4 ⇒ **待 review 不合 main**；全套 **567 passed / 9 skipped**
+    （基线 515/9 ⇒ 新增 52 条钱类测试，零回归）
+  - [x] **G1 新线写账本**：`PaperBroker.apply_external_fill()`（G1 原语：**不重判价/不加滑点/
+    不重算费**，只做一致性守卫 + 复用旧线同一批落账原语 ⇒ `avg_cost` 含费、T+1 解冻日、
+    `peak_price` 口径逐位一致）；`ledger.post_session()` 把成交/拒单/费用三分量落
+    `orders/fills/t1_freeze/op_log[rq:fill|rq:reject]`；`mod_entry` 补出
+    `commission/tax/other_fees` 三分量 ⇒ **缺任一分量整批拒绝落账**（不拿 `cost` 去猜拆分）；
+    守卫失败**停批**（后面的笔不写）；biz_id 幂等判定用 `has_op_with()` 全表按 action 查，
+    **不用最近 N 条窗口**（本仓已证面板问答会把目标行挤出窗口）。`shadow.py` 一字未改（对照用法保留）
+  - [x] **G2 NAV 记录器**：`ledger.record_close_nav()` 业务日判重（复用 `has_operation()`，
+    `date` 写进 **result** 以支持跨日补记）、**零成交也记**、幂等；金额调 `broker.get_nav()`
+    不另写公式（测试断言与旧线逐位相同，含 `pnl` 对 `initial_cash`）；双轨期旧线已记
+    `nav:close` 则新线**让位**（同业务日两行净值会让面板与 verify 双双失真）；持仓缺价 ⇒
+    拒记 `price_missing` 而不是按 0 市值写
+  - [x] **G3 回退开关**：`engine/config.py:33` `DEFAULTS["executor"]="legacy"`（**进了白名单**，
+    测试直接验"yaml 写了不被吞"；变异⑧删这行 ⇒ 3 条必红）+ `session_fingerprint` 含
+    `ledger`（变异⑩）+ `op_log[m3:switch]` 同日同值只记一行 + **守护进程启动校验**
+    （`startup_guard`：未知值/`rqalpha` 却没装 ⇒ **exit 2 不降级**，真子进程退出码有测试）。
+    演练=离线两向：`m3:switch` 双向留痕 + **键不存在 vs 键=legacy 六表逐位一致**（§5.2 回退回归）；
+    **现网真跑一天的切换/回退需授权** → questions.md Q2
+  - [x] **G4 归档/新开账工具**：`cli ledger archive --archive-dir DIR --yes [--allow-existing]`
+    = sqlite `backup()` 冷备（不是 `cp`）→ `chmod 444` → **账本非空且无 `--allow-existing` 直接拒**
+    （拒绝时源文件 SHA 不变，冷备已先落盘）→ `.pre-reopen-<stamp>` 现场副本 → 新开账对齐
+    归档 `cash + 持仓 +`**未解冻 T+1**（不搬 `t1_freeze` 会让切换日买的票永远卖不掉，测试盯着
+    解冻入口）→ `op_log[ledger:archive]`（含归档行数清点）。幂等可重入：同 `--stamp` 重跑
+    `archive_reused=True` 且归档 mtime/字节不变；`-journal/-wal` 存在 ⇒ 有人在写，拒绝动手。
+    另有 `cli ledger executor`（只读看当前底座 + 最近切换留痕）
+  - [x] 顺手：`fetch-raw --start/--end`（裁决 3）：`sync_raw(start=, end=)` +
+    `flip_watch_with_mother(start=, end=)`，采集/母库参照/逐日闸**三处仍同源**；
+    新语义=区间终点早于真实今天时**不做盘中跨源**（历史日没有当天实时价可比），
+    默认路径强制跨源那条**一字未松**（有测试对照）。⚠️ 我这次改名漏了两处引用 + 签名，
+    既有回归网 **17 条立刻红**（report-t47 §2.3）
+  - [x] `report-t47.md` + 裁决核销清单（§1 逐条对照派发原文与 §5.2 开关规格）；
+    `spikes/mutation_t47.py` 14 个源码级变异 2/1/2/3/1/2/1/3/3/1/1/1/1/1 条必红、还原 88 全绿；
+    `docs/migration-m3.md` 加 §0.1「T47 实现落点」（只标工具长什么样，**不宣布缺口已关闭**——
+    关闭判据要 review + 现网演练）；三个决定点进 questions.md（Q1 双活防护归谁 /
+    Q2 现网演练授权 / Q3 `m3 verify` 要不要长出新留痕项）
 - [x] **T48（Qoder，P0·M3 执行模型方案）**：`worker/t48`（堆叠在 `worker/t50`），
     **只出方案不改码**，`docs/worker/report-t48.md` → 等主 AI 拍板后实施
   - [x] 三方案各自给全四项（止损延迟上界 / state·账本一致性风险 / 实施工作量 / 回退难度）：

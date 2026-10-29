@@ -23,6 +23,20 @@
 M3 行写的"cron 切 rqalpha 常驻（一天一进程）"**不一致**，请显式改计划文本，
 别让 cron 和实现各说一套。本文余下章节按"要真切换"来写。
 
+### 0.1 T47 实现落点（`worker/t47` 待 review ⇒ **缺口尚未关闭**，这里只给"工具长什么样"）
+
+| 缺口 | 现在的命令/入口 | 默认 | 关闭判据还差什么 |
+|---|---|---|---|
+| G1 | `rq day … --ledger`（成交/拒单/费用三分量落 `orders/fills/t1_freeze/op_log[rq:fill|rq:reject]`）；`--ledger-dry` 只报告不写库 | **不落账**（`build_config(ledger=False)`） | review + 一次现网受控落账（前后账本指纹核对，照 T42 做法） |
+| G2 | 同上路径自动接 `record_close_nav` ⇒ `nav_history` + `op_log[rq-nav]`；旧线当天已记 `nav:close` 则让位 | 只在 `--ledger` 生效 | 现网连续一天 `nav_history` 恰 1 行 |
+| G3 | `config.yaml`/`engine.local.yaml` 的 `engine.executor: legacy|rqalpha`；`cli ledger executor`（只读看当前底座 + 最近切换留痕）；守护进程启动即校验，未知值/装了旧线没装 rqalpha ⇒ **exit 2 不降级** | `legacy` | 现网切换/回退各一次演练（`op_log[m3:switch]` 两条） |
+| G4 | `cli ledger archive --archive-dir DIR --yes [--allow-existing] [--stamp S]`：sqlite 冷备 → `chmod 444` → 新开账（cash/持仓/**未解冻 T+1**）→ `op_log[ledger:archive]` | 无 `--yes` 直接拒绝；账本非空且无 `--allow-existing` 拒绝 | 切换日实操一次，产出 §4 ③ 要的 `M3-BRIDGE-<date>.md` |
+
+⚠️ **一处仍未闭合的双活风险**（report-t47 §7-Q1）：`engine.executor=rqalpha` 时
+`paper_trading.engine` 守护进程**本身还是旧线撮合**——T47 只给了"新线成交怎么落账"，
+没有擅自让守护进程停单。§4 的顺序铁律（先停旧再启新）目前仍靠人工执行，
+它归 T48 执行模型拍板后一起解。
+
 ## 1. 规格对比（切换前后到底变不变）
 
 | 维度 | 旧自研线 | rqalpha 线 | 结论 |
