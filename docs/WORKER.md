@@ -19,6 +19,7 @@
 | 状态 | 完成一项就把本文件对应复选框勾掉（`- [x]`），提交信息含任务号 |
 | 文档/测试改动 | 可直接提交 main，前缀 `docs(worker):` / `test(worker):`；**禁止 force push、禁止删历史** |
 | 产品代码改动 | **一律开分支** `worker/<任务号>`，push 分支后在报告里写明"待 review"，由我 review 合并；不要直接改 main 上的 `paper_trading/**` |
+| 交付前自检（2026-10-29 新增，Qoder 裁决 4 漏落地教训） | 交付 checklist 必须含**「对照 questions.md 批复 + refactor-plan 裁决逐条核销」**——每条裁决标注"已落地于 XX 文件/测试"或"不适用+理由"；**禁止拿自己的实现反解拍板**（实现与裁决冲突时以裁决为准，冲突本身要上报） |
 | 疑问/阻塞 | 写 `docs/worker/questions.md`（追加式），不要自己猜着改设计 |
 
 ## 红线（违反即事故）
@@ -575,4 +576,24 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     h5py 写读往返 OK，`rqalpha --help` 正常；venv 697 MB、安装 2m10s
   - 结论：引擎必须走**独立 venv**（`requirements-rqalpha.lock.txt` 已给），
     不与交易/面板进程混装；bundle 3.3 GB 下载未做（属部署决定，等主 AI 定放置位置）
-- [ ] **Hermes 在途继续**：T15b2/b3、T27、T28（结构审查两件是用户点名项）
+- [ ] **Hermes 在途继续**：T15b2/b3、T27 ✅（已交付验收：P0 无阻塞）、T28
+
+### Batch 8 · 影子期启动件（主 AI 派发 2026-10-29，批复见 questions.md）
+
+- [ ] **T38（Qoder，P0·裁决 4+5 联动）影子留痕 + 过户费 decider**：
+  - [ ] `--allow-op-log` → **默认写生产账本**（action=parity:diff 白名单断言锁死，
+    只许这一个 action 进 op_log）+ `--no-op-log` 关闭旗 + 测试（默认落库/
+    白名单拒绝其他 action/关闭旗生效）
+  - [ ] **D4 过户费 decider**：自定义 `AbstractTransactionCostDecider` 补
+    0.001% 双向过户费（T29/T32 已量化）；**联动验收信号：影子对账
+    `fee_delta` 归零**（此前显式 0.001% 预期差逻辑相应收敛）
+  - [ ] T35 迁移留痕顺手项：`op_log[data:migrate]`（若 T35 补丁更早就先做）
+  - [ ] 测试 + `report-t38.md`；按协议新条款附**裁决逐条核销清单**
+- [ ] **T39（Qoder，P0·M2 影子期启动）NEC 引擎环境落位**：
+  - [ ] NEC 建**独立引擎 venv**（按 `requirements-rqalpha.lock.txt`，先装
+    `numpy<2.4` 再装 rqalpha——T37 实测姿势；不与交易/面板 venv 混装）
+  - [ ] bundle 3.3GB 下载落位（NEC 磁盘 370G 无压力）+ sha 记录
+  - [ ] `rq shadow-day` 在 NEC 生产环境首跑（生产 daily_bars_raw 真数据；
+    只读影子、写 parity:diff 留痕）→ 输出与开发机同场景对齐
+  - [ ] `report-t39.md`：耗时/磁占用/首跑对账结果；此后影子期每日跑可挂 cron
+    （时刻 15:35 后，与采集规矩一致——cron 具体行等影子期跑顺再提请）
