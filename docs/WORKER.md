@@ -563,8 +563,16 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   - 全套 **403 passed, 4 skipped**（基线 397+1，零回归）；产出 `report-t36.md`
   - 顺带记两条 P2（未动）：同分候选排序不保证可复现；样本外只检验 top-K 的取舍未量化
 
-- [ ] **T37（Qoder，P1·部署）lock 文件 + rqalpha 二进制 spike**：
-  ① NEC `pip freeze` → `requirements.lock.txt`（注明生成机/日期）；
-  ② /tmp 只读 spike：NEC fresh venv 装 rqalpha 6.4.2（h5py/jsonpickle/tables
-  等二进制基线实测，不碰生产 venv）→ `report-t37.md`（§5.5 裁决 8）
+- [x] **T37（Qoder，P1·部署）lock 文件 + rqalpha 二进制 spike**（`worker/t37`，**待 review**）
+  - ① `requirements.lock.txt`（NEC Py3.12.3 生产 venv `pip freeze`，35 包，含生成机/日期/用途
+    与"不要放开 numpy、不要与引擎 venv 合并"两条警告）；`requirements.txt` 只加两行指针注释
+  - ② spike（NEC `/tmp` 临时 venv，跑完 `rm -rf` + 清 pip cache，**生产 venv 零改动**）：
+    **直接 `pip install rqalpha==6.4.2` 会解析到 numpy 2.5.4 → import 当场
+    `RuntimeError ... (X86_V2)`**（第三次现场复现）；正确姿势是**先 `pip install 'numpy<2.4'`
+    再装 rqalpha**，之后 numpy 2.3.5 + h5py 3.16.0 / scipy 1.18.1 / matplotlib 3.11.2(Agg)
+    / statsmodels 0.15.0 / jsonpickle / logbook / pandas 3.1.0 / rqalpha 6.4.2 **全部 import 通过**，
+    `run_func / BaseDataSource / SimulationMod / AbstractPersistProvider` 四入口可取，
+    h5py 写读往返 OK，`rqalpha --help` 正常；venv 697 MB、安装 2m10s
+  - 结论：引擎必须走**独立 venv**（`requirements-rqalpha.lock.txt` 已给），
+    不与交易/面板进程混装；bundle 3.3 GB 下载未做（属部署决定，等主 AI 定放置位置）
 - [ ] **Hermes 在途继续**：T15b2/b3、T27、T28（结构审查两件是用户点名项）
