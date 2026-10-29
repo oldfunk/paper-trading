@@ -513,7 +513,8 @@ def daily_bars(codes: Iterable[str], days: int = 250,
 
 def raw_close_map(codes: Iterable[str], days: int = 30,
                   mother: Optional[Path] = None,
-                  ttl: float = TTL_QUOTES) -> dict:
+                  ttl: float = TTL_QUOTES,
+                  since: Optional[str] = None) -> dict:
     """母库**不复权**列：`{code: {date: {"close": close_raw, "volume":, "amount":}}}`。
 
     T31 用它做 raw 管道的**独立同日对照**（谁写引擎谁不能被引擎的数据自证）。
@@ -522,6 +523,11 @@ def raw_close_map(codes: Iterable[str], days: int = 30,
     open 172.87 / close 166.54 = close_qfq，而 close_raw=210.02 = 交易所价）
     ⇒ 母库不能供 raw OHLC，只能供 raw 收盘与量额；raw OHLC 由 akshare
     `stock_zh_a_daily(adjust="")` 供（同日实测与 close_raw/volume/amount 完全一致）。
+
+    `since`（T41）：按**日期下界**取参照，而不是只取最近 `days` 行。
+    参照窗口必须覆盖采集窗口，否则老的那一半 bar 天生没有参照——
+    `days` 是 `LIMIT`（交易日行数），采集是 `days*2+10` **自然日**，
+    两者单位不同，实测 NEC 590 行只验了 400 行（report-t39 §6-B）。
     """
     out: dict = {}
     conn = _conn(mother)
@@ -532,14 +538,21 @@ def raw_close_map(codes: Iterable[str], days: int = 30,
             return out
         for code in dict.fromkeys(str(c).strip().zfill(6) for c in (codes or [])):
             def _fetch():
-                rows = conn.execute(
-                    """SELECT trade_date, close_raw, volume, amount
-                       FROM kline_daily WHERE code = ?
-                       ORDER BY trade_date DESC LIMIT ?""",
-                    (code, int(days))).fetchall()
+                if since:
+                    rows = conn.execute(
+                        """SELECT trade_date, close_raw, volume, amount
+                           FROM kline_daily WHERE code = ? AND trade_date >= ?
+                           ORDER BY trade_date""", (code, str(since)[:10])).fetchall()
+                else:
+                    rows = conn.execute(
+                        """SELECT trade_date, close_raw, volume, amount
+                           FROM kline_daily WHERE code = ?
+                           ORDER BY trade_date DESC LIMIT ?""",
+                        (code, int(days))).fetchall()
                 return {str(dict(r)["trade_date"])[:10]: dict(r) for r in rows}
             try:
-                out[code] = _cached(f"rawclose:{_dbkey(conn)}:{code}:{days}", ttl, _fetch)
+                key = f"rawclose:{_dbkey(conn)}:{code}:{days}:{since or '-'}"
+                out[code] = _cached(key, ttl, _fetch)
             except Exception:               # noqa: BLE001 - 单只失败不影响其他
                 out[code] = {}
     finally:

@@ -354,6 +354,27 @@ class DataDBManager:
             ).fetchone()
         return row[0] if row and row[0] else None
 
+    def raw_date_flags(self, symbol: str, since: Optional[str] = None,
+                       until: Optional[str] = None) -> dict:
+        """`{YYYY-MM-DD: checked}`——**逐日**的验料台账（T41 逐日闸的数据底座）。
+
+        只看 `MAX(timestamp) WHERE checked=1`（`raw_latest_checked`）会漏掉
+        "中段有一堆日子从来没验过料"这种形状：那类行既不改变最新日期，
+        也不改变最后 checked 日期，于是门禁看着是绿的（report-t39 §6-B 的盲区）。
+        """
+        sql = "SELECT substr(timestamp, 1, 10) d, checked FROM daily_bars_raw WHERE symbol = ?"
+        params: list = [symbol]
+        if since:
+            sql += " AND substr(timestamp, 1, 10) >= ?"
+            params.append(str(since)[:10])
+        if until:
+            sql += " AND substr(timestamp, 1, 10) <= ?"
+            params.append(str(until)[:10])
+        sql += " ORDER BY d"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return {str(r["d"])[:10]: int(r["checked"] or 0) for r in rows}
+
     def raw_row_flags(self, symbol: str) -> dict:
         """单标的 raw 数据的口径自检结论（供 `data raw-coverage` 与引擎闸）。"""
         with self._connect() as conn:

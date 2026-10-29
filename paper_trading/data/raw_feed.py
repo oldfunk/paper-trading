@@ -35,6 +35,55 @@ RAW_CLOSE_TOLERANCE = 0.005
 RAW_ABS_MAX = 100_000.0
 #: 允许的最大滞后（交易日数）：>此值即视为陈旧
 MAX_LAG_TRADING_DAYS = 1
+#: 采集窗口的自然日数换算：`days` 是"交易日行数"的口语参数，实际拉取跨度按
+#: `days*2 + 10` 自然日算（停牌/长假要留余量）。T41 把它收成一个常量，
+#: 因为参照窗口和审计窗口必须用**同一个**算式，否则又是一处"各算各的"。
+FETCH_CAL_SPAN_MULT = 2
+FETCH_CAL_SPAN_PAD = 10
+
+
+def fetch_window(days: int, today: Optional[date] = None) -> tuple[date, date]:
+    """采集/参照/审计三处共用的日期窗口（含端点）。
+
+    T39 实测的漏验就来自这里：采集是 `days*2+10` **自然日**，
+    而母库参照是 `LIMIT days` **交易日** ⇒ 老的一半天生没参照（590 行只验 400）。
+    """
+    end = _as_date(today or date.today())
+    start = end - timedelta(days=int(days) * FETCH_CAL_SPAN_MULT + FETCH_CAL_SPAN_PAD)
+    return start, end
+
+
+def _no_reference(symbols, days: int = 0, *args, **kwargs) -> dict:
+    """显式"不读母库"的参照提供者（`--no-mother-ref` 用它，T41 裁决 3）。"""
+    return {}
+
+
+#: 传给 `sync_raw(reference=...)` 表示"这一轮就是单源，别回退去读母库"
+NO_REFERENCE = _no_reference
+
+
+def reference_for(no_mother_ref: bool):
+    """CLI 旗子 → 参照提供者的唯一映射（T41 裁决 3）。
+
+    放在这里而不是 cli.py，是因为旧 bug 就长在那段接线里：
+    `--no-mother-ref` 时留 `reference=None`，而 `None` 的语义是"用默认（读母库）"，
+    旗子等于没拉。现在两边都只认这一个函数。
+    """
+    return NO_REFERENCE if no_mother_ref else None
+
+
+def _ref_date_set(refs: dict) -> dict:
+    """`{sym: {有 close_raw 的日期}}`——审计时"参照到底存不存在"的唯一依据。
+
+    母库当日的 `close_raw` 实测是 NULL（§5.5 裁决 2 的 A 半边就是为此存在的），
+    所以**只有非 NULL 的日期才算有参照**，不然 `no_reference` 会被误判成
+    `unflipped`，把母库自己的滞后算成我们的锅。
+    """
+    out = {}
+    for sym, m in (refs or {}).items():
+        out[str(sym)] = {str(d)[:10] for d, v in (m or {}).items()
+                         if isinstance(v, dict) and v.get("close_raw")}
+    return out
 
 
 def _as_date(v) -> date:
@@ -176,24 +225,47 @@ def intraday_reference(symbols, *, quotes: Optional[dict] = None,
 
 def raw_flip_watch(db, symbols, today: Optional[date] = None,
                    max_lag: int = MAX_LAG_TRADING_DAYS,
-                   ref_asof: Optional[dict] = None) -> dict:
+                   ref_asof: Optional[dict] = None,
+                   ref_days: Optional[dict] = None,
+                   since: Optional[date] = None,
+                   days: Optional[int] = None) -> dict:
     """G-T13-1 增补判据（§5.5 裁决 2-B）：**当日允许 checked=0，T+1 必须翻转，否则停线**。
 
-    三种未翻转要分开对待，否则"验料源自己滞后"会永远停我们的线：
-    - `waiting_reference`：母库连参照都还没给到该日（`ref_asof` 显示滞后）⇒ **告警不停线**；
-    - `checked_not_flipped`：参照已有、我们没重跑对照 ⇒ **停线**（我们的锅）；
-    - `raw_stale` / `no_raw_data`：喂料本身断了 ⇒ **停线**。
-    停线动作由调用方（引擎/看门狗）执行；本函数只给可审计结论。
+    T41 起改成**逐日台账**：采集窗口里的每一个交易日都必须落到下面四类之一，
+    否则就是"没人对它负责"——旧实现只看 `MAX(timestamp) WHERE checked=1` 距今
+    几个交易日，中段一批从未验料的行既不动最新日期也不动最后 checked 日期，
+    于是 `data raw-coverage --gate` 会对着 190/590 行单源数据报 `violations=[]`
+    （report-t39 §6-B 的盲区，实证）。
+
+    四态（停不停线分开，"验料源自己滞后"不许永远停我们的线）：
+    - `verified`                  该行 `checked=1`；
+    - `today_pending`             就是今天那一根 ⇒ §5.5 明文允许，**不停线**；
+    - `waiting_reference`         母库还没出到该日（晚于母库最新日）⇒ 告警不停线；
+    - `no_reference_available`    母库出了更晚的日子却没有这一天（停牌/母库自身缺口）
+      ⇒ 告警，但**显式可见**，不再是静默的 `checked=0`；
+    - `unflipped`                 参照已有而我们没重跑对照 ⇒ **停线**（我们的锅）。
+    另有 `raw_stale` / `no_raw_data`（喂料本身断了）与
+    `reference_source_unavailable`（参照源整条没回来 + 窗口内有未验行）⇒ 停线。
+
+    `ref_days`（`{sym: {有 close_raw 的日期}}`）缺省时逐日存在性未知，未验料的行
+    进 `audit_incomplete` 并**告警**——宁可显式说"这一轮审计不完整"，
+    也不靠猜把母库的滞后算成我们的失败，反过来也不给静默放行。
     """
     today_d = _as_date(today or date.today())
     ref_asof = ref_asof or {}
+    ref_days = ref_days or {}
+    if since is None:
+        since = fetch_window(days if days else 30, today_d)[0]
+    since_d = _as_date(since)
     out = {}
     for sym in symbols:
+        sym = str(sym).strip().zfill(6)
         last_bar = db.raw_latest(sym)
         last_ck = db.raw_latest_checked(sym)
         if not last_bar:
             out[sym] = {"flip_ok": False, "stop": True, "reason": "no_raw_data",
-                        "bar_last": None, "checked_last": None, "checked_lag": None}
+                        "bar_last": None, "checked_last": None, "checked_lag": None,
+                        "daily": None}
             continue
         fresh = raw_freshness(db, [sym], today=today_d, max_lag=max_lag)[sym]
         ck_lag = None
@@ -208,22 +280,109 @@ def raw_flip_watch(db, symbols, today: Optional[date] = None,
         bar_last = fresh.get("last")
         ref_day = str(ref_asof.get(sym) or "")[:10]
         waiting = bool(ref_day) and bool(bar_last) and bar_last > ref_day
+
+        # ---- 逐日台账 ----
+        flags = db.raw_date_flags(sym, since=since_d.isoformat(),
+                                  until=today_d.isoformat())
+        have = ref_days.get(sym)
+        daily = {"audited": len(flags), "verified": 0, "today_pending": [],
+                 "waiting_reference": [], "no_reference_available": [],
+                 "unflipped": [], "audit_incomplete": []}
+        for ds, ck in sorted(flags.items()):
+            if ck:
+                daily["verified"] += 1
+                continue
+            if ds == today_d.isoformat():
+                daily["today_pending"].append(ds)        # §5.5：当日允许未翻转
+            elif have is not None and ds in have:
+                daily["unflipped"].append(ds)            # 参照明明有 ⇒ 我们的锅
+            elif ref_day and ds > ref_day:
+                daily["waiting_reference"].append(ds)    # 母库还没出到该日
+            elif have is None:
+                # 参照存在性未知（母库没回料 / 调用方没给 ref_days）：
+                # 既不能算我们没跑（可能是母库自己的缺口），也不能静默放行
+                daily["audit_incomplete"].append(ds)
+            else:
+                daily["no_reference_available"].append(ds)
+        daily["audited"] = len(flags)
+        daily["unflipped_days"] = len(daily["unflipped"])
+        daily["waiting_days"] = len(daily["waiting_reference"])
+        daily["no_reference_days"] = len(daily["no_reference_available"])
+        daily["incomplete_days"] = len(daily["audit_incomplete"])
+        daily["today_pending_days"] = len(daily["today_pending"])
+
         if fresh.get("stale"):
             reason, stop = "raw_stale", True
+        elif daily["unflipped"]:
+            reason, stop = "checked_not_flipped", True      # 逐日台账：参照已有却没重跑
         elif waiting and (ck_lag is None or ck_lag > max_lag):
-            reason, stop = "waiting_reference", False        # 等母库，不是我们的锅
+            reason, stop = "waiting_reference", False       # 等母库，不是我们的锅
+        elif not ref_day and daily["verified"] == 0 and daily["audited"] > 0:
+            # 参照一条都没回来且窗口里**没有任何一行被验过**（母库不可达 / 单源模式）
+            # ⇒ 停线，原因归"参照源不可用"而不是"我们没跑"：钱类数据宁可停也不单源裸奔。
+            # 窗口里验到过行（verified>0）而最后 checked 落后的，仍是我们的锅
+            # （走下面的 ck_lag 规则）——T34 已验收的语义只加严不放松。
+            reason, stop = "reference_source_unavailable", True
         elif ck_lag is None or ck_lag > max_lag:
-            reason, stop = "checked_not_flipped", True       # 参照已有却没重跑
+            reason, stop = "checked_not_flipped", True      # 老规矩一并留着（只加严不放松）
+        elif daily["audit_incomplete"]:
+            reason, stop = "audit_incomplete", False
+        elif daily["waiting_reference"]:
+            reason, stop = "waiting_reference", False
+        elif daily["no_reference_available"]:
+            reason, stop = "no_reference_available", False
         else:
             reason, stop = None, False
         out[sym] = {"flip_ok": not stop, "stop": stop, "reason": reason,
                     "bar_last": bar_last, "checked_last": str(last_ck)[:10] if last_ck else None,
-                    "checked_lag": ck_lag, "ref_asof": ref_day or None}
+                    "checked_lag": ck_lag, "ref_asof": ref_day or None,
+                    "ref_days_known": have is not None, "daily": daily}
+
+    def _sum(key: str) -> int:
+        return sum((v["daily"] or {}).get(key, 0) for v in out.values())
+
+    warn_syms = sorted(s for s, v in out.items()
+                       if v["reason"] in ("waiting_reference", "no_reference_available",
+                                          "audit_incomplete")
+                       or (v["daily"] or {}).get("waiting_days")
+                       or (v["daily"] or {}).get("no_reference_days")
+                       or (v["daily"] or {}).get("incomplete_days"))
     return {"today": today_d.isoformat(), "max_lag_trading_days": max_lag,
             "symbols": len(out),
             "violations": sorted(s for s, v in out.items() if v["stop"]),
-            "warnings": sorted(s for s, v in out.items() if v["reason"] == "waiting_reference"),
-            "stop_line": any(v["stop"] for v in out.values()), "per_symbol": out}
+            "warnings": warn_syms,
+            "stop_line": any(v["stop"] for v in out.values()), "per_symbol": out,
+            "audit_since": since_d.isoformat(),
+            "audited_days": _sum("audited"), "verified_days": _sum("verified"),
+            "unflipped_days": _sum("unflipped_days"),
+            "waiting_days": _sum("waiting_days"),
+            "no_reference_days": _sum("no_reference_days"),
+            "incomplete_days": _sum("incomplete_days"),
+            "audit_complete": all((v["daily"] or {}).get("incomplete_days", 0) == 0
+                                  for v in out.values() if v["daily"] is not None)}
+
+
+def flip_watch_with_mother(db, symbols, today=None, days: int = 30,
+                          max_lag: int = MAX_LAG_TRADING_DAYS) -> dict:
+    """读母库后跑逐日闸（CLI `raw-coverage --gate` 与 `sync_raw` 共用同一口径）。
+
+    参照窗口 = 采集窗口（`fetch_window`），单位不一致那个坑就是从这里根除的。
+    """
+    today_d = _as_date(today or date.today())
+    start, _end = fetch_window(days, today_d)
+    refs: dict = {}
+    try:
+        from paper_trading.integration import mother as _m
+
+        refs = {str(s).strip().zfill(6): _m.raw_close_map([s], since=start.isoformat())
+                for s in symbols}
+    except Exception as exc:              # noqa: BLE001 - 母库不可用时显式标不完整
+        logger.warning("raw 逐日闸读母库失败（%s）→ 本轮审计标记为不完整", exc)
+        refs = {}
+    return raw_flip_watch(db, symbols, today=today_d, max_lag=max_lag,
+                          ref_asof={s: (max(v) if v else "") for s, v in refs.items()},
+                          ref_days=_ref_date_set(refs) if refs else None,
+                          since=start, days=days)
 
 
 def sync_raw(db, symbols, *, days: int = 30,
@@ -232,19 +391,27 @@ def sync_raw(db, symbols, *, days: int = 30,
              today: Optional[date] = None, now: Optional[datetime] = None,
              intraday: Optional[dict] = None,
              quotes: Optional[dict] = None) -> dict:
-    """批量同步。`fetch`/`reference`/`intraday`/`quotes` 可注入（测试零网络）。"""
+    """批量同步。`fetch`/`reference`/`intraday`/`quotes` 可注入（测试零网络）。
+
+    三个窗口**必须同源**（T41 裁决 1）：采集、母库参照、逐日审计都从
+    `fetch_window(days, today)` 取同一个 `start`，不再各算各的单位。
+    `reference=NO_REFERENCE` 表示显式单源（`--no-mother-ref`），此时**不回退读母库**。
+    """
+    today_d = _as_date(today or date.today())
+    start, _end = fetch_window(days, today_d)
     if fetch is None:
         from paper_trading.data.akshare_fetcher import AkshareFetcher
 
         def fetch(sym, d):
-            start = (date.today() - timedelta(days=int(d) * 2 + 10)).strftime("%Y%m%d")
-            return AkshareFetcher.fetch_daily_raw(sym, start_date=start)
+            return AkshareFetcher.fetch_daily_raw(sym, start_date=start.strftime("%Y%m%d"))
     symbols = [str(s).strip().zfill(6) for s in (symbols or [])]
+    single_source = reference is NO_REFERENCE
     refs: dict = {}
     if reference is None:
         try:
             from paper_trading.integration import mother as _m
-            refs = {c: _m.raw_close_map([c], days=days).get(c, {}) for c in symbols}
+            refs = {c: _m.raw_close_map([c], days=days, since=start.isoformat()).get(c, {})
+                    for c in symbols}
         except Exception as exc:              # noqa: BLE001 - 母库不可用则全部走单源
             logger.warning("母库 raw 参照不可用（%s），本轮单源写入 checked=0", exc)
             refs = {c: {} for c in symbols}
@@ -252,7 +419,7 @@ def sync_raw(db, symbols, *, days: int = 30,
         refs = reference(symbols, days) or {}
 
     intraday_map: dict = {}
-    day = (today or date.today()).isoformat()
+    day = today_d.isoformat()
     enforce = session_closed(now or datetime.now())
     if enforce:
         intraday_map = (intraday if intraday is not None
@@ -277,9 +444,14 @@ def sync_raw(db, symbols, *, days: int = 30,
         results.append(sync_symbol(sym, bars, verdict, db))
     written = sum(r["written"] for r in results)
     ref_asof = {s: (max(v) if v else "") for s, v in (refs or {}).items()}
-    flip = raw_flip_watch(db, symbols, today=today or date.today(), ref_asof=ref_asof)
+    flip = raw_flip_watch(db, symbols, today=today_d, ref_asof=ref_asof,
+                          ref_days=None if single_source else _ref_date_set(refs),
+                          since=start, days=days)
     return {"today": day, "requested": len(symbols),
             "written": written, "results": results,
+            "ref_window": {"start": start.isoformat(), "end": _end.isoformat(),
+                           "single_source": bool(single_source),
+                           "symbols_with_ref": sum(1 for v in refs.values() if v)},
             "intraday_enforced": enforce,
             "intraday_missing": sum(r.get("no_intraday") or 0 for r in results),
             "intraday_checked": sum(r.get("intraday_checked") or 0 for r in results),

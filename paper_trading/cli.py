@@ -1995,10 +1995,11 @@ def main() -> None:
                 from paper_trading.data import raw_feed
 
                 syms, note, _, _ = _resolve_syms(bridge, args)
-                ref = None
-                if not getattr(args, "no_mother_ref", False):
-                    def ref(s, d):
-                        return _m.raw_close_map(s, days=d)
+                # T41 裁决 3：`--no-mother-ref` 必须**真的**不读母库。
+                # 旧写法在这里留 `ref=None`，而 `sync_raw` 见 None 会自己回退去读母库
+                # ⇒ 旗子形同虚设（实测带旗仍有 400 行 checked=1，report-t39 §6-B 附）。
+                # 默认路径也不再在这里自建参照：窗口对齐由 sync_raw 一处负责，两处口径不会分家。
+                ref = raw_feed.reference_for(bool(getattr(args, "no_mother_ref", False)))
                 res = raw_feed.sync_raw(bridge.data_db, syms, days=args.days,
                                         reference=ref,
                                         intraday={} if getattr(args, "no_intraday",
@@ -2023,19 +2024,25 @@ def main() -> None:
                 syms, note, _, _ = _resolve_syms(bridge, args)
                 flags = {s: bridge.data_db.raw_row_flags(s) for s in syms}
                 fresh = raw_feed.raw_freshness(bridge.data_db, syms)
-                # G-T13-1 增补（§5.5 裁决 2-B）：当日可 checked=0，但 T+1 必须翻转
-                try:
-                    ref_asof = _m.raw_close_asof(syms)
-                except Exception:               # noqa: BLE001 - 母库不可用则按无参照判
-                    ref_asof = {}
-                flip = raw_feed.raw_flip_watch(bridge.data_db, syms, ref_asof=ref_asof)
+                # G-T13-1 增补（§5.5 裁决 2-B + T41 裁决 2）：**逐日**台账，
+                # 采集窗口内每一天要么 checked、要么带显式原因；参照窗口与采集窗口同源
+                flip = raw_feed.flip_watch_with_mother(bridge.data_db, syms,
+                                                       days=args.days)
                 bad = sorted(set(
                     [s for s in syms
                      if fresh[s].get("stale") or flags[s]["non_positive"]
                      or flags[s]["ohlc_inconsistent"]] + flip["violations"]))
                 out = {"symbols": syms, "pool_source": note, "flags": flags,
                        "freshness": fresh, "flip_watch": flip, "violations": bad,
-                       "waiting_reference": flip.get("warnings", [])}
+                       "waiting_reference": flip.get("warnings", []),
+                       "audit": {"since": flip.get("audit_since"),
+                                 "audited_days": flip.get("audited_days"),
+                                 "verified_days": flip.get("verified_days"),
+                                 "unflipped_days": flip.get("unflipped_days"),
+                                 "waiting_days": flip.get("waiting_days"),
+                                 "no_reference_days": flip.get("no_reference_days"),
+                                 "incomplete_days": flip.get("incomplete_days"),
+                                 "complete": flip.get("audit_complete")}}
                 emit(out)
                 if getattr(args, "gate", False) and bad:
                     sys.exit(1)
