@@ -535,9 +535,18 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   （`(symbol, ts, period)`）+ 现网 2,304 行迁移（先备份）+ upsert/分道/清理
   全链回归 + 覆盖风险测试（1 分钟与 5 分钟同刻并存互不覆盖）；
   产出 `report-t35.md`（§5.5 裁决 6）
-- [ ] **T36（Qoder，P1·缺陷修复）walk_forward oracle/picked**：`optimize.py:251-252`
-  oracle 与 picked 同一行、picked 全文未使用 ⇒ 样本外检验失真（违背纪律 7）；
-  fix + 回归（oracle 必须独立于 picked 污染）+ 产出 `report-t36.md`
+- [x] **T36（Qoder，P1·缺陷修复）walk_forward oracle/picked**（`worker/t36`，**待 review**）
+  - 修法：重排**之前**按样本内顺序取 `in_best=oos_rows[0]`、`oracle=max(oos_rows, key=oos)`；
+    新增 `in_best_oos_excess_pct/_symbol/_params`、`oracle_oos_params`、
+    **`overfit_gap_pct = oracle − in_best`**；死变量 `picked` 删除；
+    旧键（`sample_in_best_excess/oracle_oos_excess/…`）**全留**保证面板不破；面板加一行
+    "样本内第 1 名到样本外还剩 X%／事后最优 Y%／过拟合差距 Z%"（差距>0 标红）
+  - 6 条回归 + **变异验证**：把代码临时改回旧形状 ⇒ 3 条必红；换回修复 ⇒ 6 passed
+  - ⚠️ 一个我踩到并写进注释的要点：**不能用 `max(rows, key=in_excess)` 找"样本内第 1 名"**
+    ——同分候选会挑到不同行（实测两组 `in_excess=-27.85` 并列）；权威定义是
+    `in_sample_top[0]`，测试据此反查
+  - 全套 **403 passed, 4 skipped**（基线 397+1，零回归）；产出 `report-t36.md`
+  - 顺带记两条 P2（未动）：同分候选排序不保证可复现；样本外只检验 top-K 的取舍未量化
 - [ ] **T37（Qoder，P1·部署）lock 文件 + rqalpha 二进制 spike**：
   ① NEC `pip freeze` → `requirements.lock.txt`（注明生成机/日期）；
   ② /tmp 只读 spike：NEC fresh venv 装 rqalpha 6.4.2（h5py/jsonpickle/tables
