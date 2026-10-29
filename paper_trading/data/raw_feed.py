@@ -370,18 +370,26 @@ def flip_watch_with_mother(db, symbols, today=None, days: int = 30,
     """
     today_d = _as_date(today or date.today())
     start, _end = fetch_window(days, today_d)
+    syms = [str(s).strip().zfill(6) for s in (symbols or [])]
     refs: dict = {}
+    mother_ok = True
     try:
         from paper_trading.integration import mother as _m
 
-        refs = {str(s).strip().zfill(6): _m.raw_close_map([s], since=start.isoformat())
-                for s in symbols}
+        raw = _m.raw_close_map(syms, since=start.isoformat()) or {}
+        # 注意形状：raw_close_map 返回 {code: {date: row}}，这里要的是**内层** {date: row}。
+        # 早先写成 `refs[s] = raw_close_map([s], ...)`（整包外层），于是
+        # `max(v)` 取到的是标的代码而不是日期、`ds in have` 永远为假——
+        # 真机实测把 7 只母库滞后的标的误判成 `checked_not_flipped` 停线（T41 修）。
+        refs = {s: (raw.get(s) or {}) for s in syms}
     except Exception as exc:              # noqa: BLE001 - 母库不可用时显式标不完整
         logger.warning("raw 逐日闸读母库失败（%s）→ 本轮审计标记为不完整", exc)
-        refs = {}
-    return raw_flip_watch(db, symbols, today=today_d, max_lag=max_lag,
+        mother_ok = False
+    return raw_flip_watch(db, syms, today=today_d, max_lag=max_lag,
                           ref_asof={s: (max(v) if v else "") for s, v in refs.items()},
-                          ref_days=_ref_date_set(refs) if refs else None,
+                          # 母库读失败 ⇒ 参照存在性"未知"（ref_days=None）而不是"没有"，
+                          # 未验料的行才会被记成 audit_incomplete 而不是假装审计完整
+                          ref_days=_ref_date_set(refs) if mother_ok else None,
                           since=start, days=days)
 
 

@@ -265,6 +265,58 @@ def test_flip_watch_with_mother_uses_aligned_window_and_survives_mother_loss(mon
     assert w["per_symbol"]["000792"]["reason"] == "reference_source_unavailable"
 
 
+def test_flip_watch_with_mother_reads_the_inner_reference_dict(monkeypatch, db):
+    """形状回归：`raw_close_map` 返回 `{code: {date: row}}`，闸要用**内层**。
+
+    写成外层时（真机实测发生过）`max(v)` 拿到的是标的代码而不是日期，
+    `ds in have` 永远为假 ⇒ 两个方向的错同时发生：
+    母库明明有的未验日不再算 unflipped（漏报），
+    母库单纯滞后的标的却被 `ck_lag` 规则误判停线（误报）。
+    """
+    ds = [date(2026, 10, 26), date(2026, 10, 27), date(2026, 10, 28)]
+    _seed(db, "000792", ds, {"2026-10-28"})               # 10-26/27 母库有却未验
+    _seed(db, "600036", ds, {"2026-10-26", "2026-10-28"})  # 10-27 母库还没出 ⇒ 等它
+
+    def fake_map(codes, days=30, mother=None, ttl=0.0, since=None):
+        out = {}
+        for c in codes:
+            c = str(c)
+            if c == "000792":
+                out[c] = {d.isoformat(): {"close_raw": 22.0} for d in ds}
+            else:
+                out[c] = {"2026-10-26": {"close_raw": 41.0}}
+        return out
+
+    monkeypatch.setattr(mother_mod, "raw_close_map", fake_map)
+    w = raw_feed.flip_watch_with_mother(db, ["000792", "600036"],
+                                        today=date(2026, 10, 28), days=30)
+    a = w["per_symbol"]["000792"]
+    assert a["ref_asof"] == "2026-10-28", "ref_asof 必须是日期，不是标的代码"
+    assert a["daily"]["unflipped"] == ["2026-10-26", "2026-10-27"]
+    assert a["stop"] is True
+    b = w["per_symbol"]["600036"]
+    assert b["ref_asof"] == "2026-10-26"
+    assert b["daily"]["waiting_reference"] == ["2026-10-27"] and b["daily"]["unflipped"] == []
+    assert b["stop"] is False
+    assert w["violations"] == ["000792"]
+
+
+def test_flip_watch_with_mother_asks_reference_for_the_whole_window(monkeypatch, db):
+    seen = {}
+
+    def fake_map(codes, days=30, mother=None, ttl=0.0, since=None):
+        seen["since"] = since
+        seen["codes"] = list(codes)
+        return {str(c): {} for c in codes}
+
+    monkeypatch.setattr(mother_mod, "raw_close_map", fake_map)
+    _seed(db, "000792", [date(2026, 10, 27)], {"2026-10-27"})
+    w = raw_feed.flip_watch_with_mother(db, ["000792"], today=date(2026, 10, 28), days=30)
+    assert seen["since"] == raw_feed.fetch_window(30, date(2026, 10, 28))[0].isoformat()
+    assert seen["codes"] == ["000792"]
+    assert w["audit_complete"] is True                    # 母库回空 dict ≠ 读失败
+
+
 # ---------- ③ 单源语义 ----------
 def test_reference_for_maps_the_flag_to_a_real_no_read():
     assert raw_feed.reference_for(True) is raw_feed.NO_REFERENCE
