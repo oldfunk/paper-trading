@@ -606,11 +606,34 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     T29/T32 没暴露是因为单子太小、两侧都撞 5 元最低佣金把差额盖住了
     （22 万元单差 121 元）。费率对齐留在 spikes 里没搬进产品件 = 我的疏漏，
     现按"费率进会话指纹"修复；副作用见 report-t38 §5.5（指纹变了，旧 state_dir 会判漂移）
-- [ ] **T39（Qoder，P0·M2 影子期启动）NEC 引擎环境落位**：
-  - [ ] NEC 建**独立引擎 venv**（按 `requirements-rqalpha.lock.txt`，先装
-    `numpy<2.4` 再装 rqalpha——T37 实测姿势；不与交易/面板 venv 混装）
-  - [ ] bundle 3.3GB 下载落位（NEC 磁盘 370G 无压力）+ sha 记录
-  - [ ] `rq shadow-day` 在 NEC 生产环境首跑（生产 daily_bars_raw 真数据；
-    只读影子、写 parity:diff 留痕）→ 输出与开发机同场景对齐
-  - [ ] `report-t39.md`：耗时/磁占用/首跑对账结果；此后影子期每日跑可挂 cron
-    （时刻 15:35 后，与采集规矩一致——cron 具体行等影子期跑顺再提请）
+- [x] **T39（Qoder，P0·M2 影子期启动）NEC 引擎环境落位**（`worker/t39`，**待 review**）
+  - [x] NEC 独立引擎 venv `/home/nec/venvs/rq-engine`：按 lock **先 `numpy<2.4`（20s）
+    再 rqalpha==6.4.2（182s）**，lock 收敛 2s ⇒ 41 包 / 700 MB / `pip check` 干净 /
+    numpy 2.3.5 + pandas 3.1.0，x86-64-v1 上 h5py·scipy·matplotlib(Agg)·statsmodels·
+    jsonpickle·logbook 全链 import 通过；现网交易 venv 仍无 rqalpha（未混装，实测 import 报
+    ModuleNotFoundError）
+  - [x] bundle 落位 `/home/nec/.rqalpha/bundle`：`rqalpha download-bundle`（202610 快照，
+    16:59→17:02 约 3 min，3,537,975,667 B / 14 文件），**sha256 全表已记**
+    （report-t39 §3，NEC 另存 `t39_bundle_sha256.txt`）；开发机 bundle 是同一份快照
+    ⇒ 跨机对照无"两份数据不同"混淆因子。`check-bundle` 会提示"日线不完整"= 月度快照
+    月中必然落后，行情由我们 `daily_bars_raw` 供，但 `ex_cum_factor` 同源 ⇒ 复权因子
+    新鲜度仍是真约束（§4）
+  - [x] `rq shadow-day` NEC 首跑（真实 2026-10-29 收盘原始价，5 s）：两侧现金
+    **827,339.1198 == 827,339.1198**、费用 **44.8802 == 44.8802**、
+    `cash_delta/fee_delta/fill_delta = 0`、`violations=[]`、2 成交 + 1 拒单（中文原因可读）、
+    `evidence.cost.wrapped=["CS"] applied=8 added_total=6.90464`、gates ok；
+    手算复核费用构成一致（佣金 21.47+21.68、过户费 0.8588+0.8674）。
+    开发机同数据同场景复跑**逐字段相同**；`--no-op-log` 在 NEC 生效（op_log 0 行）
+  - [x] `report-t39.md`（耗时/磁盘/首跑对账 + 逐条核销清单）；cron 只给草稿（§7），
+    按派发"跑顺再提请"
+  - ⚠️ **留痕没写现网账本**：`--account-db` 指到 scratch 库。理由是 `worker/t38` 未 review
+    ＋红线不写账本，现网 `op_log` 至今 0 条 `parity:diff`；切换时机请拍板（§6-C）
+  - 🔴 **两件阻塞影子期的发现（只报告不自修）**：
+    ① 生产 `data.db.daily_bars_raw` = **0 行** ⇒ 派发说的"生产真数据"现在不成立，
+    需另派"现网 raw 回填 + 每日采集"；
+    ② raw 管道**参照窗口比采集窗口短**（采集 `days*2+10` 自然日 vs 母库 `LIMIT days` 交易日，
+    `raw_feed.py:239-241` vs `mother.py:533-540`）⇒ scratch 实测 590 行只有 400 行验了料，
+    其中 17 个未验料日是**母库明明有数据**的 8 月；而 `raw_flip_watch` 只看最后一次
+    checked 距今几个交易日（`raw_feed.py:192-218`），`data raw-coverage --gate` 对此
+    报 `violations=[]`（盲区）。细节与修法见 report-t39 §6-B
+  - 另：现网母库其实可达（`/home/nec/stock-dashboard/data/db/stock_dashboard.db`），

@@ -254,3 +254,46 @@ akshare `adjust=""` 供、母库降级验料源；母方补三列记可选优化
 
 **④ T37 遗留（bundle 3.3GB 放置）→ NEC 专用引擎 venv + bundle 全放 NEC**
 （370G 空闲无压力；开发机 spike venv 保留）；批准 T39 在影子期启动前落位。
+
+---
+
+## 2026-10-29 · Qoder（T39 落位后）：影子期开工前的三个决定点
+
+环境已经落位（引擎 venv + bundle + NEC 首跑 fee_delta=0，全文 `report-t39.md`），
+但**影子期真开工**还差你定三件事。都只报告、没自修。
+
+**Q1 [P1] 现网 `daily_bars_raw` 是空的，谁来回填？**
+NEC 只读体检：`data.db` 里 `daily_bars_raw rows=0 latest=None`。派发文本说
+"生产 daily_bars_raw 真数据"——现在没有。我在 scratch 库里用真采集跑了 590 行
+（3 分钟那一跑）证明**管道**没问题，但那不是现网料。
+要影子期每天读到东西，得有人对现网 `data.db` 跑 `data fetch-raw`（40 天回填 +
+每日 15:35 增量）。请你派任务并写明：回填由我跑还是由你/运维跑（我跑的话是
+**写现网行情库**，按红线我需要明确授权），以及首日跑之前要不要先核一遍新鲜度闸。
+
+**Q2 [P1] 参照窗口比采集窗口短 ⇒ 每批约 1/3 的行永远验不了料，且门禁看不见**
+`raw_feed.py:239-241` 的采集起点是 `today - (days*2+10)` **自然日**（`--days 40` →
+2026-07-31 起、59 个交易日），而 `mother.raw_close_map(days=days)` 是
+`ORDER BY trade_date DESC LIMIT days` 的 **40 个交易日**（`mother.py:533-540`）。
+scratch 实测：590 行里 `checked=1` 只有 400 行，未验料的 21 个日期里 **17 个是 8 月**，
+而母库对 000858 明明覆盖 2026-06-08…2026-10-27 —— **是窗口没对齐，不是母库缺**。
+叠加第二个问题：`raw_flip_watch` 只看"最后一次 checked 距今几个交易日"
+（`raw_feed.py:192-218`），所以 `data raw-coverage --gate` 对此报 `violations=[]`。
+我倾向的两个修法（都要配测试，你选）：
+- (a) 参照窗口按采集窗口取齐：`sync_raw` 里用**同一批 bar 的日期范围**去要参照
+  （而不是各算各的 `days`）；
+- (b) 再加一条闸：`raw-coverage` 统计 `unchecked_before=<today-N>` 的行数，
+  超阈值就停线/告警——堵住"中段没翻转"的盲区（(a) 治不到母库真缺的日子，
+  那些行会永久 checked=0，得让它显式可见而不是静默）。
+我认为 (a)+(b) 都要：(a) 是我们的锅，(b) 是把不可验证的部分显式标出来。
+
+顺带一条小的（同一族）：`data fetch-raw --no-mother-ref` 名不副实——CLI 传的是
+`reference=None`（`cli.py:1969-1971`），而 `sync_raw` 在 `reference is None` 时
+**自己回退去读母库**（`raw_feed.py:244-250`）。我这次带着 `--no-mother-ref` 跑，
+结果照样 400 行 checked=1。想真单源得传 `reference=lambda syms, d: {}`。
+"排障用单源"这条路现在是假的，标签可信度问题（纪律 4），要不要一起修？
+
+**Q3 留痕写现网账户库的时机**（裁决 4 你已拍板"默认写"，我只问执行时机）
+T38 已把 `rq shadow-day` 改成默认写 `op_log[parity:diff]`。我这次首跑**故意把
+`--account-db` 指到 scratch 库**：`worker/t38` 还没过 review，且红线不写账本。
+现网 `paper_account.db` 至今 0 条 `parity:diff`。影子期正式开始时，cron 是直接指
+现网账户库（裁决 4 原意），还是先观察一周 scratch 留痕？回一句我就照办。
