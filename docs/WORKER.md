@@ -660,12 +660,35 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   - [ ] `data raw-coverage --gate` 全绿 + `raw_flip_watch` 三态核对
   - [ ] 回填后**重跑 `rq shadow-day`**（现网真数据影子对账）并贴对账结果
   - [ ] `report-t40.md`
-- [ ] **T42（Qoder，P0·依赖 T40）影子期启动**：
+- [ ] **T42（Qoder，P0·依赖 T40）~~影子期一周~~ → 切换前对账验证**（§5.6 节奏
+  变更：用户拍板直取 M3）：
   - [ ] `rq shadow-day` 默认账本指生产 `paper_account.db`（scratch 用
     `--account-db` 覆盖）；首个**现网 `op_log[parity:diff]`** 落库贴证据
-  - [ ] 影子 cron 草稿提请：采集（≥15:35）→ `rq shadow-day` → `raw-coverage
-    --gate` 全链；**cron 行写进 report 由我装**（NEC crontab 我改）
-  - [ ] `report-t42.md`：首日全链耗时 + 留痕样本 + cron 建议行
+  - [ ] **切换前对账验证日**：回填后连续 1-2 个交易日跑全链（采集 ≥15:35 →
+    shadow-day → raw-coverage --gate），`cash/fee/fill_delta` 全零即出
+    **"切换就绪"结论**（T39 首跑已全零差，这是积累留痕天数）
+  - [ ] cron 行草稿提请（切换后转正用，由我装）
+  - [ ] `report-t42.md`：验证日对账汇总 + 切换就绪结论
+- [ ] **T45（Qoder，P0·M3 切换方案）切换 runbook**（参照 `migration-nec.md`
+  的经验与 checklist 传统，产出于 `docs/migration-m3.md`）：
+  - [ ] 切换日流程：账本归档（`paper_account.db` 冷备+只读保留）→ **切换日
+    新开账**（新引擎账本起点=切换日 NAV 对齐，历史只读可查）→ cron 换线
+    （旧引擎 5 条停、新引擎线启用，**顺序铁律同 Pi→NEC：先停旧再启新**）→
+    验证步（首单/费用/T+1/NAV/面板/留痕）
+  - [ ] **回退方案**：config 开关一键切回旧线的精确步骤 + 回退后账本衔接
+    说明（新开账 vs 归档账的边界）
+  - [ ] 逐条 cron/服务/路径清单对照（漏一条=漏一个功能——T21 教训）
+  - [ ] `report-t45.md`；**切换操作本身由主 AI 亲执行**
+- [ ] **T46（Qoder，P0·切换后检查体系）检查清单 + 验证工具**：
+  - [ ] `docs/m3-checklist.md`：第一小时 / 第一天 / 第一周三段逐项——
+    T+1 冻结正确、费用三件套扣对（佣金地板/印花税单边/过户费）、NAV 收盘
+    记录、条件单触发链、AI 计划执行链、审计留痕完整、面板数据一致、
+    影子对账记录连续
+  - [ ] 可自动化项做成命令（如 `python -m paper_trading.cli m3 verify`：
+    逐项检查出绿勾/红叉），人工项写清判定方法
+  - [ ] 每一项标注"红了怎么办"（回退 or 归因 or 容忍）——**任何钱类项红
+    ⇒ 立即回退**（§5.6 底线）
+  - [ ] `report-t46.md`；工具给 Hermes 审一遍再交付
 - [ ] **T43（Qoder，P1·独立穿插）T28 架构地图催办**：`docs/architecture-map.md`
   （Batch 5 派发未交：模块清单工具统计、import 实测依赖图、L1/L2 现状 vs 目标、
   重复/死代码/测试盲区）——与 T40-42 无依赖，随时做
