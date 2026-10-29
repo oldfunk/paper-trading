@@ -380,15 +380,25 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   3 P0/5 P1 清单、断点续跑方案、9 条门禁建议——**M2 拍板全部采纳**
   （§5.4：close_raw 供给 / provider 钱类件 / 双保险新鲜度 / vwap→只用 current_bar /
   band 供给责任=我方）
-- [ ] **T31（Qoder，P0·M2 数据侧）close_raw 供给管道**：
-  - [ ] 读取链：母库 `close_raw` 优先（`mother.py:406-441` 口径）+ akshare
-    `adjust=""` 兜底 + 本地落库（`daily_bars` 加 `close_raw` 列或独立表——
-    **不许原地改写既有 qfq 列**，AI 展示层还靠它）
-  - [ ] **口径标签机制**：数据写入带 `adjust` 标签；`source.py`/适配层入口
-    校验 `adjust != "raw"` → **拒绝供数给引擎**（fail-closed，G-T13-1）
-  - [ ] G-T13-2 因子新鲜度门禁（回测线：因子末日 < 今日 ⇒ 拒跑）
-  - [ ] T26 同步：五分线积累按 raw 口径落（或双列）
-  - [ ] 测试 + `report-t31.md`
+- [x] **T31（Qoder，P0·M2 数据侧）close_raw 供给管道**（`worker/t31` 分支，**待 review**）：
+  - [x] 读取链：~~母库 `close_raw` 优先~~ → **实测修正**：母库只有
+    `close_raw/volume/amount` 是不复权，`open/high/low/close` 四列本身就是**前复权**
+    （600519 2016-01-04：母库 close 166.544=close_qfq，close_raw 210.02=bundle 原始价）
+    ⇒ 改为 **akshare `adjust=""` 供 raw OHLC+成交额**，母库 `close_raw` 当**独立同日对照源**
+    （喂料≠验料）；落库走**独立表 `daily_bars_raw`**，既有 qfq 数值一字未动
+    （`daily_bars` 只加 `adjust='qfq'` 标签列，迁移用例断言过）
+  - [x] **口径标签机制**：`Bar.adjust`；`upsert_raw_bars` 收到非 raw 直接拒写；
+    `BarSource.engine_raw_bars()` = 引擎唯一取数口，口径不符/缺表/缺数/陈旧一律返回 `[]`
+    并把原因留在 `last_engine_reject`（G-T13-1 fail-closed）
+  - [x] G-T13-2 新鲜度：本地半边 `raw_freshness()`（按交易日历算滞后）+ 回测线决策函数
+    `factor_freshness_ok(today, factor_last)`（bundle 因子末日读取由 T32 适配器做，产品不引 h5py）
+  - [x] T26 同步：`minute_bars` 加 `adjust='raw'` 标签，实测印证最后一根 5m 收盘
+    = 当日 raw 日收（000792 22.10 / 600519 1330.75）
+  - [x] 测试 + `report-t31.md`：**新增 17 条**；全套 **357 passed, 1 skipped**
+    （基线 `e28def3` 同环境实测 340 passed ⇒ 零回归）；CLI `data fetch-raw` /
+    `data raw-coverage --gate`；拒收写 `op_log[data:raw_reject]`
+  - ⚠️ 顺带发现：`mother.py:406-429` 把 `close` 当"不复权"兜底列是**误判**（它等于 qfq）——
+    我没顺手改，已进 `questions.md`
 - [ ] **T32（Qoder，P0·M2 适配器产品化）T13 原型 → 产品件**：
   - [ ] 三件套评审进产品（建议 `paper_trading/integration/rqalpha/`）：
     DayBarStore（raw + prev_close + band 三字段必供）、DataSource

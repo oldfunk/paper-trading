@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -39,6 +40,8 @@ class BarSource:
         self.db = data_db
         self.source = (source or "auto").lower()
         self.mother = mother
+        #: 引擎取数被拒的原因（T31 fail-closed 的可审计出口）
+        self.last_engine_reject: Optional[str] = None
 
     def get_bars(self, symbol: str, limit: int = 30) -> list:
         """最近 limit 根日线（时间升序，与本地 get_bars 同序）。
@@ -69,6 +72,36 @@ class BarSource:
         if self.source == "mother":
             return []           # M-1：mother 模式缺母库 = 无数据，不回退
         return self.db.get_bars(symbol, limit=limit)
+
+    def engine_raw_bars(self, symbol: str, limit: int = 30,
+                        today=None, max_lag: int = 1) -> list:
+        """引擎唯一允许的取数口：**只有原始价，且必须新鲜**（T31 G-T13-1/2）。
+
+        任何不满足的情况返回 `[]`——按 AGENTS"缺数据不下单"处理，
+        绝不降级回 qfq 列（那正是 2026-10-27 尺度污染的路径）。
+        拒绝原因写在 `self.last_engine_reject`，由调用方入 op_log。
+        """
+        self.last_engine_reject = None
+        try:
+            bars = self.db.get_raw_bars(symbol, limit=limit)
+        except sqlite3.OperationalError as e:      # 表不存在=管道没建好
+            self.last_engine_reject = f"raw_table_missing: {e}"
+            return []
+        if not bars:
+            self.last_engine_reject = "no_raw_data"
+            return []
+        bad = [b for b in bars if (b.adjust or "raw") != "raw"]
+        if bad:
+            self.last_engine_reject = f"caliber_not_raw: {bad[0].adjust!r}"
+            return []
+        from paper_trading.data.raw_feed import raw_freshness
+
+        fresh = raw_freshness(self.db, [symbol], today=today, max_lag=max_lag).get(symbol, {})
+        if fresh.get("stale"):
+            self.last_engine_reject = (f"raw_stale: last={fresh.get('last')} "
+                                       f"lag={fresh.get('lag')}")
+            return []
+        return bars
 
     def source_of(self, symbol: str) -> str:
         """该标的当前实际用的来源（用于审计/日志）。"""
