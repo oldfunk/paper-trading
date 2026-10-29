@@ -1,3 +1,5 @@
+# 本文件是「允许区间」；精确复现现网环境请用 requirements.lock.txt（T37）。
+# 引擎（rqalpha）依赖另立 venv：见 requirements-rqalpha.lock.txt。
 # 上限是**部署安全线**，不是风格问题（依据 T20 实测 + T30 复测）：
 # NEC 生产机是 x86-64-v1 CPU（Core2 Duo T9900，/proc/cpuinfo 无 sse4_2/popcnt），
 # 而 numpy 自 2.4 起官方 wheel 基线抬到 x86-64-v2 ⇒ fresh install 只要解析到
