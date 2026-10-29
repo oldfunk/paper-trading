@@ -399,16 +399,34 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     `data raw-coverage --gate`；拒收写 `op_log[data:raw_reject]`
   - ⚠️ 顺带发现：`mother.py:406-429` 把 `close` 当"不复权"兜底列是**误判**（它等于 qfq）——
     我没顺手改，已进 `questions.md`
-- [ ] **T32（Qoder，P0·M2 适配器产品化）T13 原型 → 产品件**：
-  - [ ] 三件套评审进产品（建议 `paper_trading/integration/rqalpha/`）：
-    DayBarStore（raw + prev_close + band 三字段必供）、DataSource
-    （bundle 元数据 + available_data_range 覆盖）、**FilePersistProvider
-    按钱类件对待**（重启 cash/qty/closable/frozen 逐字段相等单测）
-  - [ ] G-T13-3/5/6/7/8/9：band 缺失拒跑、幂等会话闸（配置指纹 fail-closed）、
-    禁 sys_analyser、空转断言、ORDER_CREATION_REJECT 监听入 op_log、一天一进程
-  - [ ] **双轨影子 runner**：rqalpha 与 PaperBroker 同日并行跑（rqalpha 侧
-    只影子不实发）、每日对账（cash/qty/费用）差异入 `op_log[parity:diff]`
-  - [ ] 测试 + `report-t32.md`；spikes 原型保留为对照件
+- [x] **T32（Qoder，P0·M2 适配器产品化）T13 原型 → 产品件**（`worker/t32` 分支，**待 review**；
+  依赖同为未 review 的 `worker/t31`，两条一起看）：
+  - [x] 三件套进产品 —— 包名定为 **`paper_trading/integration/rq_engine/`**
+    （**不能叫 `rqalpha/`**：曾把该目录注入 `sys.path`，结果遮蔽真框架包，见 report-t32 §5-④）：
+    `RawDayBarStore`（raw + prev_close + band 三字段必供，缺带/OHLC 不自洽即
+    `BandMissingError` 拒供）、`PaperDataSource`（bundle 元数据 + 热替换 CS store +
+    `available_data_range` 覆盖 + `bundle_price_last/bundle_factor_last`）、
+    **`FilePersistProvider` 按钱类件对待**（原子换名 + **fsync** + sha256 sidecar，
+    校验和不符即拒绝恢复并把错误留在 provider——rqalpha 会吞这个异常）；
+    **重启 cash/qty/closable/frozen 逐字段相等已在真实数据上实测**（E2→E3：
+    昨日 100 股 `closable=0` → 今日 `closable=100`，现金 97,774.00 续上）
+  - [x] G-T13-3/5/6/7/8/9 全部落地并逐项实测：band 缺失拒跑（`store`）、
+    幂等会话闸 + 配置指纹 fail-closed（`provider.SessionGate`，E4 `rc=4`）、
+    禁 `sys_analyser`（`build_config` 写死 + SETTLEMENT 重放降级为警告，E3）、
+    空转断言（`check_session_gates`，就是它抓出 §5-①/④ 的真因）、
+    `ORDER_CREATION_REJECT` 原因采集（E2 中文文案进 `rejects`）、
+    一天一进程（`_SESSION_USED` 拒绝进程内重入）
+  - [x] **双轨影子 runner**：`shadow.shadow_day()` 同日跑 rqalpha + `PaperBroker`
+    （两侧**显式对齐** `initial_cash`/零滑点/同一 6 位代码键，否则比的是参数），
+    `parity_diff` 逐字段对账：**持仓/T+1 可卖/成交笔数完全一致，
+    `cash_delta=0.0222` = 过户费 0.001%×2221**（与 T29 同源）；
+    写 `op_log[parity:diff]` 需 `--allow-op-log` 显式开启（默认不写生产账本），
+    影子路径与生产 `paper_account.db` 同路径时直接 `RuntimeError`
+  - [x] 测试 + `report-t32.md`：新增 **33 条**（30 条不需要 rqalpha，NEC 也能跑）；
+    端到端 **16/16 PASS**（`spikes/e2e_t32.py`，生产真实原始价 + 母库验料，每项一个子进程）；
+    全套 **387 passed, 4 skipped**（基线 340+1 ⇒ 零回归）；T13 的 spikes 原型保留为对照件
+  - ⚠️ 顺带交付：CLI `rq day / rq shadow-day / rq state`；未装 rqalpha 时明确 exit 2 说明原因；
+    `describe_error()` 剥 rqalpha 的 `ExceptionGroup`（mod 装载失败原本只露 `KeyError('ptpaper')`）
 - [ ] **T33（Hermes，P0·M2 审查）拍板与原型双重审查**：
   - [ ] 审 §5.4 拍板：9 条 G-T13 门禁判据**是否可测**（每条给出测试方案草案
     或指出不可测）；close_raw 方案有无第三条 P0（如母库 close_raw 新鲜度/
