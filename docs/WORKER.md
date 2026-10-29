@@ -675,12 +675,31 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     对齐深度约需 `--days 550`；`--days` 参数含义含糊（自然日换算），要不要加 `--start/--end`
     请主 AI 定。跨仓事实：同一轮里母库深市到 10-27、沪市只到 10-23（影子期会持续
     `waiting_reference` 告警，不停线）——若判定为母库同步问题需转 stock-dashboard 那条对话
-- [ ] **T40（Qoder，P0·依赖 T41）生产 raw 回填**（已授权行情库）：
-  - [ ] `data fetch-raw` pool 38 只全量回填 `daily_bars_raw`（账本红线不变）；
-    历史深度与 daily_bars 对齐，缺口如实报告
-  - [ ] `data raw-coverage --gate` 全绿 + `raw_flip_watch` 三态核对
-  - [ ] 回填后**重跑 `rq shadow-day`**（现网真数据影子对账）并贴对账结果
-  - [ ] `report-t40.md`
+- [x] **T40（Qoder，P0·依赖 T41）生产 raw 回填**（`worker/t40`，堆叠在 `worker/t41` 之上，
+    **待 review 按序合并**；已授权行情库）
+  - [x] 全池 38 只回填 `daily_bars_raw`：**0 行 → 28,339 行 / 2023-09-25…2026-10-29**，
+    `checked=28,264`（**99.74%**）、**拒收 0**、口径标签全 `raw`；
+    顺序是先探母库深度（10,548,954 行/5,193 只/2016-01-04…）→ **现网库副本干跑**
+    （35 s 同参数）→ `data.db.pre-t40-20261029-181759.bak` 冷备 → 现网跑（44 s）
+  - [x] **`data raw-coverage --gate` 全绿（退出码 0）**，`audit={audited:28339,
+    verified:28264, unflipped_days:0, waiting_days:37, no_reference_days:0,
+    incomplete_days:0, complete:true}`、`violations=[]`；
+    `raw_flip_watch` 三态核对：37 行未验料**全部**是 `waiting_reference`
+    （母库自己只更到 10-23/10-27，18 只在等），母库补上后必须由下一次 `fetch-raw` 翻转，
+    否则逐日闸按 `checked_not_flipped` 停线（T41 设计）
+  - [x] 回填后重跑 `rq shadow-day`（现网真数据，2 s）：买 000651/300750/600519 三笔
+    （含创业板 20% 带）+ 卖 601318 无持仓被拒且原因可读 ⇒
+    **两侧现金 743,559.3428 == 743,559.3428、费用 66.6572 == 66.6572、
+    cash/fee/fill_delta 全 0、violations=[]**，`wrapped=["CS"]`；逐笔手算复核佣金+过户费一致
+  - [x] 缺口与红线如实报告（report-t40 §2/§5/§6）：`daily_bars`(27,951、SUM(volume)/SUM(close)
+    逐位不变) 与 `minute_bars`(2,304) **未被动过**；现网 `paper_account.db` 的
+    `parity:diff`/`data:migrate` **仍是 0 行**（影子留痕写在 scratch，首个现网留痕归 T42）
+  - ⚠️ 两点要你知道：①本次用的是 `worker/t41` 的管道（未 review）——main 的窗口缺陷
+    会把"1/3 无从验料"固化进现网，所以按 T41→T40 顺序走；review 后若语义变动，
+    重跑 `fetch-raw` 即可（幂等 upsert）。②`--days 560` 只是"覆盖 742 交易日"的倒推值，
+    参数含义含糊，要不要加 `--start/--end` 等你定
+  - 顺带发现（不在 T40 范围，未动）：`DataDBManager._connect()` 没设 `busy_timeout`，
+    与 cron 并发写会直接 `SQLITE_BUSY` 报错而不是等
 - [ ] **T42（Qoder，P0·依赖 T40）~~影子期一周~~ → 切换前对账验证**（§5.6 节奏
   变更：用户拍板直取 M3）：
   - [ ] `rq shadow-day` 默认账本指生产 `paper_account.db`（scratch 用
