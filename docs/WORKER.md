@@ -646,14 +646,35 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 > 授权现网 raw 回填 / T39 §6-B 三缺陷派修 / 留痕现在切现网。
 > **Qoder 四件连发：T41→T40→T42 有依赖顺序（先修管道再回填再挂 cron），T43 独立。**
 
-- [ ] **T41（Qoder，P0·先行）raw 管道加固**（T39 §6-B 三缺陷）：
-  - [ ] 参照窗口对齐：母库参照查询覆盖采集窗口（days*2+10 自然日对应交易日），
-    消灭"590 行只验 400"的漏验
-  - [ ] `raw_flip_watch` **逐日检查**（每个采集日都要 checked 或显式
-    no-reference 原因），消灭"只看最后 checked 距今"的 `violations=[]` 盲区
-  - [ ] `--no-mother-ref` 语义修正：真不读母库（reference=None 不得回退）
-    或改名为实际语义；不许名不副实
-  - [ ] 回归测试 + `report-t41.md`
+- [x] **T41（Qoder，P0·先行）raw 管道加固**（`worker/t41`，**待 review**；T39 §6-B 三缺陷）
+  - [x] 参照窗口对齐：新增 `raw_feed.fetch_window(days, today)` 作为采集/参照/审计
+    **唯一的窗口定义**（顺带修掉默认 `fetch` 写死 `date.today()` 不看 `today` 参数的坑）；
+    `mother.raw_close_map(..., since=)` 按日期下界取参照，老调用方 `days` 语义不变。
+    **真机：同一库同一窗口 `checked 400 → 557`（590 行，拒收 0）**
+  - [x] `raw_flip_watch` 逐日检查：`db.raw_date_flags()` 逐日台账 + 六态分类
+    （`verified/today_pending/unflipped/waiting_reference/no_reference_available/audit_incomplete`，
+    另有 `raw_stale/no_raw_data/reference_source_unavailable` 停线态）；
+    CLI `raw-coverage` 新增 `audit` 块并进 `--gate`。
+    **真机：T39 那份报 `violations=[]` 的库现在报 `unflipped_days=157`、10 只全停线**；
+    新采的那份 `unflipped_days=0`、gate 绿（母库滞后的 23 天归 waiting 告警）
+  - [x] `--no-mother-ref` 语义修正（选"真不读"而不是改名）：`raw_feed.reference_for()`
+    是旗子→参照提供者的唯一映射，CLI 不再留 `reference=None`。
+    **真机：带旗 `single_source=true`、`symbols_with_ref=0`、590 行全 `checked=0`，
+    且闸口归因 `reference_source_unavailable` 停线**（不装没事）
+  - [x] 回归测试 + `report-t41.md`：`tests/test_raw_pipeline_t41.py` 17 条，
+    全套 **470 passed / 9 skipped**（基线 453/9 零回归）；
+    `spikes/mutation_t41.py` 四条源码级变异（内层→外层/丢 since/旗失效/停线不生效）
+    分别 1/1/2/3 条必红，还原后 55 条全绿
+  - ⚠️ 真机跑出的**我自己引入的缺陷已当场修**：`flip_watch_with_mother` 误用
+    `raw_close_map` 的外层 `{code:{date:row}}` ⇒ `ref_asof` 变成标的代码、
+    `ds in have` 恒假，双向误判（漏报 unflipped + 7 只母库滞后标的被误停线）；
+    已加形状回归用例锁死
+  - ⚠️ 语义收紧是有意的：`--gate` 失败面变大（旧数据今天就该不合格）；
+    母库不可达且窗口内一行都没验过 ⇒ 停线；T34 已验收的判据一条没放松（12 条全绿）
+  - ➡️ 给 T40 的输入：现网 `daily_bars` = 27,951 行 / 38 只 / 2023-10-09…2026-10-29（每只 742 行），
+    对齐深度约需 `--days 550`；`--days` 参数含义含糊（自然日换算），要不要加 `--start/--end`
+    请主 AI 定。跨仓事实：同一轮里母库深市到 10-27、沪市只到 10-23（影子期会持续
+    `waiting_reference` 告警，不停线）——若判定为母库同步问题需转 stock-dashboard 那条对话
 - [ ] **T40（Qoder，P0·依赖 T41）生产 raw 回填**（已授权行情库）：
   - [ ] `data fetch-raw` pool 38 只全量回填 `daily_bars_raw`（账本红线不变）；
     历史深度与 daily_bars 对齐，缺口如实报告
