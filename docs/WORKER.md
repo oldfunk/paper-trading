@@ -526,6 +526,30 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 ### Batch 7 · M2 收尾与拍板落地（Qoder 4 件 + Hermes 继续在途）
 
+- [x] **T34（Qoder，P0·数据侧修正批次）已验收**（`worker/t34`，§5.5 裁决 1+2）：
+  - [x] ① `mother.py` 注释如实 + 标签改 `"qfq"` + 参数化测试锁死
+    （**事实校正**：生产母库 `close_qfq` 的 NULL 行数是 **0**——NULL 的是
+    `close_raw/close_adj` 各 21 行 ⇒ 原 `adj="raw"` 分支当前不可达，属"母库
+    回填一变就错"的潜在缺陷；按裁决仍改了，并新增 `mother.raw_close_asof()`）
+  - [x] ② 当日跨源对照：`raw_feed.intraday_reference()`（腾讯实时，与 akshare
+    不同源）+ `check_raw_bars(..., intraday, day, enforce_intraday)`：收盘后才
+    强制、同日才比、偏差 >0.5% **整只拒收**；顺带修**时区坑**（`session_closed()`
+    原用机器本地钟，生产机非 +08 会静默不对照，现统一折算北京时间）
+  - [x] ③ G-T13-1 增补判据落成 `raw_flip_watch()` 三态：`waiting_reference`
+    （只告警）/ `checked_not_flipped`（**停线**）/ `raw_stale|no_raw_data`（停线）；
+    `data raw-coverage --gate` 并入
+  - [x] ④ NEC 真机实测：`intraday_no_today_bar=3`——**15:09 新浪当天日 K 未出**
+    对照空跑 ⇒ 新增显式计数，**采集时刻建议 ≥15:30（cron 由主 AI 定）**
+  - +21 测，全套 **418 passed**；`report-t34.md`
+- [x] **T35（Qoder，P0·钱类数据层）已验收**（`worker/t35`，§5.5 裁决 6）：
+  - [x] `(symbol, ts)` → **`(symbol, ts, period)`** 在线迁移：判需要 → 备份
+    `<db>.pre-t35.bak` → 建新表搬运 → 行数核对不等即回滚 → drop/rename/索引；幂等
+  - [x] **生产真实副本演练**：2,304→2,304 行、备份可回滚、生产库未触碰；
+    现网分钟仅 3 只（000858/002192/600036 各 768 行）
+  - [x] 读写侧同步：upsert 冲突含 period；`runner._today_minutes` 与
+    `backtest.load_minutes` 显式 `period="5"`
+  - [x] 覆盖风险回归（同刻两周期并存互不覆盖）+ 6 配套 = +7 测，**404 passed**；
+    `report-t35.md`；⚠️ 迁移触发方式待批（见 §5.6 批复）
 - [x] **T36（Qoder，P1·缺陷修复）walk_forward oracle/picked**（`worker/t36`，**待 review**）
   - 修法：重排**之前**按样本内顺序取 `in_best=oos_rows[0]`、`oracle=max(oos_rows, key=oos)`；
     新增 `in_best_oos_excess_pct/_symbol/_params`、`oracle_oos_params`、
