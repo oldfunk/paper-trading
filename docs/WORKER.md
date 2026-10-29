@@ -511,3 +511,35 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 - [ ] **T25（Qoder，P2·小活）部署文档同步 NEC**：AGENTS.md「Pi Deployment
   Sync」一节 + Cron 示例路径 `/home/pi` → `/home/nec`（生产真相已变）；
   以 `docs/migration-nec.md` 为新真相源，AGENTS 只改指引不复制内容
+
+---
+
+## 主 AI 终审（2026-10-29）：五分支按序合并完毕，"待 review"状态全部关闭
+
+- **合并顺序**：`t31 → t32 → t26`（堆叠分支按序），`t30`、`t14` 独立——全部干净合入，
+  全量 **397 passed, 4 skipped**（基线一致零回归）；T33 报告 + ST band P0 回执随 t32 进主线。
+- **T14 ✅ / T26 ✅ / T30 ✅ / T31 ✅ / T32 ✅ / T33 ✅ 全部验收**。
+- 全部拍板见 **`refactor-plan` §5.5** + `questions.md` 批复节（母库 OHLC 事实修正、
+  A+B 当日防线、影子 op_log 默认写、过户费显式差+decider 排期、minute 主键重建、
+  walk_forward 缺陷修、numpy 上限 (a)+lock 采纳）。
+- **M2 动工 P0 已清零**（T33 确认）；生产 NEC 同步最新主线。
+
+### Batch 7 · M2 收尾与拍板落地（Qoder 4 件 + Hermes 继续在途）
+
+- [ ] **T34（Qoder，P0·数据侧修正批次）**：§5.5 裁决 1+2 落地——
+  ① `mother.py` 注释如实 + 21 行 `adj="raw"` 错标改 `"qfq"` + 标签一致性测试；
+  ② `raw_feed.sync_raw` 加当日跨源对照（实时快照 vs raw 收盘 >0.5% 拒收，
+  ~20 行+测试）；③ G-T13-1 判据原文增补"T+1 必须翻转否则停线"并落测试；
+  产出 `report-t34.md`
+- [ ] **T35（Qoder，P0·钱类数据层）minute_bars 主键重建**：period 入主键
+  （`(symbol, ts, period)`）+ 现网 2,304 行迁移（先备份）+ upsert/分道/清理
+  全链回归 + 覆盖风险测试（1 分钟与 5 分钟同刻并存互不覆盖）；
+  产出 `report-t35.md`（§5.5 裁决 6）
+- [ ] **T36（Qoder，P1·缺陷修复）walk_forward oracle/picked**：`optimize.py:251-252`
+  oracle 与 picked 同一行、picked 全文未使用 ⇒ 样本外检验失真（违背纪律 7）；
+  fix + 回归（oracle 必须独立于 picked 污染）+ 产出 `report-t36.md`
+- [ ] **T37（Qoder，P1·部署）lock 文件 + rqalpha 二进制 spike**：
+  ① NEC `pip freeze` → `requirements.lock.txt`（注明生成机/日期）；
+  ② /tmp 只读 spike：NEC fresh venv 装 rqalpha 6.4.2（h5py/jsonpickle/tables
+  等二进制基线实测，不碰生产 venv）→ `report-t37.md`（§5.5 裁决 8）
+- [ ] **Hermes 在途继续**：T15b2/b3、T27、T28（结构审查两件是用户点名项）

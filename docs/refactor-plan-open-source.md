@@ -187,6 +187,38 @@ op_log、cron 运维、**安全门禁**（尺度闸/执行价偏离闸/条件单
 
 **回滚**：config 开关切回旧账本；rqalpha 状态目录只增不删（可追溯）。
 
+### 5.5 M2 实施批拍板（主 AI，2026-10-29；T31/T32/T33/T26/T14/T30 交付后）
+
+**§5.4 事实修正（T31 实测 10,548,933 行）**：母库 `kline_daily` 的
+**OHLC 全列前复权**（`close==close_qfq` 零例外），raw 只有收盘/量/额三列——
+"母库 close_raw 供 raw OHLC"**不成立**。修正为：**raw OHLC 由 akshare
+`adjust=""` 供，母库降级为独立验料源**（`close_raw` 列用于同日对照）。
+母方补 `open_raw/high_raw/low_raw` 三列 = 可选优化（跨仓请求，不阻塞 M2）。
+
+**逐项裁决**：
+1. **T31-Q1 母库注释/标签 → 改**：`mother.py` 降级链注释改为如实描述
+   （qfq→hfq→qfq 兜底），21 行 `adj="raw"` 错标改 `"qfq"`；**加测试锁定**
+   （标签与实际口径一致断言）。理由：标签是事实错误，违反纪律 4。
+2. **T31-Q2 当日无独立参照 → A+B 同时做**：(A) 当日跨源对照——akshare
+   实时快照 vs 当日 raw 收盘，偏差 >0.5% 拒收当根（独立基准原则的当日实现）；
+   (B) **G-T13-1 判据增补**："当日允许 checked=0，但 T+1 必须翻转，否则停线"
+   （可审计闭环，fail-closed）。
+3. **T32 包名/装载 → 保留**（`rq_engine` 不遮蔽框架包；`sys.modules` 预注册
+   不污染 sys.path；entry point 属过度设计）。
+4. **T32 影子对账 op_log → 默认写**（action 白名单 `parity:diff`）：
+   M2 验收"分歧零未归因"必须留痕可查，影子记录独立 action 不污染查询。
+5. **T32 过户费 → 对账侧显式 0.001% 预期差 + D4 decider 排期实施**：
+   不用 multiplier 近似（掩盖独立项）；`AbstractTransactionCostDecider`
+   补过户费在 **M2 验收前完成**，届时对账差值归零。
+6. **T26 minute_bars 主键缺 period → 重建表**：现 2,304 行全 5 分钟、迁移
+   成本极低，period 维度一多必互相覆盖——定时炸弹现在拆（period 入主键）。
+7. **T14 P1 walk_forward 缺陷 → 修**：oracle 与 picked 同一行、picked 未使用
+   （`optimize.py:251-252`）= 样本外检验报告失真，违背纪律 7；fix + 回归。
+8. **T30 numpy 三选一 → (a) 维持上限 + 定期复核**；(b) 换 x86-64-v2+ 硬件
+   记为用户备忘（不现在定）；(c) 源码编译否决（85°C/30min 风险）。
+   **`requirements.lock.txt` 采纳**（NEC freeze 生成，CI/新机用）；
+   rqalpha 二进制基线 spike 批准（/tmp 只读装，不碰生产 venv）。
+
 ## 6. 风险清单
 
 1. **Python 版本**：vnpy 4.1+ 未覆盖 3.14 → 全线统一 3.13（Pi 已满足）。
