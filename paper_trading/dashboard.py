@@ -686,6 +686,10 @@ document.getElementById("btn-engine-wf").onclick=async()=>{
   out.innerHTML=`<div class="s">样本内 ${esc((sp.in_sample||[]).join(" → "))}（${sp.in_days} 天）→ `+
     `样本外 ${esc((sp.out_of_sample||[]).join(" → "))}（${sp.oos_days} 天）；`+
     `样本内第一名超额 ${fmt(d.sample_in_best_excess)}%，样本外 ${d.n_oos_positive}/${d.n_tested} 组为正</div>`+
+    // T36：过拟合差距 = 事后最优 − 样本内第 1 名（旧版把同一个数当两个用，量不出来）
+    `<div class="s">样本内第 1 名到样本外还剩 ${fmt(d.in_best_oos_excess_pct)}%；`+
+    `事后最优 ${fmt(d.oracle_oos_excess_pct)}%（${esc(sym(d.oracle_oos_symbol||"—"))}）；`+
+    `<b class="${(d.overfit_gap_pct||0)>0?'bad':'good'}">过拟合差距 ${fmt(d.overfit_gap_pct)}%</b></div>`+
     `<div class="scroll"><table><thead><tr><th>标的</th><th>参数</th><th class="num">样本内超额</th><th class="num">样本外收益</th><th class="num">样本外超额</th><th class="num">笔数</th><th class="num">夏普</th></tr></thead><tbody>`+
     (d.out_of_sample||[]).map(t=>`<tr><td><b>${esc(sym(t.symbol))}</b></td><td class="mut">${esc(JSON.stringify(t.params))}</td>`+
       `<td class="num ${cls(t.in_excess_pct)}">${t.in_excess_pct>=0?"+":""}${fmt(t.in_excess_pct)}%</td>`+

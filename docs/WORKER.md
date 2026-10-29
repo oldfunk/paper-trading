@@ -526,40 +526,28 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 ### Batch 7 · M2 收尾与拍板落地（Qoder 4 件 + Hermes 继续在途）
 
-AD
-- [x] **T34（Qoder，P0·数据侧修正批次）**：§5.5 裁决 1+2 落地（`worker/t34`，**待 review**）
-  - [x] ① `mother.py` 注释如实 + 标签改 `"qfq"` + 参数化测试锁死
-    （**事实校正**：生产母库 `close_qfq` 的 NULL 行数是 **0**（NULL 的是 `close_raw/close_adj` 各 21 行）
-    ⇒ 那条 `adj="raw"` 分支当前**不可达**，属"母库回填一变就错"的潜在缺陷而非已错 21 行；
-    按裁决仍改了，并新增 `mother.raw_close_asof()`（验料源自身新鲜度））
-  - [x] ② 当日跨源对照：`raw_feed.intraday_reference()`（腾讯实时，与 akshare 不同源）
-    + `check_raw_bars(..., intraday, day, enforce_intraday)`，收盘后才强制、同日才比、
-    偏差 >0.5% **整只拒收**；顺带修了**时区坑**（`session_closed()` 原来用机器本地钟，
-    生产机非 +08 时会静默不对照，现统一折算北京时间）
-  - [x] ③ G-T13-1 增补判据落成 `raw_flip_watch()`：三态区分
-    `waiting_reference`（母库没给参照→只告警）/ `checked_not_flipped`（参照到了我们没重跑→**停线**）/
-    `raw_stale`、`no_raw_data`（→停线）；`data raw-coverage --gate` 并入该判据
-  - [x] ④ 真机实测（NEC 生产 venv + `/tmp` 临时库，跑完删）：
-    `intraday_enforced=true, intraday_no_today_bar=3` —— **15:09 HKT 新浪当天日 K 还没出**，
-    对照会空跑 ⇒ 新增显式计数并建议采集时刻挪到 ≥15:30（cron 由你定，我没动）；
-    `flip_watch: violations=[] warnings=[000651,600519] stop_line=false`（母库滞后不误停线）
-  - 测试 +21 条；全套 **418 passed, 4 skipped**（基线 397+1，零回归）；产出 `report-t34.md`
-- [x] **T35（Qoder，P0·钱类数据层）minute_bars 主键重建**（`worker/t35`，**待 review**；
-  基于 main，不依赖 t34）：`(symbol, ts)` → **`(symbol, ts, period)`** 在线迁移
-  - 迁移顺序是硬的：判需要 → **先备份 `<db>.pre-t35.bak`** → 建新表整表搬运 →
-    **行数核对**（不等即抛错回滚、旧表原样）→ drop/rename/重建索引；幂等，二次打开不重复
-  - **生产真实副本演练**：2,304 行 → 2,304 行、主键升级、备份内仍是旧主键（可回滚）、
-    **生产 data.db 未被触碰**（mtime 未变）；顺带核到现网分钟数据只有 3 只
-    （000858/002192/600036 各 768 行 = 48×16 交易日）
-  - 读写侧同步收紧：`upsert` 冲突目标含 period；`runner._today_minutes` 与
-    `backtest.load_minutes` **显式 period="5"**（否则主键有了周期、读侧仍混粒度）
-  - 覆盖风险回归测试到位（同刻 1 分钟与 5 分钟并存互不覆盖）+ 6 条配套；共 **+7 测**，
-    全套 **404 passed, 4 skipped**（基线 397+1，零回归）；产出 `report-t35.md`
-  - ⚠️ 待你定：迁移是**打开即自动做**（默认，理由：裁决说"定时炸弹现在拆"）
-    还是改成只由显式命令触发（`report-t35.md` §5-1，改法约 10 行）
-] **T36（Qoder，P1·缺陷修复）walk_forward oracle/picked**：`optimize.py:251-252`
-  oracle 与 picked 同一行、picked 全文未使用 ⇒ 样本外检验失真（违背纪律 7）；
-  fix + 回归（oracle 必须独立于 picked 污染）+ 产出 `report-t36.md`
+- [ ] **T34（Qoder，P0·数据侧修正批次）**：§5.5 裁决 1+2 落地——
+  ① `mother.py` 注释如实 + 21 行 `adj="raw"` 错标改 `"qfq"` + 标签一致性测试；
+  ② `raw_feed.sync_raw` 加当日跨源对照（实时快照 vs raw 收盘 >0.5% 拒收，
+  ~20 行+测试）；③ G-T13-1 判据原文增补"T+1 必须翻转否则停线"并落测试；
+  产出 `report-t34.md`
+- [ ] **T35（Qoder，P0·钱类数据层）minute_bars 主键重建**：period 入主键
+  （`(symbol, ts, period)`）+ 现网 2,304 行迁移（先备份）+ upsert/分道/清理
+  全链回归 + 覆盖风险测试（1 分钟与 5 分钟同刻并存互不覆盖）；
+  产出 `report-t35.md`（§5.5 裁决 6）
+- [x] **T36（Qoder，P1·缺陷修复）walk_forward oracle/picked**（`worker/t36`，**待 review**）
+  - 修法：重排**之前**按样本内顺序取 `in_best=oos_rows[0]`、`oracle=max(oos_rows, key=oos)`；
+    新增 `in_best_oos_excess_pct/_symbol/_params`、`oracle_oos_params`、
+    **`overfit_gap_pct = oracle − in_best`**；死变量 `picked` 删除；
+    旧键（`sample_in_best_excess/oracle_oos_excess/…`）**全留**保证面板不破；面板加一行
+    "样本内第 1 名到样本外还剩 X%／事后最优 Y%／过拟合差距 Z%"（差距>0 标红）
+  - 6 条回归 + **变异验证**：把代码临时改回旧形状 ⇒ 3 条必红；换回修复 ⇒ 6 passed
+  - ⚠️ 一个我踩到并写进注释的要点：**不能用 `max(rows, key=in_excess)` 找"样本内第 1 名"**
+    ——同分候选会挑到不同行（实测两组 `in_excess=-27.85` 并列）；权威定义是
+    `in_sample_top[0]`，测试据此反查
+  - 全套 **403 passed, 4 skipped**（基线 397+1，零回归）；产出 `report-t36.md`
+  - 顺带记两条 P2（未动）：同分候选排序不保证可复现；样本外只检验 top-K 的取舍未量化
+
 - [ ] **T37（Qoder，P1·部署）lock 文件 + rqalpha 二进制 spike**：
   ① NEC `pip freeze` → `requirements.lock.txt`（注明生成机/日期）；
   ② /tmp 只读 spike：NEC fresh venv 装 rqalpha 6.4.2（h5py/jsonpickle/tables
