@@ -109,6 +109,12 @@ class DataDBManager:
             """)
             if not self._has_column(conn, "minute_bars", "adjust"):
                 conn.execute("ALTER TABLE minute_bars ADD COLUMN adjust TEXT DEFAULT 'raw'")
+            # T26：1 分钟与 5 分钟混在同一张表里时，回测/保留窗口都无从区分。
+            # 默认 '5' 是如实标注：现网 2,304 行全部来自 engine/runner.py 的
+            # `fetch_minute(..., period="5")` 路径（实测 48 根/标的/日），
+            # `minute pull` 的默认周期也是 5。
+            if not self._has_column(conn, "minute_bars", "period"):
+                conn.execute("ALTER TABLE minute_bars ADD COLUMN period TEXT DEFAULT '5'")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS quote_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -338,38 +344,84 @@ class DataDBManager:
 
     # ---------- 分钟线与实时快照（盘中量化用） ----------
 
-    def upsert_minute_bars(self, symbol: str, rows: list[dict]) -> int:
+    def upsert_minute_bars(self, symbol: str, rows: list[dict],
+                           period: str = "5") -> int:
         """写入分钟线（rows: [{ts, open, high, low, close, volume, amount}]）。
 
         口径 = **原始价**（T26/T31 同步）：新浪 N 分钟接口给的是交易所实时价，
         不做复权；实测 5 分钟最后一根收盘与当日 `daily_bars_raw.close` 一致，
         所以这里显式打 `adjust='raw'`，让引擎侧的口径闸也能覆盖分钟线。
+        `period` 让 1 分钟与 5 分钟各行其道（T26：回测升频与保留窗口都要按周期筛）。
         """
         if not rows:
             return 0
         with self._connect() as conn:
             conn.executemany(
                 """INSERT INTO minute_bars
-                   (symbol, ts, open, high, low, close, volume, amount, adjust)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'raw')
+                   (symbol, ts, open, high, low, close, volume, amount, adjust, period)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'raw', ?)
                    ON CONFLICT(symbol, ts) DO UPDATE SET
                      open=excluded.open, high=excluded.high, low=excluded.low,
                      close=excluded.close, volume=excluded.volume,
-                     amount=excluded.amount, adjust='raw'""",
+                     amount=excluded.amount, adjust='raw', period=excluded.period""",
                 [(symbol, r["ts"], float(r["open"]), float(r["high"]),
                   float(r["low"]), float(r["close"]),
-                  float(r.get("volume") or 0), float(r.get("amount") or 0))
+                  float(r.get("volume") or 0), float(r.get("amount") or 0), str(period))
                  for r in rows])
         return len(rows)
 
-    def get_minute_bars(self, symbol: str, limit: int = 240) -> list[dict]:
-        """最近 N 根分钟线（按时间升序返回）。"""
+    def get_minute_bars(self, symbol: str, limit: int = 240,
+                        period: Optional[str] = None) -> list[dict]:
+        """最近 N 根分钟线（按时间升序返回）。`period` 指定周期，默认不过滤。"""
+        sql = ("SELECT * FROM (SELECT ts, open, high, low, close, volume, amount, adjust, period"
+               " FROM minute_bars WHERE symbol = ?")
+        params: list = [symbol]
+        if period:
+            sql += " AND period = ?"
+            params.append(str(period))
+        sql += " ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC"
+        params.append(int(limit))
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def minute_days(self, symbol: Optional[str] = None, period: str = "5") -> list[str]:
+        """已入库的交易日（升序）——缺口/覆盖率判断的底。"""
+        sql = "SELECT DISTINCT substr(ts,1,10) AS d FROM minute_bars WHERE period = ?"
+        params: list = [str(period)]
+        if symbol:
+            sql += " AND symbol = ?"
+            params.append(symbol)
+        with self._connect() as conn:
+            return [r["d"] for r in conn.execute(sql + " ORDER BY d", params)]
+
+    def minute_ts_on(self, symbol: str, day: str, period: str = "5") -> set:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM (SELECT ts, open, high, low, close, volume, amount, adjust"
-                " FROM minute_bars WHERE symbol = ? ORDER BY ts DESC LIMIT ?)"
-                " ORDER BY ts ASC", (symbol, int(limit))).fetchall()
-        return [dict(r) for r in rows]
+                """SELECT ts FROM minute_bars
+                   WHERE symbol = ? AND substr(ts,1,10) = ? AND period = ?""",
+                (symbol, day, str(period))).fetchall()
+        return {r["ts"] for r in rows}
+
+    def minute_coverage(self, period: str = "5") -> dict:
+        """存量概览（`minute stat` 用）。"""
+        with self._connect() as conn:
+            n = conn.execute("SELECT COUNT(*) AS c, COUNT(DISTINCT symbol) AS s,"
+                             " MIN(ts) AS a, MAX(ts) AS b FROM minute_bars WHERE period = ?",
+                             (str(period),)).fetchone()
+        return {"period": str(period), "rows": int(n["c"] or 0),
+                "symbols": int(n["s"] or 0), "first": n["a"], "last": n["b"]}
+
+    def prune_minute_bars(self, before_day: str, period: Optional[str] = None) -> int:
+        """保留窗口：删掉 `before_day`（不含）之前的分钟线，防磁盘单向涨满。"""
+        sql = "DELETE FROM minute_bars WHERE substr(ts,1,10) < ?"
+        params: list = [before_day]
+        if period:
+            sql += " AND period = ?"
+            params.append(str(period))
+        with self._connect() as conn:
+            cur = conn.execute(sql, params)
+        return int(cur.rowcount or 0)
 
     def minute_count(self, symbol: str) -> int:
         with self._connect() as conn:

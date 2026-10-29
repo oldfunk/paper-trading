@@ -1469,7 +1469,20 @@ def main() -> None:
     minute_pull.add_argument("--json", action="store_true")
     minute_stat = minute_sub.add_parser("stat", help="查看本地分钟线存量")
     minute_stat.add_argument("--symbols", nargs="*", default=None)
+    minute_stat.add_argument("--period", default="5")
     minute_stat.add_argument("--json", action="store_true")
+    # T26：每日收盘后积累（幂等 + 缺口报告 + 保留窗口）
+    minute_sync = minute_sub.add_parser(
+        "sync", help="落某交易日全天分钟线（48 根/标的/日，幂等）并报缺口")
+    minute_sync.add_argument("--symbols", nargs="*", default=None)
+    minute_sync.add_argument("--pool-limit", type=int, default=200)
+    minute_sync.add_argument("--day", default=None, help="目标交易日 YYYY-MM-DD，默认今天")
+    minute_sync.add_argument("--period", default="5", choices=["1", "5", "15", "30", "60"])
+    minute_sync.add_argument("--days", type=int, default=30,
+                             help="向源索取的回看天数（源上限约 22 个交易日）")
+    minute_sync.add_argument("--retention-days", type=int, default=0,
+                             help="保留最近 N 个已入库交易日，更早的删除（0=不删）")
+    minute_sync.add_argument("--json", action="store_true")
 
     engine_opt = engine_sub.add_parser("optimize", help="参数网格搜索（按超额收益排序）")
     engine_opt.add_argument("--grid", default="ma_cross",
@@ -2268,7 +2281,7 @@ def main() -> None:
                 for s in syms:
                     rows = _min.fetch_minute(s, period=args.period, days=args.days)
                     if rows:
-                        bridge.data_db.upsert_minute_bars(s, rows)
+                        bridge.data_db.upsert_minute_bars(s, rows, period=args.period)
                         days_seen.update(str(r["ts"])[:10] for r in rows)
                     got[s] = len(rows)
                 emit({"symbols": len(syms), "rows": got,
@@ -2276,9 +2289,40 @@ def main() -> None:
                       "trading_days": len(days_seen),
                       "total_rows": sum(got.values())})
                 return
+            if args.minute_command == "sync":
+                # T26：每日收盘后把当天整根分钟线落成 48 根/标的（幂等 upsert），
+                # 并给缺口报告——新浪只给最近约 22 个交易日，更早的补不回来，只如实报
+                syms = list(args.symbols or [])
+                if not syms:
+                    syms = _resolve_syms(bridge, args)[0]
+                res = _min.sync_day(bridge.data_db, syms, day=args.day,
+                                    period=args.period, days=args.days)
+                pruned = 0
+                if getattr(args, "retention_days", 0):
+                    have = bridge.data_db.minute_days(period=args.period)
+                    keep = have[-int(args.retention_days):]
+                    if keep:
+                        pruned = bridge.data_db.prune_minute_bars(keep[0],
+                                                                  period=args.period)
+                res["pruned"] = pruned
+                res["coverage"] = bridge.data_db.minute_coverage(period=args.period)
+                emit(res)
+                # 缺口不阻断（数据照常可用），但必须留痕——AGENTS 纪律 4
+                if res["gapped"] or res["errors"]:
+                    bridge.broker.log_operation(
+                        "minute:gap", {"day": res["day"], "period": res["period"],
+                                       "gapped": res["gapped"], "errors": res["errors"],
+                                       "no_data": res["no_data"]}, True,
+                                       {"written": res["written"],
+                                        "expected_per_symbol": res["expected_per_symbol"],
+                                        "per_symbol": res["per_symbol"]}, None, None)
+                return
             # stat
             syms = list(args.symbols or bridge.data_db.get_pool_symbols()[:20])
-            emit({s: bridge.data_db.minute_count(s) for s in syms})
+            period = getattr(args, "period", None) or "5"
+            emit({"coverage": bridge.data_db.minute_coverage(period=period),
+                  "days": len(bridge.data_db.minute_days(period=period)),
+                  "per_symbol": {s: bridge.data_db.minute_count(s) for s in syms}})
             return
 
         elif args.command == "corporate":

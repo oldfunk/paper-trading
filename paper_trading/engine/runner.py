@@ -298,7 +298,7 @@ class EngineRunner:
 
                 fetched = fetch_minute(sym, period="5", days=30, now=now)
                 if fetched:
-                    self.b.data_db.upsert_minute_bars(sym, fetched)
+                    self.b.data_db.upsert_minute_bars(sym, fetched, period="5")
                     rows = self._today_minutes(sym, now, day)
             except Exception as e:      # noqa: BLE001 - 分钟线拿不到就跳过日内规则
                 logger.debug(f"minute refresh failed {sym}: {type(e).__name__}: {e}")
