@@ -92,7 +92,7 @@ python spikes/arch_map_scan.py .        # 72 模块 / 16,517 行 / 45 个测试�
 
 | 主题 | 处数 | 具体位置 | 我的判断 |
 |---|---|---|---|
-| 费率配置 | **3** | `models/types.py:119-122`（TradingConfig，现网账本用）、`engine/backtest.py:22`（FeeModel，回测用，字段一字不差地镜像）、`integration/rq_engine/costs.py:31-36`（新线常量，作为缺省） | **该收一个**：让 FeeModel 与 costs 的缺省都从 `TradingConfig` 取。T38 已经把 CLI 两侧统一到 `broker.config`，但 `engine backtest` 与面板仍在别处 new `FeeModel`（`cli.py:2173/2228`、`dashboard.py:906`）⇒ 改 `config.yaml` 的回测/面板路径仍可能与分析路径不同源 |
+| 费率配置 | ~~3~~ → **1**（T51 已收敛） | 原三处：`models/types.py:119-122`（TradingConfig）、`engine/backtest.py:22`（FeeModel 镜像）、`integration/rq_engine/costs.py:31-36`（新线常量）。T51 后：数值唯一 = `TradingConfig`，公式唯一 = 新 `utils/fees.py`（broker/`FeeModel`/`m3_verify` 三路共用），构造唯一 = `utils/config.py:trading_config_from_dicts`；`costs.py` 只剩框架基准率当除数。当时判断"改 `config.yaml` 的回测/面板路径仍可能与分析路径不同源"——**实测比判断更糟**：那三处读的是不存在的键 `load_config(...)["trading"]`，所以一直吃硬编码兜底（`report-t51.md §1`，端到端 5.08→50.23） |
 | 价格映射 | **2** | `cli.py:325 TradingBridge.price_map`、`engine/runner.py:49 price_map(bridge, quotes, symbols)` | 后者是前者的另一份逻辑；尺度污染事故（`op_log data:incident`）正是这一族的问题 ⇒ 该合，且合并前两条都要有单测 |
 | 股票池解析 | 3 处入口但**1 个实现** | `integration/pool.py:89 resolve_pool` 是唯一实现，`cli._resolve_syms` / `dashboard` / `engine.runner` 都调它 | ✅ 不是重复（工具报了 3 处，人工复核为"一处实现三处调用"） |
 | 交易日历 | **1 个实现** | `utils/trading_calendar.py:230 is_trading_day`（唯一 `def`），`market_time.py` 只管时段不重复日期判定 | ✅ 不是重复（工具的"19 处命中"是引用不是定义）——**这条是我自己先误判、复核后撤回的** |

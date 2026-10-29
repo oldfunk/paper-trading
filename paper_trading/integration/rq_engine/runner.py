@@ -16,7 +16,9 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+from paper_trading.utils import fees
 
 from . import costs
 from .provider import SessionGate, SessionGateError, config_fingerprint
@@ -57,20 +59,22 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
                  require_bands: bool = True,
                  override_available_range: bool = True,
                  matching_type: str = "current_bar",
-                 fee: Optional[dict] = None,
+                 fee: Any = None,                  # TradingConfig 或四项费率 dict（T51）
                  require_today_reference: bool = True,
                  ledger: bool = False,
                  extra: Optional[dict] = None) -> dict:
     """一个模拟日的 rqalpha 配置（纯函数，便于离线测试）。
 
-    `fee` 是现网费率（`{commission_rate, commission_min, stamp_duty_rate,
-    transfer_fee_rate}`，见 `costs.py`）。**不传就用现网默认值**，
-    绝不用框架默认——框架股票佣金是万八，现网是万 2.5（T38 实测口径差）。
+    `fee` 是现网费率来源：**`TradingConfig` 或含四项费率的 dict**
+    （`commission_rate / commission_min / stamp_duty_rate / transfer_fee_rate`）。
+    T51 起**必须显式给**：缺项直接报错，不再有"不传就用现网默认值"这条路——
+    那等于在 `costs.py` 里留第二份费率数字（改 config 引擎不跟着变的经典起点）。
+    也绝不用框架默认：框架股票佣金是万八，现网是万 2.5（T38 实测口径差）。
     """
     persist = bool(state_dir)
-    fee = dict(fee or {})
-    transfer_fee_rate = float(fee.pop("transfer_fee_rate", costs.TRANSFER_FEE_RATE))
-    cost_cfg = costs.stock_cost_mod_config(**fee)
+    fee_map = fees.as_fee_dict(fee)
+    transfer_fee_rate = fee_map.pop("transfer_fee_rate")
+    cost_cfg = costs.stock_cost_mod_config(**fee_map)
     cfg = {
         "base": {
             "start_date": today,
@@ -210,7 +214,7 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
                 init_cash: float = INIT_CASH_DEFAULT, state_dir: str = "",
                 workdir: Optional[str] = None, force: bool = False,
                 require_bands: bool = True, matching_type: str = "current_bar",
-                fee: Optional[dict] = None, require_today_reference: bool = True,
+                fee: Any = None, require_today_reference: bool = True,
                 ledger: bool = False) -> dict:
     """跑一个模拟日（**G-T13-9：一个进程只允许一次**）。"""
     global _SESSION_USED

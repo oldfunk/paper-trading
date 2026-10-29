@@ -885,12 +885,36 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     **下一次授权采集或 15:40 cron 首跑前，新线对"今天"不下单**（by design）
   - ➡️ 两个待你定的小点：① 母库沪市近端滞后（18 只停在 10-23/10-27）是否转母项目；
     ② `m3 verify` 要不要新增一项读 `evidence.gate_rejected`（我不在 T50 里顺手扩已验收的 T46 面）
-- [ ] **T51（Qoder，P1·口径唯一）费率三真相源收敛**（T43 地图发现）：
-  `models/types.py:119-122` / `engine/backtest.py:22 FeeModel` /
-  `rq_engine/costs.py:31-36` 三处费率 + `cli.py:2173/2228` 与
-  `dashboard.py:906` 各自 new ⇒ 改 config 费率回测/面板可能不跟着变
-  （违反纪律 7 口径唯一）：收敛为单一来源（config 为真相源，其余引用）+
-  反射测试锁死 + `report-t51.md`
+- [x] **T51（Qoder，P1·口径唯一）费率三真相源收敛**：`worker/t51`（堆叠在 `worker/t47`），
+    **待 review 不合 main**；全套 **586 passed / 9 skipped / 1 failed**（基线 `worker/t47` 同时刻 567/9/1 ⇒ 净增 19 条零回归）
+    ⚠️ 那 1 条红与本任务无关且在干净 t47 上同样复现：`test_mother_contract` 夹具写绝对日期
+    `2026-10-26` + 判定用墙钟 ⇒ 机器过 10-30 午夜即翻红；机制与影响面见 questions.md 2026-10-30 条
+  - [x] 三处费率数字 + 三处公式 + 三处"各自 new"收敛：**数值唯一**
+    (`models/types.py:TradingConfig`)、**公式唯一**（新 `utils/fees.py:buy_cost/sell_cost`，
+    broker/`FeeModel`/`m3_verify` 三路都调它）、**构造唯一**
+    (`utils/config.py:trading_config_from_dicts`，**里面一个数字都不写**，未知键 warning 不静默)；
+    `costs.py` 删掉四个现网费率常量（只留 `RQ_*` 框架基准率当除数），
+    `stock_cost_mod_config/install_transfer_fee/transfer_fee_amount` 费率**必填**；
+    `runner.build_config`+`shadow_day` 经 `as_fee_dict` ⇒ 不传/缺项 `ValueError`（旧行为是吃兜底数字）
+  - [x] **撞破更严重的事实（派发说"可能"，实测是"一定"）**：`cli.py` 两处与
+    `dashboard.py:906` 读 `load_config(...)["trading"]`——**该键不存在**（真键名 `trading_config`）
+    ⇒ 回测/网格/面板一直在吃代码抄的兜底费率，改 `config.yaml` 完全不动且不报错。
+    `spikes/e2e_t51.py` 端到端：同一笔成交只换费率档 ⇒ `total_fees` **5.08 → 50.23（×9.89）**，
+    面板 `_fee_of` 同样跟随。⚠️ 今天 config 与旧兜底**数值相同** ⇒ 既往回测结论仍可比
+    （`test_repo_config_yaml_agrees_with_code_default` 钉住该前提），但机制已变 → questions.md Q3
+  - [x] **反射测试锁死**（`tests/test_fee_single_source_t51.py` 17 条）：AST 扫全树抓四种写法
+    （赋值/形参默认/关键字调用/`.get(k, 数字)`，**大小写都抓**），公式扫描抓
+    `max(...commission_rate...commission_min...)` 出现在 `utils/fees.py` 之外；
+    两条扫描都带**正控制**（临时植入必须报 3+1 条）——没有正控制的反射测试是永远绿的空断言
+  - [x] `spikes/mutation_t51.py`：十个"回退成旧写法"的变异 1/2/1/1/1/3/3/2/1/1 条必红、还原 68 全绿
+  - [x] 契约变更与既有测试的理由逐条写进 `report-t51.md` §4 表（改了 4 个文件的 10 条断言：
+    `test_fees_and_oplog_t38`/`test_postclose_defense_t50`/`test_rqalpha_adapter`/`test_ledger_gaps_t47`，
+    两条旧测试验的正是"不传也有默认"这条被废除的行为，改为验"不传必报错"+ 新增 2 条）
+  - 🔴 **纪律冲突请拍板**（questions.md Q1，非我的疏漏）：`m3 verify` 的 `fees` 项原本**独立重写**
+    一遍公式，收敛后与 broker 共用 ⇒ 仍能查"库里费用与成交价量不符"，但查不出"公式本身错"；
+    实测目前全仓只有 `test_fees_and_oplog_t38.py` 两处零散手算期望值，
+    `test_compliance_regression.py` **一条费用断言都没有**。请选 (A) 补硬期望值锚点表 /
+    (B) 保留独立实现 + 加一致性测试 / (C) 到此为止
 - [ ] **T49（Hermes，P0·审查）**：审 T45 runbook（G1-G4 修法方向、回退 §5
   的账本衔接边界）+ T46 工具（它自点三盯点：`direction==-1` 判卖出对不对、
   `entry_day` 只有旧线写 ⇒ T+1 检查可能永远查不出的盲区、母库 warn 松紧）+

@@ -305,8 +305,10 @@ def test_executor_from_config_refuses_unknown_value():
 
 def test_session_fingerprint_changes_with_ledger_flag():
     """落不落现网账本是最大的语义差：必须进指纹，否则 G-T13-5 会放行混账续跑。"""
+    from paper_trading.utils import fees as ufees
+
     common = dict(today=TODAY, data_db="data.db", bundle="b", symbols=["000651"],
-                  state_dir="st")
+                  state_dir="st", fee=ufees.fee_dict(TradingConfig()))
     fp_off = rn.session_fingerprint(rn.build_config(**common))
     fp_on = rn.session_fingerprint(rn.build_config(ledger=True, **common))
     assert fp_off != fp_on

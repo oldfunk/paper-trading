@@ -15,25 +15,37 @@ from typing import Optional
 from paper_trading.broker.paper_broker import PaperBroker
 from paper_trading.engine.rules import (INTRADAY_TYPES, Intent, PositionView,
                                          RuleContext, evaluate, size_for_value)
-from paper_trading.models import Position, Signal, SignalType
+from paper_trading.models import Position, Signal, SignalType, TradingConfig
+from paper_trading.utils import fees
+
+#: 费率的唯一数值来源仍是 TradingConfig（`models/types.py`）；这里只是引用，不再抄一遍
+_TC = TradingConfig()
 
 
 @dataclass
 class FeeModel:
-    """与 PaperBroker 同一套费率（parity 由单测锁定）。"""
-    commission_rate: float = 0.00025
-    commission_min: float = 5.0
-    stamp_duty_rate: float = 0.0005
-    transfer_fee_rate: float = 0.00001
+    """回测费用：数值来自 `TradingConfig`，公式来自 `utils/fees.py`（T51 口径唯一）。
+
+    原本这里抄了四个数字、又抄了一遍公式——`config.yaml` 改费率时回测不跟着变
+    （report-t51 §1 实测：三处 new 读错键 ⇒ 一直在吃这里的兜底值）。
+    现在字段默认值**引用** `TradingConfig`，不再自己写数字；生产路径一律用
+    `FeeModel.from_trading_config(cfg)` 显式构造。
+    """
+    commission_rate: float = _TC.commission_rate
+    commission_min: float = _TC.commission_min
+    stamp_duty_rate: float = _TC.stamp_duty_rate
+    transfer_fee_rate: float = _TC.transfer_fee_rate
+
+    @classmethod
+    def from_trading_config(cls, cfg) -> "FeeModel":
+        """从现网 `TradingConfig` 构造（回测/网格/面板唯一入口）。"""
+        return cls(**{k: float(getattr(cfg, k)) for k in fees.FEE_KEYS})
 
     def buy_cost(self, amount: float) -> tuple[float, float]:
-        commission = max(amount * self.commission_rate, self.commission_min)
-        return commission, amount * self.transfer_fee_rate
+        return fees.buy_cost(self, amount)
 
     def sell_cost(self, amount: float) -> tuple[float, float, float]:
-        commission = max(amount * self.commission_rate, self.commission_min)
-        return (commission, amount * self.stamp_duty_rate,
-                amount * self.transfer_fee_rate)
+        return fees.sell_cost(self, amount)
 
 
 @dataclass

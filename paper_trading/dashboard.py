@@ -899,15 +899,15 @@ def _load_bars(bridge, syms: list[str], days: int):
 
 
 def _fee_of(cfg_path: str):
+    """面板回测/网格用的费用口径：**只从 config 的 TradingConfig 取**（T51 口径唯一）。
+
+    旧写法读 `load_config(cfg)["trading"]`，那个键不存在（返回的是 `trading_config`），
+    所以面板一直按硬编码费率算，与实盘/CLI 不同源——改 `config.yaml` 不生效。
+    """
     from paper_trading.engine.backtest import FeeModel
     from paper_trading.utils.config import load_config
 
-    t = (load_config(cfg_path).get("trading") or {})
-    return FeeModel(
-        commission_rate=float(t.get("commission_rate", 0.00025)),
-        commission_min=float(t.get("commission_min", 5.0)),
-        stamp_duty_rate=float(t.get("stamp_duty_rate", 0.0005)),
-        transfer_fee_rate=float(t.get("transfer_fee_rate", 0.00001)))
+    return FeeModel.from_trading_config(load_config(cfg_path)["trading_config"])
 
 
 def _optimize_payload(bridge, grid: str, symbols, days: int, cash: float,

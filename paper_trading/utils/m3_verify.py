@@ -17,6 +17,8 @@ import sqlite3
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+from . import fees
+
 #: 金额比对容差（元）。两侧都是 float 加总，1 分以下不算分歧（T38 同口径）。
 MONEY_TOL = 0.01
 
@@ -62,9 +64,13 @@ def check_fees(conn, cfg, today: str) -> dict:
     bad = []
     for f in fills:
         amount = abs(float(f["price"]) * int(f["volume"]))
-        want_commission = max(amount * float(cfg.commission_rate), float(cfg.commission_min))
-        want_stamp = amount * float(cfg.stamp_duty_rate) if int(f["direction"]) == -1 else 0.0
-        want_transfer = amount * float(cfg.transfer_fee_rate)
+        # 公式从 `utils/fees.py` 来（T51 口径唯一）：检查用的尺子必须与 broker
+        # 记账用的尺子是同一个函数，否则"红"可能是公式漂移而不是钱错
+        if int(f["direction"]) == -1:
+            want_commission, want_stamp, want_transfer = fees.sell_cost(cfg, amount)
+        else:
+            want_commission, want_transfer = fees.buy_cost(cfg, amount)
+            want_stamp = 0.0
         deltas = {"commission": float(f["commission"] or 0) - want_commission,
                   "stamp_duty": float(f["stamp_duty"] or 0) - want_stamp,
                   "transfer_fee": float(f["transfer_fee"] or 0) - want_transfer}

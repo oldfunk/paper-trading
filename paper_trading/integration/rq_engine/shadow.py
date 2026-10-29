@@ -22,6 +22,8 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
+from paper_trading.utils.fees import as_fee_dict
+
 from .runner import run_session
 
 #: 现金容差（元）。
@@ -40,10 +42,10 @@ def _legacy_side(*, today: str, bars_by_symbol: dict, plan: list, shadow_db: Pat
     """旧引擎影子账：同一天按收盘价限价撮合，产出现金/持仓/费用。
 
     两侧必须**同一口径起点**，否则对账比的是参数差异而不是引擎语义差异：
-    `TradingConfig` 默认 initial_cash=100 万、固定滑点 0.01 元
-    （`models/types.py:117-127`），rqalpha 侧滑点为 0——这里显式对齐。
-    费率（`fee`）也显式对齐：rqalpha 侧同一份费率进 `sys_transaction_cost`
-    倍率 + 过户费 overlay（`costs.py`），不各拿各的默认值。
+    初始资金/滑点在这里显式对齐（rqalpha 侧滑点为 0 ⇒ 旧线侧也置 0），
+    费率（`fee`）由 `shadow_day` 用 `as_fee_dict` 归一后**同一份**传给两侧：
+    rqalpha 侧进 `sys_transaction_cost` 倍率 + 过户费 overlay（`costs.py`），
+    旧线侧进 `TradingConfig` ⇒ 不存在"各拿各的默认值"。
     """
     from paper_trading.broker.paper_broker import PaperBroker
     from paper_trading.models import Order, TradingConfig
@@ -157,10 +159,11 @@ def shadow_day(*, today: str, data_db: str, bundle: str, symbols: list, plan: li
                fresh: bool = True) -> dict:
     """同日双跑 + 对账。`shadow_dir` 必填；与生产账本同路径直接拒绝。
 
-    `fee` 是**两侧共用**的费率口径（`commission_rate / commission_min /
-    stamp_duty_rate / transfer_fee_rate`）；不传就用 `TradingConfig` 默认值，
-    也就是现网账本的万 2.5 + 最低 5 元 + 千 0.5 卖出印花 + 0.001% 双向过户费。
+    `fee` 是**两侧共用**的费率口径来源（`TradingConfig` 或含四项费率的 dict）。
+    T51 起必须显式给：`as_fee_dict` 缺项即报错——影子对账的意义就是"同一把尺子量两侧"，
+    任何一侧偷偷用自己的默认值，`fee_delta` 就再也不可信。
     """
+    fee_map = as_fee_dict(fee)
     sd = Path(shadow_dir).resolve()
     prod = Path(production_account_db).resolve() if production_account_db else None
     legacy_db = sd / "paper_account.db"
@@ -179,12 +182,12 @@ def shadow_day(*, today: str, data_db: str, bundle: str, symbols: list, plan: li
     bars_by_symbol = {s: db.get_raw_bars(s, limit=30, end=f"{today}T23:59:59") for s in want}
     rq = _rq_side(today=today, data_db=str(data_db), bundle=bundle,
                   symbols=sorted(want), plan=plan, shadow_dir=sd, init_cash=init_cash,
-                  force=force, fee=fee)
+                  force=force, fee=fee_map)
     legacy = _legacy_side(today=today, bars_by_symbol=bars_by_symbol, plan=plan,
-                          shadow_db=legacy_db, init_cash=init_cash, fee=fee)
+                          shadow_db=legacy_db, init_cash=init_cash, fee=fee_map)
     diff = parity_diff(rq, legacy)
     return {"today": today, "plan": plan, "shadow_dir": str(sd),
-            "fee": dict(fee or {}), "rqalpha": rq, "legacy": legacy, "diff": diff,
+            "fee": fee_map, "rqalpha": rq, "legacy": legacy, "diff": diff,
             "ok": not diff["violations"] and rq.get("error") is None}
 
 

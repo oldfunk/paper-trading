@@ -13,6 +13,10 @@ from paper_trading.data.db_manager import DataDBManager
 from paper_trading.data.raw_feed import today_reference_state
 from paper_trading.data.source import BarSource
 from paper_trading.integration.rq_engine import costs
+
+from paper_trading.models import TradingConfig as _TC
+_FEE = {k: float(getattr(_TC(), k)) for k in
+        ('commission_rate', 'commission_min', 'stamp_duty_rate', 'transfer_fee_rate')}
 from paper_trading.integration.rq_engine.runner import build_config, session_fingerprint
 from paper_trading.integration.rq_engine.store import RawDayBarStore
 from paper_trading.models import Bar
@@ -165,16 +169,28 @@ def test_store_gate_can_be_disabled_explicitly(tmp_path):
 
 
 def test_config_and_fingerprint_carry_the_gate():
-    cfg_on = build_config(today="2026-10-29", data_db="d.db", bundle="b", symbols=["000651"])
+    cfg_on = build_config(today="2026-10-29", data_db="d.db", bundle="b", symbols=["000651"],
+                          fee=_FEE)
     assert cfg_on["mod"]["ptpaper"]["require_today_reference"] is True
     cfg_off = build_config(today="2026-10-29", data_db="d.db", bundle="b",
-                           symbols=["000651"], require_today_reference=False)
+                           symbols=["000651"], require_today_reference=False, fee=_FEE)
     assert cfg_off["mod"]["ptpaper"]["require_today_reference"] is False
     assert session_fingerprint(cfg_on) != session_fingerprint(cfg_off), \
         "闸的开/关会改变账本语义，必须进会话指纹（G-T13-5）"
 
 
 def test_costs_module_still_untouched_by_t50():
-    """回归护栏：T50 不许把 T38 的费率口径带偏。"""
-    assert costs.stock_cost_mod_config()["stock_commission_multiplier"] == pytest.approx(0.3125)
-    assert costs.TRANSFER_FEE_RATE == 0.00001
+    """回归护栏：T50 不许把 T38 的费率口径带偏。
+
+    T51 起这护栏换了写法：倍率仍等于现网率/框架率（0.00025/0.0008=0.3125），
+    但**数字来自 `TradingConfig`**，`costs.py` 自己不再持有费率常量。
+    """
+    from paper_trading.models import TradingConfig
+    from paper_trading.utils import fees as ufees
+
+    rate = TradingConfig().commission_rate
+    c = costs.stock_cost_mod_config(**{k: v for k, v in ufees.fee_dict(TradingConfig()).items()
+                                       if k != "transfer_fee_rate"})
+    assert c["stock_commission_multiplier"] == pytest.approx(rate / 0.0008)
+    assert c["stock_commission_multiplier"] == pytest.approx(0.3125)
+    assert not hasattr(costs, "TRANSFER_FEE_RATE"), "costs.py 不许再自带费率数字"
