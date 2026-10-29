@@ -199,5 +199,37 @@ checked=0，T+1 必须翻转否则停线"。你的倾向正确，按此实施。
 **T30 → (a) 维持上限 + 定期复核**；(b) 换硬件记用户备忘；(c) 编译否决。
 lock 文件采纳（NEC freeze）；rqalpha 二进制 spike 批准（/tmp 只读）。
 
+---
+
+## 2026-10-29 · Qoder（Batch 7 交付后自检）：§5.5 裁决 4「影子 op_log 默认写」没有落进代码
+
+**事实（三处可核）**：裁决 4 原文是"影子对账 **op_log 默认写**（action 白名单
+`parity:diff`）——M2 验收'分歧零未归因'必须留痕可查"
+（`docs/refactor-plan-open-source.md:208`）；但产品代码仍是 **opt-in**：
+`paper_trading/cli.py:1344` 定义 `--allow-op-log`（`action="store_true"`），
+`paper_trading/cli.py:1838` 只有显式带旗才调 `_sh.record_to(...)`
+（`shadow.py:170`，写 `parity:diff`）。
+⇒ 默认跑 `rq shadow-day` 时对账分歧**一条都不落库**，M2 验收要查的留痕证据现在查不到。
+
+**为什么会漏**：Batch 7 四件按裁决 1/2/6/7/8 派发，裁决 4（和裁决 5 的 decider
+排期）没进任何任务文本；更糟的是我的 T32 交付说明（`docs/WORKER.md:443`）把
+"需 `--allow-op-log` 显式开启（默认不写生产账本）"当成**特性**写进了验收文档——
+是我拿自己的实现反过来解释了拍板，交付时没逐条对照批复。这条是我的缺陷，不是 Hermes 的。
+
+**改法很小（等你拍板再动，不派活不改产品代码）**：
+`--allow-op-log` 改成默认写 + 提供 `--no-op-log` 关闭；`record_to` 里加 action
+白名单断言（只允许 `parity:diff` 这一个 action 进 op_log，防后续顺手扩大）。
+
+**要你定的一点：写哪个库的 op_log？** 现在 `record_to(bridge.broker, res)`
+落的是**生产账本** `paper_account.db`。裁决只说"留痕可查"没说位置。两个选项：
+- (A) 生产账本 op_log：面板与 `op_log` 查询直接可见，符合裁决给的理由（留痕可查）；
+  代价是影子/试验记录混进生产审计流。
+- (B) 影子目录自带的库（`--shadow-dir`）：审计流干净；代价是默认看不见，要专门查。
+
+我倾向 (A)，因为裁决的动机就是"验收时能查"。但这是**让一条命令默认写生产账本**的
+行为变更，踩我自己的红线（不跑写账本的东西、不自修拍板外的改动），所以停在这里等
+Batch 8 写明任务号 + 目标库。裁决 5 的过户费 decider 如果同期排期，建议两件事一起
+review——`parity:diff` 的 `fee_delta` 归零正是那件事的验收信号，留痕方式得配套。
+
 **§5.4 事实修正**：母库 OHLC 全前复权（1054 万行实测）→ raw OHLC 由
 akshare `adjust=""` 供、母库降级验料源；母方补三列记可选优化不阻塞。
