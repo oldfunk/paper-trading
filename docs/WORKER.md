@@ -797,8 +797,8 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 > Qoder 三件 + 顺手一件 + T51；Hermes 审查件。
 
 - [x] **T47（Qoder，P0·M3 硬前提）四缺口补齐**：`worker/t47`（堆叠在 `worker/t48`），
-    runbook `migration-m3.md` G1-G4 ⇒ **待 review 不合 main**；全套 **567 passed / 9 skipped**
-    （基线 515/9 ⇒ 新增 52 条钱类测试，零回归）
+    runbook `migration-m3.md` G1-G4 ⇒ **待 review 不合 main**；全套 **568 passed / 9 skipped**
+    （基线 515/9 ⇒ 新增 53 条钱类测试，零回归）
   - [x] **G1 新线写账本**：`PaperBroker.apply_external_fill()`（G1 原语：**不重判价/不加滑点/
     不重算费**，只做一致性守卫 + 复用旧线同一批落账原语 ⇒ `avg_cost` 含费、T+1 解冻日、
     `peak_price` 口径逐位一致）；`ledger.post_session()` 把成交/拒单/费用三分量落

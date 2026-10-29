@@ -91,6 +91,19 @@ def test_apply_external_fill_freezes_t1_with_next_trading_day(broker):
     assert fz[0]["unfreeze_date"] > TODAY            # 解冻日是下一交易日，不是当天
 
 
+def test_apply_external_fill_writes_entry_day_and_peak(broker):
+    """T49 复核点 #2 的直接回答：新线**必须**写 `entry_day`/`peak_price`。
+
+    `m3 verify` 的 T+1 项是按 `entry_day` 判"当日建仓不可卖"的——新线若不写这一列，
+    那条检查就永远查不出问题（假绿）。G1 复用旧线的 `_execute_buy`，所以这两列
+    与旧线同一条 SQL 写入；本条测试把它钉住，防止以后有人给新线另写一条落账路径。
+    """
+    broker.apply_external_fill(symbol="000651", direction=1, volume=1000, price=37.58)
+    pos = broker.get_position("000651")
+    assert pos.entry_day == datetime.now().date().isoformat()
+    assert pos.peak_price == pytest.approx(37.58)
+
+
 def test_apply_external_fill_insufficient_cash_writes_nothing(broker):
     """付不起就抛，且**一行都不写**——半笔成交是最难归因的账本腐烂。"""
     with pytest.raises(LedgerConsistencyError, match="账本只有"):

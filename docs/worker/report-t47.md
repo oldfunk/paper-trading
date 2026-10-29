@@ -1,7 +1,7 @@
 # report-t47 · M3 四缺口补齐 G1-G4 + 顺手项（Qoder，P0·M3 硬前提）
 
 分支 `worker/t47`（堆叠在 `worker/t48` ⇒ `worker/t50` ⇒ `origin/main@085e318`，**待 review 未合并**）。
-全套 **567 passed / 9 skipped**（基线 515/9 ⇒ 本任务新增 **52 条**，零回归）。
+全套 **568 passed / 9 skipped**（基线 515/9 ⇒ 本任务新增 **53 条**，零回归）。
 `spikes/mutation_t47.py` 十四个源码级变异逐个被杀（§6）。
 **没有对现网账本做过任何写操作**：所有落账/归档都在临时库上跑；
 `rq day --ledger` 的现网演练需要主 AI 另行授权（§7-Q2）。
@@ -79,9 +79,9 @@ docstring 已经写明为什么窗口不可信：**面板高频问答会把决�
    后面的笔不写；但**费用拆分缺分量**是另一级——先整批预检，任何一笔缺就**一笔都不写**
    （缺分量意味着这份 evidence 不是当前格式，写一半只会得到半本对不上的账）。
 
-## 5. 测试清单（`tests/test_ledger_gaps_t47.py`，52 条）
+## 5. 测试清单（`tests/test_ledger_gaps_t47.py`，53 条）
 
-- **G1 broker（8）**：逐字段落账（价/量/方向/三分量费用，**0 费不回填费率**）、
+- **G1 broker（9）**：逐字段落账（价/量/方向/三分量费用，**0 费不回填费率**）、
   `avg_cost` 含费、T+1 冻结行与解冻日、现金不足零写入、可卖量不足拒卖、
   卖光后不留 0 股幽灵行、垃圾入参参数化（0 量/0 价/负价/方向 0）。
 - **G1 ledger（7）**：三分量缺一即拒（三个键分别删）、整批缺分量零写入、
@@ -130,7 +130,17 @@ docstring 已经写明为什么窗口不可信：**面板高频问答会把决�
   `rq-nav`/`m3:switch`/`ledger:archive`）和 `store.gate_rejected`，T46 的十项里没有
   检查它们的条目（沿用 T46 报告里那条待答问题）。要加的话我另开一件，不动 T46 成品。
 
-## 8. 交付物清单
+## 8. 回应 Hermes T49 复核点 #2（`entry_day` 盲区）
+
+T49（`e718a26`）写「新线若不写 `positions.entry_day`，T+1 检查永远查不出；建议
+m3 verify 用 fills 推断（fallback），**或要求新线写 entry_day**」——那份报告完成时
+T47 还没交付（它自己写了"未见 report-t47"）。选后者，且已经成立：G1 的落账复用旧线
+同一条 `_execute_buy`，`entry_day=COALESCE(NULLIF(entry_day,''), today)` 与
+`peak_price=MAX(...)` 都写。新增 `test_apply_external_fill_writes_entry_day_and_peak`
+把这条钉住——**防止以后有人给新线另写一条不写 entry_day 的落账路径**（那条假绿比没绿更贵）。
+⇒ `m3 verify` 的 `t_plus_one` 项在新线下不需要 fills 兜底也能成立。
+
+## 9. 交付物清单
 
 | 文件 | 作用 |
 |---|---|
@@ -142,6 +152,6 @@ docstring 已经写明为什么窗口不可信：**面板高频问答会把决�
 | `paper_trading/engine/__main__.py` | 启动时底座校验与打印；未知值/框架缺失 ⇒ exit 2 |
 | `paper_trading/cli.py` | `rq day --ledger/--no-ledger/--ledger-dry`、`_ledger_decide`/`_ledger_apply`、`ledger executor`（只读）、`ledger archive`（`--yes` 才动账本）、`data fetch-raw --start/--end` |
 | `paper_trading/data/raw_feed.py` | `sync_raw(start=, end=)` + `flip_watch_with_mother(start=, end=)`；历史区间不做盘中跨源，默认路径语义不变 |
-| `tests/test_ledger_gaps_t47.py`（新） | 52 条钱类逐字段测试 |
+| `tests/test_ledger_gaps_t47.py`（新） | 53 条钱类逐字段测试 |
 | `spikes/mutation_t47.py`（新） | 13 个源码级变异 + 还原全绿 |
 | `docs/migration-m3.md` | §0 表格后加"T47 实现落点"小节（只标实现与命令，**不宣布缺口已关闭**——关闭判据要 review + 现网演练） |
