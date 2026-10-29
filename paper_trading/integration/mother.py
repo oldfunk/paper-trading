@@ -10,9 +10,12 @@
 4. **来源标注**：所有返回值经 :func:`paper_trading.integration.sources.block`
    包装，带 ``source/asof/stale/available``。
 
-注意（调整价口径）：母库 ``kline_daily`` 提供不复权/后复权，子项目自有日线是
-前复权（akshare ``qfq``）。两者不可直接混用于交易信号，因此 ``daily_bars``
-返回 ``adj`` 标注；执行路径仍以前复权本地数据为准（见 ``docs/mother-interface.md``）。
+注意（复权口径，T31 全表实测后如实）：母库 ``kline_daily`` 的
+``open/high/low/close`` **四列都是前复权**（10,548,933 行里 ``close==close_qfq``
+零例外，而与 ``close_raw`` 不等的占 80.6%）；**不复权的只有 ``close_raw`` 与
+``volume/amount``** ⇒ 母库不能供 raw OHLC。子项目自有日线 ``daily_bars`` 也是前复权
+（akshare ``qfq``），二者口径一致故绝对价位可比；引擎要的原始价走
+``daily_bars_raw``（见 ``data/raw_feed.py``）。``daily_bars`` 返回 ``adj`` 标注实际口径。
 """
 from __future__ import annotations
 
@@ -403,10 +406,12 @@ def daily_bars(codes: Iterable[str], days: int = 250,
             adj = None
             if conn is not None and _has(conn, "kline_daily",
                                          ("code", "trade_date", "close")):
-                # 复权口径优先级：close_qfq（前复权，母方 Issue #8 交付后可用，
-                # 与本地 akshare qfq 同口径、绝对价位可比）→ close_adj（后复权，
-                # 绝对价位与本地不可比）→ 不复权 close。close_qfq 列不存在或
-                # 值为 NULL（老数据/回填中）逐行降级，不影响其他行。
+                # 复权口径优先级（T31 实测后如实）：close_qfq（前复权，母方 Issue #8
+                # 交付，与本地 akshare qfq 同口径、绝对价位可比）→ close_adj（后复权，
+                # 绝对价位不可比）→ **close**。注意最后一级**不是不复权**：母库的
+                # ``close`` 列实测与 ``close_qfq`` 全表一致（10,548,933 行零例外），
+                # 所以整条链实际是 qfq → hfq → qfq；真要不复权请读 ``close_raw``。
+                # close_qfq 列不存在或为 NULL（回填中）时逐行降级，不影响其他行。
                 has_qfq = _has(conn, "kline_daily", ("close_qfq",))
                 cols = ("trade_date, open, high, low, close, volume, amount, "
                         "close_adj" + (", close_qfq" if has_qfq else ""))
@@ -438,8 +443,11 @@ def daily_bars(codes: Iterable[str], days: int = 250,
                     source = mother_source("kline_daily")
                     asof = _as_date(rows[0]["trade_date"])
                     r0 = rows[0]
-                    adj = ("qfq" if r0.get("close_qfq")
-                           else "hfq" if r0.get("close_adj") else "raw")
+                    # 标签必须与**实际取到的那一列**一致（§5.5 裁决 1）：兜底列
+                    # ``close`` 是前复权，不是不复权 ⇒ 这里不能再报 "raw"，
+                    # 否则 provenance 会把 qfq 数字当成交易所价来用（尺度污染事故类）。
+                    adj = ("hfq" if not r0.get("close_qfq") and r0.get("close_adj")
+                           else "qfq")
             # —— 尺度闸（v0.7.6，跨源对照，2026-10-27 事故教训）——
             # 母库有价且调用方给了本地源时，同日收盘比对；超容差=尺度污染
             # （取错列/复权口径回退），拒用母库这批 bars 回退本地并告警。
@@ -543,6 +551,39 @@ def raw_close_map(codes: Iterable[str], days: int = 30,
 
 
 # ---------- 基本面 / 财务 / 股息 / 基准 / 新闻 / 筛选 / 论点 / 追踪 ----------
+
+def raw_close_asof(codes: Iterable[str], mother: Optional[Path] = None,
+                   ttl: float = TTL_QUOTES) -> dict:
+    """验料源自身的新鲜度：`{code: close_raw 已覆盖到的最后一天}`。
+
+    G-T13-1 的"当日允许 checked=0，T+1 必须翻转"要靠它区分
+    **母库还没给参照**（`waiting_reference`，只告警）与
+    **参照已有我们却没重跑对照**（`checked_not_flipped`，停线）。
+    """
+    out: dict = {}
+    conn = _conn(mother)
+    if conn is None:
+        return out
+    try:
+        if not _has(conn, "kline_daily", ("code", "trade_date", "close_raw")):
+            return out
+        for code in dict.fromkeys(str(c).strip().zfill(6) for c in (codes or [])):
+            def _fetch():
+                r = conn.execute(
+                    """SELECT MAX(trade_date) FROM kline_daily
+                       WHERE code = ? AND close_raw IS NOT NULL""", (code,)).fetchone()
+                return _as_date(r[0]) if r and r[0] else ""
+            try:
+                out[code] = _cached(f"rawasof:{_dbkey(conn)}:{code}", ttl, _fetch)
+            except Exception:               # noqa: BLE001
+                out[code] = ""
+    finally:
+        try:
+            conn.close()
+        except Exception:                   # noqa: BLE001
+            pass
+    return out
+
 
 def financial_summary(codes: Iterable[str], mother: Optional[Path] = None,
                       ttl: float = TTL_FUNDAMENTAL) -> dict:
