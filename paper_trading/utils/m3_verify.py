@@ -22,6 +22,17 @@ from . import fees
 #: 金额比对容差（元）。两侧都是 float 加总，1 分以下不算分歧（T38 同口径）。
 MONEY_TOL = 0.01
 
+#: 收盘 NAV 的"到点"时刻（T54 NEC 预跑照出来的盘中假红）：旧线由 16-18 点的
+#: `agent tick` 收盘窗口写 NAV（crontab `*/5 16-18 * * 1-5`），给 5 分钟尾巴。
+CLOSE_NAV_DUE = (18, 5)
+#: 影子对账留痕的"到点"时刻：runbook §3 的 15:40 影子 cron + 5 分钟尾巴。
+#: 未到点时"今天没有 parity:diff"是**正常**，文案不许指控"cron 没跑"。
+PARITY_DUE = (15, 45)
+#: 心跳文件的候选路径：先按 cwd（cron 与仓库根等价的情形），再按仓库根
+#: （操作者从 `~` 或 scratch 目录跑 `m3 verify` 的情形——T54 实测就是这种，
+#: 读不到文件被当成"应跳未跳"报了假红）。
+HEARTBEAT_CANDIDATES = ("var/heartbeat.json",)
+
 STATUS_ORDER = {"red": 0, "warn": 1, "skip": 2, "green": 3}
 
 
@@ -112,8 +123,15 @@ def check_t_plus_one(conn, today: str) -> dict:
                 money=True, on_red="回退")
 
 
-def check_nav(conn, today: str) -> dict:
-    """收盘 NAV：当天必须恰 1 行，且 `total_value = cash + market_value` 自洽。"""
+def check_nav(conn, today: str, now: Optional[datetime] = None) -> dict:
+    """收盘 NAV：当天必须恰 1 行，且 `total_value = cash + market_value` 自洽。
+
+    T54（NEC 预跑照出来的）：**盘中查今天**必然 0 行——旧线的收盘 NAV 由
+    16-18 点的 `agent tick` 收盘窗口写（crontab `*/5 16-18 * * 1-5`）。
+    切换日第一小时清单正好在那个时段跑，把"还没到点"报成**钱类红**
+    ⇒ 等于指挥操作者"立即回退"，而线根本没坏。⇒ 未到点判 warn 并写明到点时间；
+    过了点仍无行，照旧钱类红（真断供是必须响的）。
+    """
     if not _has_table(conn, "nav_history"):
         return item("nav", "NAV 收盘记录", "skip", "nav_history 表不存在",
                     money=True, on_red="回退")
@@ -123,6 +141,14 @@ def check_nav(conn, today: str) -> dict:
                     on_red="回退")
     todays = [r for r in rows if _day(r["timestamp"]) == today]
     if len(todays) == 0:
+        tn = now or datetime.now()
+        not_due = (today == tn.date().isoformat()
+                   and (tn.hour, tn.minute) < CLOSE_NAV_DUE)
+        if not_due:
+            return item("nav", "NAV 收盘记录", "warn",
+                        f"{today} 尚无 NAV 行——收盘窗口未过（{CLOSE_NAV_DUE[0]:02d}:"
+                        f"{CLOSE_NAV_DUE[1]:02d} 之后才该有），当前 {tn:%H:%M}",
+                        money=True, on_red="回退")
         return item("nav", "NAV 收盘记录", "red", f"{today} 没有 NAV 行（面板会断供）",
                     money=True, on_red="回退")
     if len(todays) > 1:
@@ -184,13 +210,19 @@ def check_raw_gate(db, symbols, today, days: int = 60) -> dict:
 
 
 # ---------------- 审计与链路检查 ----------------
-def check_parity_trace(conn, today: str) -> dict:
+def check_parity_trace(conn, today: str, now: Optional[datetime] = None) -> dict:
     """影子对账留痕：当天要有 `parity:diff`，且三个 delta 全零或已归因。"""
     if not _has_table(conn, "op_log"):
         return item("parity_trace", "双轨影子留痕连续", "skip", "op_log 表不存在")
     rows = _rows(conn, "SELECT * FROM op_log WHERE action='parity:diff' "
                        "AND substr(timestamp,1,10)=? ORDER BY id", (today,))
     if not rows:
+        tn = now or datetime.now()
+        if today == tn.date().isoformat() and (tn.hour, tn.minute) < PARITY_DUE:
+            return item("parity_trace", "双轨影子留痕连续", "warn",
+                        f"{today} 尚无 parity:diff——影子时点未到"
+                        f"（{PARITY_DUE[0]:02d}:{PARITY_DUE[1]:02d} 之后才该有），"
+                        f"当前 {tn:%H:%M}")
         return item("parity_trace", "双轨影子留痕连续", "warn",
                     f"{today} 没有 parity:diff（影子 cron 没跑，或用了 --no-op-log）")
     unattr = []
@@ -263,8 +295,33 @@ def check_conditional_chain(conn, today: str) -> dict:
                 json.dumps([{"status": r["status"], "n": r["n"]} for r in t])[:200])
 
 
+def resolve_heartbeat_path(path=None, *, cwd=None, root=None) -> tuple:
+    """心跳文件定位（T54：NEC 实测的假红就在这）。
+
+    cron 的 cwd 是仓库根 ⇒ 相对路径能用；操作者从 `~` 或 scratch 目录跑
+    `m3 verify` 时同一个相对路径读到的是"不存在的文件"，旧实现把它当成
+    "应跳未跳"报**红**（`heartbeat.load()` 缺文件回退空 dict，ages 全 None）。
+    ⇒ 候选顺序：显式 `--heartbeat` ＞ cwd/ ＞ 仓库根/；都没有就返回 None，
+      由调用方判 `skip`（"没证据"不等于"线挂了"）。
+    """
+    from pathlib import Path
+
+    if path:
+        p = Path(path)
+        return (p if p.exists() else None), [str(p)]
+    _cwd = Path(cwd) if cwd else Path.cwd()
+    _root = Path(root) if root else Path(__file__).resolve().parents[2]
+    cands = [_cwd / HEARTBEAT_CANDIDATES[0], _root / HEARTBEAT_CANDIDATES[0]]
+    out = [str(c) for c in cands]
+    for c in cands:
+        if c.exists():
+            return c, out
+    return None, out
+
+
 def check_heartbeat(path=None, now: Optional[datetime] = None,
-                    thresholds: Optional[dict] = None) -> dict:
+                    thresholds: Optional[dict] = None, *,
+                    cwd=None, root=None) -> dict:
     """引擎/代理心跳：在"本该跳"的时段里超时 ⇒ 线根本没跑（面板与 cron 的唯一活着证据）。
 
     非应跳时段（周末/夜间）不判停滞，但会把"为什么没判"写出来——
@@ -272,12 +329,18 @@ def check_heartbeat(path=None, now: Optional[datetime] = None,
     """
     from paper_trading.utils import heartbeat as hb
 
+    resolved, tried = resolve_heartbeat_path(path, cwd=cwd, root=root)
+    if resolved is None:
+        return item("heartbeat", "引擎/代理心跳", "skip",
+                    f"找不到心跳文件（试过：{'; '.join(tried)}）——"
+                    "请用 --heartbeat 指定，或在仓库根运行")
     th = thresholds or hb.DEFAULT_THRESHOLDS
     try:
-        ages = {n: hb.age(n, path=path, now=now) for n in th}
+        ages = {n: hb.age(n, path=resolved, now=now) for n in th}
         dues = {n: hb.due(n, now=now) for n in th}
     except Exception as exc:                      # noqa: BLE001 - 读不到就明说
-        return item("heartbeat", "引擎/代理心跳", "skip", f"心跳读取失败：{exc}")
+        return item("heartbeat", "引擎/代理心跳", "skip",
+                    f"心跳读取失败：{exc}（文件 {resolved}）")
     late = [n for n in th
             if dues.get(n) and (ages.get(n) is None or ages[n] > th[n])]
     parts = []
@@ -285,7 +348,7 @@ def check_heartbeat(path=None, now: Optional[datetime] = None,
         a = ages.get(n)
         shown = "无记录" if a is None else f"{a:.0f}s"
         parts.append("%s=%s%s" % (n, shown, "（应跳）" if dues.get(n) else "（不在时段）"))
-    detail = " ".join(parts)
+    detail = " ".join(parts) + f"｜文件 {resolved}"
     if late:
         return item("heartbeat", "引擎/代理心跳", "red",
                     f"应跳未跳：{late}；阈值 {th}", on_red="归因（cron/锁/进程）")
@@ -306,10 +369,10 @@ def verify_all(*, broker, data_db, symbols: list, today: str,
         items = [
             check_fees(conn, cfg, today),
             check_t_plus_one(conn, today),
-            check_nav(conn, today),
+            check_nav(conn, today, now=now),
             check_duplicate_fills(conn, today),
             check_raw_gate(data_db, symbols, today, days=days),
-            check_parity_trace(conn, today),
+            check_parity_trace(conn, today, now=now),
             check_audit_trail(conn, today),
             check_plan_chain(conn, today),
             check_conditional_chain(conn, today),
@@ -331,7 +394,11 @@ def verify_all(*, broker, data_db, symbols: list, today: str,
 
 def format_text(res: dict) -> str:
     mark = {"green": "✅", "red": "❌", "warn": "⚠️ ", "skip": "⚪"}
-    lines = [f"M3 验证（{res['today']}）  绿 {res['green']} / 警 {res['warn']} / "
+    # 池来源必须出现在人读输出里：T54 在 NEC 实测——操作者从 `~` 跑时 cwd 没有
+    # config.yaml，标的池解出来是空的，raw_gate 于是报"股票池为空"；
+    # 看不见来源就会把它误读成"没什么要查的"。
+    pool = f"｜池 {res['pool_source']}" if res.get("pool_source") else ""
+    lines = [f"M3 验证（{res['today']}{pool}）  绿 {res['green']} / 警 {res['warn']} / "
              f"红 {res['red']} / 跳 {res['skipped']}"]
     for i in res["items"]:
         tag = "钱" if i["money"] else " "

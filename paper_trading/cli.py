@@ -1402,7 +1402,10 @@ def main() -> None:
     m3_verify.add_argument("--no-picks", action="store_true")
     m3_verify.add_argument("--days", type=int, default=60,
                            help="行情台账审计窗口（自然日，与 fetch-raw 同一口径）")
-    m3_verify.add_argument("--heartbeat", default=None, help="心跳文件路径（默认 var/heartbeat.json）")
+    m3_verify.add_argument("--heartbeat", default=None,
+                           help="心跳文件路径；不给则依次试 cwd/var/heartbeat.json 与"
+                                "仓库根 var/heartbeat.json（T54：都找不到时报 skip，"
+                                "不再假红「应跳未跳」）")
     m3_verify.add_argument("--money-only", action="store_true",
                            help="只看钱类项（切换日第一小时用）")
     m3_verify.add_argument("--json", action="store_true")
