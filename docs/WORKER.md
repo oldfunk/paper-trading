@@ -935,10 +935,42 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     补丁在哪）/ 不可行（退回 T48 推荐路径）；`report-t52.md`
   - [ ] 若可行：给出"每分钟进程 + 逐笔撮合 + 日终 rqalpha 会话对账"的
     最终架构草图（M3 拍板输入）
-- [ ] **T53（Qoder，P1·小）测试日期敏感性根治**：`test_mother_contract`
-  fixture 动态化（硬编码 2026-10-2x 全改相对今天的工作日）+ 全测试扫描
-  硬编码"今天/近期日期"的断言（两次 flaky 教训：today+10 落周六、
-  stale 写死布尔）——产出清单 + 修复 + `report-t53.md`
+- [x] **T53（Qoder，P1·小）测试日期敏感性根治**：`worker/t53`（基于 main@901bee6，
+    **待 review 不合 main**）；全套 **594 passed / 9 skipped**（净增 7 条守卫，零回归）
+  - [x] 病根定位：**基准日没作为参数传进去**——产品读墙钟、测试写死日期，
+    真实日历推进必然分叉。monkeypatch 拦不住：`sources.block()` 是**函数内**
+    `from datetime import date`（`sources.py:36`），`mother._stale()` 同理
+    ⇒ 按 T41/T47/T50 已有约定补两个注入点：`sources.block(..., today=)`、
+    `mother.daily_bars(..., today=)`，**默认行为不变**
+    （`test_default_today_is_unchanged` 逐字段比对，剔除定义上依赖基准日的 `stale`）
+  - [x] `test_mother_contract` fixture 动态化：`_weekday(offset)`（偏移后回退到最近
+    **工作日**）给出 `D_LATEST/D_PREV/D_NEXT/D_SEQ`，母库 8 处日期簇 + 本地三日行情
+    + 两处 `UPDATE ... trade_date=?` 参数绑定全部改相对；新鲜度断言改为
+    显式 `today=D_LATEST`（可再断 `stale is False`，前提由测试钉住）
+  - [x] 两把扫描工具：`spikes/date_flaky_scan_t53.py`（**AST 取代码字符串字面量**，
+    注释/docstring 里的历史叙述不算——第一版逐行正则误报的教训；RISK-A/A′/B 分级 +
+    `--json` 清单）与 `spikes/clock_shift_t53.py`（**把墙钟拨快 N 天真跑 pytest**，
+    红名单才是清单；grep 只给候选）
+  - [x] 拨钟实验：平拨 0 天有 3 条 harness 自身副作用（假 `date` 破坏 isinstance）；
+    治前 +7 天 21 红（含 mother 那条）；治后 mother 那条**从红名单消失**，
+    真实日历上（今天 2026-10-30 跑）全套 594 绿
+  - [x] 清单 + 归因（report-t53 §4）：剩下的红分两类——**类 A 仪器误差**
+    （fixture 用真钟、产品被拨假钟，真实推进不会坏：本件的 default-unchanged、
+    T47 entry_day、T51 m3_verify）与**类 B 真会老化** 15 条
+    （`test_agent` 7 / `test_engine_cond` 3 / `test_m1_correctness` 3 /
+    `test_engine_switch` 1 / `test_runtime` 1，涉及 agent 计划日、条件单 expiry、
+    持仓元数据/日预算、sync 窗口 4 个产品时钟读取点）
+  - ⚠️ **类 B 我没在这件里一起改**：那 3 个文件是 Hermes/OpenCode 在途任务
+    （T15b2/b3）正在动的范围，且切换日在本周末——不在切换前 48 小时改别人在途的
+    测试与产品入口。建议派 T56 或本件续做，验收命令现成：
+    `python spikes/clock_shift_t53.py 7` 的红名单应只剩类 A
+  - [x] 守卫测试 7 条（`tests/test_date_hygiene_t53.py`）：注入语义、默认不变、
+    **周末规则**（today+10 落周六那一类）、**stale 不许写死布尔**、
+    扫描器**正控制**（植入"今天+3"必须被抓、故意历史日期不许误报）、
+    "谁再写死近今天日期就立刻红"（±45 天白名单外零容忍）
+  - [x] 三条请主 AI 定的（questions.md）：类 B 何时做／"新鲜度判定必须收
+    today/now 参数，不许函数内 import 后直接读钟"要不要写进 AGENTS／
+    拨钟 harness 的 3 条噪声要不要改成注入式插件
 - [ ] **T54（Qoder，P1·小）m3 verify 生产预跑**：NEC 上以当前（旧线）状态
   跑 `python -m paper_trading.cli m3 verify`——预期：钱类 4 项按现网应绿或
   合理 skip，工具本身在生产环境可用可用性验证（**不是**切换验收）；
