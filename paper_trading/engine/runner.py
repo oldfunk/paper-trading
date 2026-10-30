@@ -400,7 +400,7 @@ class EngineRunner:
                       prev_close=float(q.get("prev_close") or 0.0),
                       ref_high=float(q.get("high") or price),
                       ref_low=float(q.get("low") or price))
-        if self.cfg.get("executor") == "rq":
+        if self.cfg.get("executor") in ("rq", "rqalpha"):   # rqalpha 是 G3 校验枚举值
             # M3b：撮合执行交 rq 引擎（判定仍在 L2 evaluate，纪律 1 不变）——
             # 意图入队，`rq tick` 每 5 分钟分钟会话消费（T+1/涨跌停/费用=框架）
             from paper_trading.integration.rq_engine.queue import enqueue
@@ -654,7 +654,7 @@ class ConditionRunner:
                       prev_close=float(quote.get("prev_close") or 0.0),
                       ref_high=float(quote.get("high") or price),
                       ref_low=float(quote.get("low") or price))
-        if self.executor == "rq":
+        if self.executor in ("rq", "rqalpha"):
             # M3b：条件单触发同样交 rq 引擎执行（判定仍在 L2 ConditionRunner）
             from paper_trading.integration.rq_engine.queue import enqueue
             db = getattr(self.b.broker, "db_path", None)
