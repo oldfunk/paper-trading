@@ -350,12 +350,16 @@ class _SessionState:
             ob = to_order_book_id(act["symbol"])
             # 5 分钟对齐空档：rqalpha 1m 事件按日历逐分钟，5 分钟 bar 只在
             # :35/:40/... 落地——无当根 bar 时下单会抛空消息 CustomException。
+            # BarMap 用 [] 访问（无 .get；不存在抛 KeyError）。
             # 跳过等下一根（**不记 executed**，有 bar 的那跳再提交）
             try:
-                bar = bar_dict.get(ob)
-            except Exception:                 # noqa: BLE001
+                bar = bar_dict[ob]
+            except Exception:                 # noqa: BLE001 - KeyError/AttributeError 均视为无 bar
                 bar = None
-            if bar is None or not float(getattr(bar, "last_price", 0) or 0):
+            bp = float(getattr(bar, "last_price", 0) or 0) if bar is not None else 0.0
+            if not bp and bar is not None:
+                bp = float(getattr(bar, "close", 0) or 0)   # 分钟 bar 无 last_price 时用 close
+            if bar is None or not bp:
                 continue
             vol = vol_i * (1 if act["action"] == "buy" else -1)
             o = order_shares(ob, vol)
