@@ -400,6 +400,22 @@ class EngineRunner:
                       prev_close=float(q.get("prev_close") or 0.0),
                       ref_high=float(q.get("high") or price),
                       ref_low=float(q.get("low") or price))
+        if self.cfg.get("executor") == "rq":
+            # M3b：撮合执行交 rq 引擎（判定仍在 L2 evaluate，纪律 1 不变）——
+            # 意图入队，`rq tick` 每 5 分钟分钟会话消费（T+1/涨跌停/费用=框架）
+            from paper_trading.integration.rq_engine.queue import enqueue
+            from paper_trading.utils import heartbeat as _hb
+            db = getattr(self.b.broker, "db_path", None) or \
+                getattr(getattr(self.b, "data_db", None), "db_path", None)
+            if not db:
+                return {"ok": False, "why": "rq 执行器缺账本路径（配置错误）"}
+            enqueue(db, sym, side, volume, rule_ref=f"rule:{rid}",
+                    detail={"price": price, **detail})
+            _hb.touch("engine", ok=True, detail=f"rq-enqueue {rid}:{sym}:{side}")
+            self.state.log_trigger(now.isoformat(), day, rid, sym, side,
+                                   "queued_rq", {**detail, "volume": volume})
+            return {"ok": True, "queued": True,
+                    "why": "已交 rq 引擎队列（下一跳 ≤5 分钟执行）"}
         res = self.b.broker.submit_order(order)
         st = res.status.value
         self.state.log_trigger(now.isoformat(), day, rid, sym, side, st,
@@ -479,7 +495,8 @@ class ConditionRunner:
 
     def __init__(self, bridge, orders, dry_run: bool = False,
                  min_ticket_cny: float = 0.0, max_per_day: int = 8,
-                 enabled: bool = True, state: Optional[EngineState] = None):
+                 enabled: bool = True, state: Optional[EngineState] = None,
+                 executor: Optional[str] = None):
         self.b = bridge
         self.orders = orders
         self.dry_run = dry_run
@@ -489,6 +506,16 @@ class ConditionRunner:
         self.enabled = bool(enabled)
         # 与规则引擎共用日内订单预算（同一账户同一天的总量不被叠加绕过）
         self.state = state
+        # M3b：执行器（legacy=PaperBroker 直撮；rq=入队交 rq 分钟会话）。
+        # 未显式传时从 engine config 读——三个构造点（runner/cli/dashboard）行为一致
+        if executor is None:
+            try:
+                from paper_trading.engine.config import load_engine_config
+                executor = load_engine_config(
+                    getattr(bridge, "config_path", "config.yaml")).get("executor")
+            except Exception:                 # noqa: BLE001 - 配置读不到走 legacy
+                executor = None
+        self.executor = str(executor or "legacy")
 
     def tick(self, quotes: Optional[dict] = None) -> dict:
         from paper_trading.data import realtime as rt
@@ -627,6 +654,18 @@ class ConditionRunner:
                       prev_close=float(quote.get("prev_close") or 0.0),
                       ref_high=float(quote.get("high") or price),
                       ref_low=float(quote.get("low") or price))
+        if self.executor == "rq":
+            # M3b：条件单触发同样交 rq 引擎执行（判定仍在 L2 ConditionRunner）
+            from paper_trading.integration.rq_engine.queue import enqueue
+            db = getattr(self.b.broker, "db_path", None)
+            if not db:
+                return {"ok": False, "why": "rq 执行器缺账本路径（配置错误）"}
+            enqueue(db, sym, side, volume, rule_ref=f"cond:{d['id']}",
+                    detail={"price": price, "cond": f"{d['cond_type']}{d['cond_value']}"})
+            self.orders.mark(d["id"], "queued_rq", price,
+                             {"volume": volume, "why": "交 rq 引擎队列"}, now)
+            return {"ok": True, "queued": True,
+                    "why": "条件触发，已交 rq 引擎队列（下一跳 ≤5 分钟执行）"}
         res = self.b.broker.submit_order(order)
         st = res.status.value
         if st != "filled":

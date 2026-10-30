@@ -1475,6 +1475,14 @@ def main() -> None:
     rq_state.add_argument("--days", type=int, default=260)
     rq_state.add_argument("--json", action="store_true")
 
+    # M3b tick：消费 rq_intents 队列的分钟会话（cron 每 5 分钟；切换后的执行入口）
+    rq_tick = rq_sub.add_parser(
+        "tick", help="M3b：消费意图队列（分钟会话 1m + 日内续跑 + ledger 落账）")
+    rq_tick.add_argument("--json", action="store_true")
+    rq_tick.add_argument("--state-root", default=None,
+                         help="状态根目录（默认 var/rq_state；每日子目录=当日窗口）")
+    rq_tick.add_argument("--limit", type=int, default=20, help="单跳最多消费意图数")
+
     # health（T22 生产心跳/看门狗：消灭"engine 静默停摆"这类靠肉眼发现的故障）
     health_parser = subparsers.add_parser(
         "health", help="生产心跳与看门狗（engine/agent 停滞、面板宕机 → 告警+流水）")
@@ -1911,7 +1919,42 @@ def main() -> None:
 
             cmd = getattr(args, "rq_command", None)
             plan = _json.loads(args.plan) if hasattr(args, "plan") else []
-            if cmd == "state":
+            if cmd == "tick":
+                # M3b 执行入口：消费意图队列 → 分钟会话（1m+日内续跑）→ ledger 落账
+                from datetime import date as _date
+
+                from paper_trading.integration.rq_engine import queue as _q
+
+                if not rq_alpha_available():
+                    emit({"ok": False, "error": "本环境未安装 rqalpha（tick 需引擎 venv）"})
+                    sys.exit(2)
+                acct_db = str(bridge.broker.db_path)
+                today = _date.today().isoformat()
+                intents = _q.pending(acct_db)[: int(args.limit)]
+                if not intents:
+                    emit({"ok": True, "idle": True, "why": "队列空，本跳无事"})
+                    sys.exit(0)
+                executed = _q.executed_keys_from_ledger(acct_db, today)
+                syms = sorted({i["symbol"] for i in intents})
+                state_root = _P(args.state_root or "var/rq_state")
+                state_dir = str(state_root / today)
+                res = _rq.run_session(
+                    today=today, data_db=args.data_db, bundle=_bundle_path(None),
+                    symbols=syms, plan=intents, state_dir=state_dir,
+                    workdir=state_dir, fee=bridge.broker.config,
+                    frequency="1m", intraday_resume=True,
+                    executed_ids=executed, ledger=True)
+                # 按会话结果推进队列状态（FILLED 的标 executed；未成交留 queued 下跳续）
+                filled_syms = {str(t.get("symbol", "")).split(".")[0]
+                               for t in (res.get("evidence", {}).get("trades") or [])}
+                for it in intents:
+                    if it["symbol"] in filled_syms:
+                        _q.mark(acct_db, it["biz_id"], "executed",
+                                {"session": today})
+                emit(res)
+                if res.get("error") or not res.get("gates", {}).get("ok"):
+                    sys.exit(1)
+            elif cmd == "state":
                 from datetime import date as _date
 
                 from paper_trading.data.db_manager import DataDBManager
