@@ -25,6 +25,27 @@ from .provider import SessionGate, SessionGateError, config_fingerprint
 from .store import to_order_book_id
 
 PKG_DIR = Path(__file__).resolve().parent
+
+
+def _parse_dt(value):
+    """把意图的决策时刻解析成 naive 本地 datetime（与 `context.now` 同尺度）。
+
+    解不开就返回 None ⇒ 不门控（旧行为），但归因表里会留空串，
+    审计时看得见"这条意图没有决策时刻"。
+    """
+    if not value:
+        return None
+    s = str(value).strip().replace("/", "-")
+    if s.endswith(("Z", "+00:00")):
+        s = s[:-1]
+    try:
+        d = datetime.fromisoformat(s)
+    except ValueError:
+        try:
+            d = datetime.fromisoformat(s[:19])
+        except ValueError:
+            return None
+    return d.replace(tzinfo=None) if d.tzinfo else d
 MOD_ALIAS = "rqalpha_mod_ptpaper"          # rqalpha 的 mod 装载名（mod/__init__.py:54）
 
 
@@ -284,9 +305,12 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
         gate.mark_done(date.fromisoformat(today), fp,
                        {"fills": verdict["fills"], "rejects": verdict["rejects"]})
         done = True
+    # `waiting` 是"到收盘为止仍未定局"的清单：提交过或记过结论的都摘掉（见
+    # `_SessionState.final_waiting`），否则归因表会把已定局的意图报成"还在等"。
     return {
         "today": today, "plan": plan, "error": err, "fingerprint": fp,
         "handler_dates": st.handler_dates, "orders": st.orders,
+        "submits": st.submits, "waiting": st.final_waiting(),
         "snapshots": st.snapshots, "evidence": evidence, "gates": verdict,
         "session_marked_done": done, "evidence_path": evidence_path,
     }
@@ -305,15 +329,52 @@ class _SessionState:
         self.plan = plan or []
         #: T52-R4 意图幂等：key = `symbol[:6]_side_volume`（6 位码归一——
         #: plan 用 '000792'、框架成交是 '000792.XSHE'，不归一过滤会失效重复下单）
-        self.executed_ids = set(executed_ids or ())
+        #: `_ledger_keys` 只装**账本当日真有成交**的 key；会话内新提交的 key 走
+        #: `_submitted_keys`——两者混用（旧写法）会让"同跳的第二条同款意图"也被
+        #: 标成"幂等命中已成交"，而账本里根本没有它第二笔（现网 2026-10-30 实测）。
+        self._ledger_keys = set(executed_ids or ())
+        self.executed_ids = set(self._ledger_keys)
+        self._submitted_keys: set = set()
+        #: 一条意图一个会话只定一次局（日内续跑会重放当天全部 bar，不设这道闸
+        #: 同一 biz_id 会在早盘记一条、晚盘再记一条，归因表拿"最后一条"当结论）
+        self._handled: set = set()
         self.handler_dates: list = []
         self.orders: list = []
         self.snapshots: list = []
+        #: 每跳的提交归因表（M3 接管②）：biz_id / 决策时刻 / 实际提交在哪根 bar。
+        #: 没有它就无法证明"成交价来自决策时点之后"，事后只能靠 symbol+量猜。
+        self.submits: list = []
+        self.waiting: list = []
+        self._waiting_seen: set = set()
 
     @staticmethod
     def intent_key(symbol, side: str, volume: int) -> str:
         code = str(symbol).split(".")[0][:6].zfill(6)
         return f"{code}_{side.upper()}_{int(volume)}"
+
+    @staticmethod
+    def decide(act: dict, now) -> str:
+        """决策时点门：'go' 可以提交，'wait' 还没到点（M3 接管①，修 P0-2）。
+
+        日内续跑会把当天 240 根 bar 全部重放（`executor` 只跳 `before_trading`，
+        T13 §4.7），不设这道门就会让 16:49 的决定成交在 09:31 的价上。
+        解不出 `decided_at` ⇒ 'go'（保持旧行为），但归因表里会留下空串可查。
+        """
+        decided = _parse_dt(act.get("decided_at"))
+        if decided is None or now is None:
+            return "go"
+        return "wait" if now < decided else "go"
+
+    def final_waiting(self) -> list:
+        """到本跳为止**仍未定局**的意图（提交过 / 被去重 / 被拒的都摘掉）。
+
+        `waiting` 本身是逐 bar 累积表（决策时点未到先记一条），直接当结论返回会
+        把已经定局的意图报成"还在等"——归因表报错时刻比不报更糟（现网实测：
+        waiting_decision=3，而三条其实都已 executed/rejected）。
+        """
+        settled = ({str(s.get("biz_id") or "") for s in self.submits}
+                   | {str(o.get("biz_id") or "") for o in self.orders})
+        return [w for w in self.waiting if str(w.get("biz_id") or "") not in settled]
 
     def _snap(self, context, tag: str) -> dict:
         from rqalpha.const import POSITION_DIRECTION
@@ -338,19 +399,49 @@ class _SessionState:
     def handle_bar(self, context, bar_dict):
         from rqalpha.api import order_shares
 
-        self.handler_dates.append(str(context.now)[:10])
+        now = getattr(context, "now", None)
+        self.handler_dates.append(str(now)[:10])
         for act in self.plan:
             if act.get("action") not in ("buy", "sell") or not act.get("volume"):
                 continue
             side = act["action"].upper()
             vol_i = int(act["volume"])
-            # 意图幂等（T52-R4）：账本当日已执行过的意图直接跳过——日内多跳
+            bid = str(act.get("biz_id") or "")
+            # 决策时点门（M3 接管①，修 P0-2）：日内续跑会把当天 240 根 bar 全部
+            # 重放（`executor` 只跳 `before_trading`，T13 §4.7），不设这道门就会让
+            # 16:49 造出来的意图成交在 09:31 那根 bar 上——成交价不再属于决策时点，
+            # 且每次跳都重放当天早盘 ⇒ 账本价格系统性失真、影子 fee_delta 永不归零。
+            decided = _parse_dt(act.get("decided_at"))
+            if bid and bid in self._handled:
+                continue                       # 本条意图这个会话已经定过局，不再刷记录
+            if self.decide(act, now) == "wait":
+                if bid not in self._waiting_seen:
+                    self._waiting_seen.add(bid)
+                    self.waiting.append({"biz_id": bid, "symbol": to_order_book_id(act["symbol"]),
+                                         "side": side, "volume": vol_i,
+                                         "decided_at": str(decided),
+                                         "status": "WAITING_DECISION"})
+                continue
+            # 意图幂等（T52-R4）：**账本**当日已成交的同款意图直接跳过——日内多跳
             # 续跑时防重复下单的第一道闸（第二道 = SessionGate intraday）
             key = self.intent_key(act["symbol"], side, vol_i)
-            if key in self.executed_ids:
-                self.orders.append({"symbol": to_order_book_id(act["symbol"]),
+            if key in self._ledger_keys:
+                self._handled.add(bid)
+                self.orders.append({"biz_id": bid,
+                                    "symbol": to_order_book_id(act["symbol"]),
                                     "side": side, "quantity": vol_i,
-                                    "status": "SKIPPED_EXECUTED", "filled": 0})
+                                    "status": "SKIPPED_EXECUTED", "filled": 0,
+                                    "from": "ledger"})
+                continue
+            if key in self._submitted_keys:
+                # 同跳里第二条同款：只提交第一笔，第二条**不算成交**（现网 2026-10-30
+                # 就是把这条标成了 executed，账本里却只有一笔）
+                self._handled.add(bid)
+                self.orders.append({"biz_id": bid,
+                                    "symbol": to_order_book_id(act["symbol"]),
+                                    "side": side, "quantity": vol_i,
+                                    "status": "SKIPPED_DUPLICATE", "filled": 0,
+                                    "message": "同跳同款意图只提交第一笔（去重）"})
                 continue
             ob = to_order_book_id(act["symbol"])
             # 5 分钟对齐空档：rqalpha 1m 事件按日历逐分钟，5 分钟 bar 只在
@@ -368,16 +459,21 @@ class _SessionState:
                 continue
             vol = vol_i * (1 if act["action"] == "buy" else -1)
             o = order_shares(ob, vol)
-            self.executed_ids.add(key)          # 提交即记（防同跳内重复提交）
+            self._handled.add(bid)
+            self._submitted_keys.add(key)      # 会话内已提交（≠ 账本已成交，别混）
+            self.submits.append({"biz_id": bid, "symbol": ob, "side": side,
+                                 "volume": vol_i, "decided_at": str(decided or ""),
+                                 "submitted_at": str(now)})
             if o is None:
                 # 前端风控挡下：没有 Order 对象，原因在 mod 的事件采集里
-                self.orders.append({"symbol": ob,
+                self.orders.append({"biz_id": bid, "symbol": ob,
                                     "side": "BUY" if vol > 0 else "SELL",
                                     "quantity": abs(vol), "status": "NOT_CREATED",
                                     "filled": 0})
                 continue
             for od in (o if isinstance(o, (list, tuple)) else [o]):
                 self.orders.append({
+                    "biz_id": bid,
                     "symbol": od.order_book_id,
                     "side": str(getattr(od.side, "value", od.side)).upper(),
                     "quantity": int(od.quantity),

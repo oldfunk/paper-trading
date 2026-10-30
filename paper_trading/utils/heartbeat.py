@@ -27,8 +27,20 @@ STATUS_REL = Path("var") / "health_status.json"
 
 #: 阈值（秒）。engine 是分钟级 cron ⇒ 5 分钟没跳就是挂了。
 DEFAULT_THRESHOLDS = {"engine": 300, "agent": 64800}
+#: rq_tick：M3 执行线的消费跳（cron `2-59/5`），15 分钟没跳=新线没在消费队列。
+#: **不进 DEFAULT_THRESHOLDS**——没切换的部署不该被它假红；由 verify/health 在
+#: executor=rqalpha 时显式加上（分层与 startup_guard 一致）。
+RQ_TICK_THRESHOLD = 900
+
+#: minute：盘中分钟线采集器（`minute sync --intraday`）。新线撮合只认库里的 bar，
+#: 采集器停了 = 意图没有 bar 可撮合、隔日过期——机会被静默吞掉。同样只在切换后要求。
+MINUTE_THRESHOLD = 900
 
 #: 只在"本该跳"的时间里判停滞，否则周末/夜里天天误报——告警疲劳是 fail-loud 的头号杀手。
+#: rq_tick：交易日 09:02–15:04（cron `2-59/5 9-15`；收盘后不要求跳）
+RQ_TICK_DUE = (9 * 60 + 2, 15 * 60 + 4)
+#: minute：交易日 09:35–15:05（第一根完整 5 分钟 bar 在 09:35 之后才有）
+MINUTE_DUE = (9 * 60 + 35, 15 * 60 + 5)
 #: engine：交易日 09:00–15:59（cron `* 9-15 * * 1-5`）
 #: agent ：交易日收盘计划窗口结束后（默认 16:30 起，给 4h 容错到 20:30 才追问"今天没跑成"）
 ENGINE_DUE = (9 * 60, 15 * 60 + 59)
@@ -105,6 +117,10 @@ def due(name: str, now: Optional[datetime] = None) -> bool:
     mins = d.hour * 60 + d.minute
     if name == "engine":
         return ENGINE_DUE[0] <= mins <= ENGINE_DUE[1]
+    if name == "rq_tick":
+        return RQ_TICK_DUE[0] <= mins <= RQ_TICK_DUE[1]
+    if name == "minute":
+        return MINUTE_DUE[0] <= mins <= MINUTE_DUE[1]
     if name == "agent":
         return mins >= AGENT_DUE_AFTER_MIN
     return True

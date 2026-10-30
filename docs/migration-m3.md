@@ -205,3 +205,28 @@ M3 行写的"cron 切 rqalpha 常驻（一天一进程）"**不一致**，请显
 | 回退 | `executor: legacy`（一行）+ 删 tick cron 行；rq_intents 残留 queued 意图人工核对 | 旧线 PaperBroker 路径零改动 |
 
 **已知保守语义**（记录在案）：同日同标的同量（intent_key 级）二次触发被幂等拦截——追加仓位需不同量或次日；tick 按 symbol 批量标 executed 的粒度待精化（按 biz_id 匹配）。
+
+---
+
+## 9. ⚠️ 上面那份"执行记录"由 T57 接管更正（2026-10-30 晚，`docs/worker/report-t57-m3-takeover.md`）
+
+切换确实发生了，但**执行记录里三条验收说法与现网证据不符**，逐条更正：
+
+| 执行记录原文 | 现网实测 | 更正 |
+|---|---|---|
+| 步 4「成交@44.94（**盘中价**）」 | `evidence_2026-10-30.json` 里这笔成交的 `datetime=2026-10-30 09:31:00`、`price=44.94`，而意图 `created_at=16:49:24` 是**收盘后**造的 | 成交价不是决策时点的价，而是**每跳重放当天全部 bar** 后早盘那根 bar 的价（P0-2）。接管后用 14:30 的意图实测成交在 `14:30:00 / 45.04`（= 当天 14:30 那根 5 分钟 bar 的 close，早盘 09:35 是 45.08） |
+| 步 5「m3 verify 钱类 4 项绿」 | 当时的 verify **没有** `intent_queue` 这一项；现网 `rq_intents` 里 3 条 `executed` 只对应 1 笔 fills | "4 项绿"是真的但**不完整**——缺的那一项正是会把这 3 条假账点出来的。T57 补了 `intent_queue`（钱类红）后，现网跑同一命令立即红并逐条点名 |
+| 尾注「tick 按 symbol 批量标 executed 的粒度**待精化**」 | 同跳/同日同款意图被顺带标 executed，其中一条是**卖出**机会（买单把它吞了） | 这不是可延后的打磨项，是丢单的 P0：T57 已改为逐笔认领（方向+量）+ 未成交 rejected |
+
+另外两条"切换完成"没覆盖的运维事实（也是 T57 补的）：
+
+- **现网一条行情采集 cron 都没有**：`daily_bars_raw` 当日 0 行（周一开盘 T50 盘后闸会
+  全线挡单）、分钟线只有收盘后补的那一份 ⇒ 新线盘中没有 bar 可撮合。
+  T57 装了 `40 15 fetch-raw` + `50 15 minute sync` 两行，并当场补齐 10-30 的 raw（38/38 checked）。
+- **无消费跳/无队列/无供给的报警缺失**：`rq tick` 的 cron 是 16:52 装的、当日没跳过，
+  `rq_tick.log` 与心跳里的 `rq_tick` 键都不存在——这类"没跑"当时无人可见。
+
+更正后的现网状态：NEC 工作树 `56ae3b1 → b5e4378`（`worker/m3-takeover`，**未合并 main**），
+`venv/bin/python -m pytest -q tests/` 647 passed；`paper_account.db` 未被动过（md5 不变）。
+回退：`git checkout 56ae3b1` + `crontab /home/nec/crontab.pre-m3-takeover-20261030-183811.bak`。
+

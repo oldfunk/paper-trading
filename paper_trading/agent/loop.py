@@ -1005,6 +1005,21 @@ class AgentTrader:
         logger.info(f"AI plan {pending['id']} executed")
         return res
 
+    def _executor_of(self) -> str:
+        """执行底座（与 `engine --once` / `rq tick` 同一读法、同一校验）。
+
+        读不出来一律返回 `unknown(...)` 而不是"当 legacy"——底座不明时旧线照常下单
+        就等于允许双活（纪律 3：拿不准就不动钱）。
+        """
+        from paper_trading.engine.config import load_engine_config
+        from paper_trading.integration.rq_engine.ledger import executor_from_config
+
+        try:
+            return executor_from_config(load_engine_config(
+                getattr(self.bridge, "config_path", None)))
+        except Exception as exc:      # noqa: BLE001 - 判定交调用方，这里只如实带出原因
+            return f"unknown({type(exc).__name__})"
+
     def _execute_actions(self, *, actions: list, summary: str, symbols: list,
                          all_bars: dict, latest_prices: dict, cash: float,
                          positions: dict, nav_total: float, dry_run: bool,
@@ -1152,12 +1167,29 @@ class AgentTrader:
                                   prev_close=prev,
                                   ref_high=bars[-1].high if bars else None,
                                   ref_low=bars[-1].low if bars else None)
-                    res = b.broker.submit_order(order)
-                    rec["status"] = ("已成交 @%.2f" % res.filled_price
-                                     if res.status.value == "filled"
-                                     else f"撮合拒绝：{res.status.value}")
-                    rec["filled_price"] = res.filled_price
-                    n_orders += 1
+                    ex = self._executor_of()
+                    if ex == "rqalpha":
+                        # 防双活（M3 接管③）：底座切到新线后，AI 直接动作不能再自己
+                        # 撮合——同一个账本上两个撮合器 = 不可归因。改投意图队列，
+                        # 由 `rq tick` 的分钟会话统一执行（T+1/涨跌停/费用=框架口径）。
+                        from paper_trading.integration.rq_engine.queue import enqueue
+
+                        biz = enqueue(str(b.broker.db_path), sym, act, vol,
+                                      rule_ref=f"agent:{str(reason)[:24]}",
+                                      detail={"price": px, "via": "agent_tick"})
+                        rec["status"] = f"已入意图队列（新线执行）：{biz}"
+                        rec["queued_rq"] = True
+                        n_orders += 1
+                    elif ex != "legacy":
+                        # 底座读不出来/值非法 ⇒ 两侧都可能是活的，一条都不许下（纪律 3）
+                        rec["status"] = f"拒绝：执行底座无法判定（{ex}），不许蒙眼下单"
+                    else:
+                        res = b.broker.submit_order(order)
+                        rec["status"] = ("已成交 @%.2f" % res.filled_price
+                                         if res.status.value == "filled"
+                                         else f"撮合拒绝：{res.status.value}")
+                        rec["filled_price"] = res.filled_price
+                        n_orders += 1
                     # 刷新资金/持仓快照，供下一单校验
                     cash = b.broker.get_cash()
                     positions = {p.symbol: p for p in b.broker.get_all_positions()}

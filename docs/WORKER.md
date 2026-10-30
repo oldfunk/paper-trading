@@ -1046,3 +1046,28 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   - [ ] 测试 + `report-t56.md`；**注意 R1 未合前先别在生产跑续跑场景**
 - [ ] **Hermes 在途**：T15b3；T55/T56 交付后审查（R1 修复的变异验证 +
   停线标志的 fail-closed 语义）
+
+- [x] **T57（Qoder，接管修复）M3 切换三条 P0 + 供给/报警**（用户令「你直接开干，
+    由你来接管，回头把做了什么提交就行」；审计报告 `audit-20261030-m3-cutover.md`）：
+  - [x] P0-2 成交价按决策时点归因：`_SessionState.decide()` 门 + `submits` 归因表
+        （现网 scratch 实测 14:30 的意图成交在 `14:30:00 / 45.04`＝当天 14:30 bar close）
+  - [x] P0-3 逐笔认领：删 `mark_by_symbol` ⇒ `queue.resolve_outcomes()`
+        （方向+量一对一、一条成交只认领一次、提交未成交⇒rejected+框架原因、
+        落账失败⇒一条都不许多标；现网实测 `fills=1 executed=1 rejected=2`）
+        —— 现网验收又照出两处残留（同跳去重冒充成交、一条意图多 bar 反复定局），已一并修
+  - [x] P1 报警：`rq_tick` 心跳（分层，不进默认表）/ `minute_feed` / `intent_queue`
+        （executed 无落账 ⇒ **钱类红**；部署后现网立即把切换日 3 条假账逐条点名，exit 3）
+  - [x] P1 供给：`minute.completed_slots()` + `ensure_today_minutes()`（只落已收完的 bar；
+        已齐不打接口）；`rq tick` 自证本跳供给；`minute sync --intraday` 可单装 cron
+  - [x] P1 防双活：`rq tick` 底座非 rqalpha ⇒ exit 2 拒消费；AI 直接动作在 rqalpha
+        底座下改投意图队列（底座读不出来⇒一条都不下）；现网三条路径实测
+  - [x] 部署：NEC 工作树 `56ae3b1→b5e4378`（`worker/m3-takeover`，**main 未动**）；
+        crontab 装 `40 15 data fetch-raw` + `50 15 minute sync`（备份
+        `crontab.pre-m3-takeover-20261030-183811.bak`）；补齐 10-30 raw（38/38 checked）；
+        **`paper_account.db` 一字节未动**（md5 前后同值）
+  - [x] 测试：`tests/test_m3_takeover.py` 41 例（含假 `rqalpha.api` 桩跑真 `handle_bar`）；
+        本地与现网各一遍 **647 passed / 9 skipped**；
+        `spikes/mutation_m3_takeover.py` 13 条变异 13 条捕获
+  - [x] 文档：`report-t57-m3-takeover.md` + `migration-m3.md §9`（更正"切换完成"三条
+        不实说法）+ ROADMAP 新增更正行 + `questions.md` 剩余 5 件待拍板
+  - [ ] 待主 AI：review 并合 main（现网正跑未合并分支）；切换日 3 条假账如何处置
