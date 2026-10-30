@@ -924,17 +924,41 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 ## Batch 11 · M3 执行模型终局（主 AI 派发 2026-10-30 · 批复见 questions.md）
 
-- [ ] **T52（Qoder，P0·执行模型终局）方案④取证：rqalpha 撮合器逐笔调用**：
-  - [ ] 接口分析（文件:行）：`SimulationBroker`/`matcher/bar_matcher` 能否
-    脱离事件循环逐笔调用——提交一张单、给定当日 bar、拿回成交/拒单；
-    哪些语义依赖 `Environment`/事件上下文（T+1 冻结、涨跌停带、费用三分量）
-  - [ ] spike 实证（spike venv + bundle，不碰产品码）：每分钟进程里对
-    单笔单撮合——涨停拒单、T+1 不可卖、佣金/印花税/过户费逐笔与手算一致、
-    撮合价 = bar 口径
-  - [ ] 判定三选一：**全量可行**（第一期终态）/ 部分可行（丢了哪些语义、
-    补丁在哪）/ 不可行（退回 T48 推荐路径）；`report-t52.md`
-  - [ ] 若可行：给出"每分钟进程 + 逐笔撮合 + 日终 rqalpha 会话对账"的
-    最终架构草图（M3 拍板输入）
+- [x] **T52（Qoder，P0·执行模型终局）方案④取证：rqalpha 撮合器逐笔调用**：
+    `worker/t52`（基于 main@901bee6，**待 review 不合 main**）；
+    证据全在 `spikes/matcher_call_t52.py`（spike venv + bundle + 本地 raw fixture，
+    **未改产品码、未写账本**）
+  - [x] 接口分析（文件:行，**AST 机器导出**不手抄）：撮合一笔要 8 类在场状态
+    （`data_proxy`/`price_board`/`trading_dt`/`calendar_dt`/`config`/`portfolio·account`/
+    `event_bus`/**当前 bar**——`bar_matcher.py:30 env.get_bar` 由 BAR 事件注入）+
+    38 处 `Environment.get_instance()`/`ExecutionContext.phase()` 硬依赖；
+    `event_bus` 不可选：`portfolio/__init__.py:60` 的 `EVENT.TRADE` listener 就是
+    持仓/现金更新的唯一入口 ⇒ "逐笔调用"与"起一个会话"的差只是跳几块 bootstrap
+  - [x] **语义分工已定位**：涨跌停带在 matcher 内（`base.py:207-218`，市价单 REJECTED /
+    限价单留单）、费用三分量在 matcher 内（`base.py:108-114` + 我们的 overlay）、
+    **T+1 不在 matcher 内而在提交校验链**（`environment.py:207 can_submit_order` →
+    sys_accounts validator）⇒ 绕过 api 就丢 T+1
+  - [x] spike 实证四项全测（同一会话同一时点三路径对照）：涨停 ⇒ `REJECTED：已触及涨跌停价
+    limit_up`；T+1 ⇒ api 路径 `ORDER_CREATION_REJECT：可平仓量为 0`，
+    **裸调 matcher 却 FILLED 并把框架自己的 `closable` 写成 −100**（④否决的硬证据）；
+    费用三分量逐笔手算相符（100 股@22.10 佣金 5.00 撞地板 / 过户 0.0221；卖出加印花 1.105）；
+    撮合价 = bar 口径 ⇒ 三跳全部成交在 22.10 = **当日 close**（该日 OHLC 22.50/22.51/22.05/22.10）
+  - [x] 判定：**不可行**（跨进程 fresh process：`Environment.get_instance()` 与
+    `Order.__from_create__` 均 `EnvironmentNotInitialized`，假 env 喂 `match()` 第一步
+    读 `order.position_effect` 就 `NotImplementedError`）⇒ 与主 AI 否决一致，本报告补量化理由；
+    与派发不同处：**我用了产品码构造会话**（才测得到切换日真跑的那条路，含 T38 overlay/
+    T50 闸/T47 落账），只读未改
+  - [x] "若可行给架构草图"条件不成立 ⇒ 改交付**①改良在产品路径上的实测与前提清单**
+    （`part_d` 三连跳）：意图幂等实测有效（不过滤 ⇒ 同日重复成交 100 股、持仓翻倍；
+    过滤 ⇒ 零新增）；🔴 **R1 钱类**：resume 跳过 `POST_BEFORE_TRADING` ⇒ 续跑跳**不装过户费
+    overlay**（`other_fees` 0.0221→0.0），`TransferFeeNotInstalled` 每跳红不会静默，
+    切换日前必修（questions.md Q1）；🔴 **R2 口径**：1d 频率下成交价=当日收盘价 ⇒
+    "每分钟一跳"实为**日 bar 重放**（10:00 的止损按 15:00 才知道的价格成交），与旧线盘中
+    实时报价不同口径、与您否决"两轮"的理由相冲，需拍板 (a)/(b)/(c)（questions.md Q2）；
+    R3 跨日第一跳 T+1 解冻待取证；R4 幂等键归一坑（plan 6 位码 vs `000792.XSHE`，
+    我第一版就因此漏过滤）
+  - [x] `report-t52.md`（§1 派发逐条核销、§2 依赖清单、§3 三路径表、§4 四风险、
+    §5 跨进程证据、§6 ①改良最小架构草图、§7 未做清单）
 - [ ] **T53（Qoder，P1·小）测试日期敏感性根治**：`test_mother_contract`
   fixture 动态化（硬编码 2026-10-2x 全改相对今天的工作日）+ 全测试扫描
   硬编码"今天/近期日期"的断言（两次 flaky 教训：today+10 落周六、
