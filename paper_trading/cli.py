@@ -1451,6 +1451,13 @@ def main() -> None:
             p.add_argument("--state-dir", required=True,
                            help="会话状态目录（persist + session.json）")
             p.add_argument("--workdir", default=None)
+            p.add_argument("--frequency", default="1d", choices=["1d", "1m"],
+                           help="M3b：1m = 分钟会话（5 分钟 bar 驱动，日内多跳）")
+            p.add_argument("--intraday-resume", action="store_true",
+                           help="M3b 日内多跳：同日续跑放行（意图幂等靠 --executed-ids）")
+            p.add_argument("--executed-ids", default="",
+                           help="M3b：逗号分隔的已执行意图 key（symbol[:6]_SIDE_vol），"
+                                "调用方从账本当日 orders 取")
             p.add_argument("--ledger", action="store_true", default=None,
                            help="把本次会话成交落到 --account-db 账本（T47-G1）；"
                                 "不传则按 config 的 engine.executor 决定")
@@ -1943,7 +1950,13 @@ def main() -> None:
                                           workdir=args.workdir, force=args.force,
                                           # T51：直接把现网 TradingConfig 交给引擎侧，
                                           # 不再在这里手搓四项费率 dict（搓错键就是一次口径分叉）
-                                          fee=bc)
+                                          fee=bc,
+                                          # M3b：分钟会话三参数
+                                          frequency=getattr(args, "frequency", "1d"),
+                                          intraday_resume=bool(getattr(args, "intraday_resume", False)),
+                                          executed_ids={s for s in
+                                                        str(getattr(args, "executed_ids", "") or "").split(",")
+                                                        if s})
                     use_ledger = _ledger_decide(args, bridge)
                     dry = bool(getattr(args, "ledger_dry", False))
                     res["ledger_mode"] = "dry-run" if (use_ledger and dry) else use_ledger
