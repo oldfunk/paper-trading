@@ -121,7 +121,11 @@ def test_daily_bars_mother_first_then_local(sd):
     assert out["600519"]["available"] and out["600519"]["asof"] == "2026-10-26"
     assert out["600519"]["bars"][0]["close"] == 1505
     assert out["600519"]["adj"] == "qfq"          # 有 close_qfq 用前复权
-    assert out["600519"]["stale"] is False
+    # stale 是 asof 与今天的函数（fixture 日期写死 2026-10-26，随真实时间推移
+    # 必然变 stale——第二次日期 flaky 教训）：断言改为"与新鲜度规则一致"
+    # 而不是断言某个写死的布尔值；fixture 动态化另行派发。
+    assert out["600519"]["stale"] is mother._stale(
+        "2026-10-26", 3, date.today().isoformat())
     assert out["000001"]["source"] == SRC_LOCAL_AKSHARE
     assert out["000001"]["available"]
 
