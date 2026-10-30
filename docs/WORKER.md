@@ -939,8 +939,33 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   fixture 动态化（硬编码 2026-10-2x 全改相对今天的工作日）+ 全测试扫描
   硬编码"今天/近期日期"的断言（两次 flaky 教训：today+10 落周六、
   stale 写死布尔）——产出清单 + 修复 + `report-t53.md`
-- [ ] **T54（Qoder，P1·小）m3 verify 生产预跑**：NEC 上以当前（旧线）状态
-  跑 `python -m paper_trading.cli m3 verify`——预期：钱类 4 项按现网应绿或
-  合理 skip，工具本身在生产环境可用可用性验证（**不是**切换验收）；
-  输出贴 `report-t54.md`；工具自身 bug 顺手修
+- [x] **T54（Qoder，P1·小）m3 verify 生产预跑**：`worker/t54`（基于 main@901bee6），
+    **待 review 不合 main**；本地 **599 passed / 9 skipped**（基线 587 ⇒ 净增 12 条零回归）
+  - [x] 跑法守住红线：bundle+scp 到 `/home/nec/tmp`，`clone --no-hardlinks` 出 scratch 树
+    （**不碰生产 .git**）；现网两库用 sqlite backup 只读复制成副本，工具只吃副本；
+    生产 venv（未装 rqalpha，工具不需要）；全套 **734 ms**
+  - [x] 预跑基线就是问题：`绿 5 / 警 3 / 红 2 / ❗钱类项红 ⇒ 立即回退`、exit 3——
+    而线根本没坏（engine 心跳 6 秒前刚跳）。**切换日第一小时清单正好在盘中跑**，
+    不修就会在周六上午指挥操作者回退
+  - [x] 照出并修掉 4 个工具缺陷（每个都配"过点必须仍红"的反向断言）：
+    ① `check_nav` 盘中把"今天没 NAV 行"判钱类红 ⇒ 收盘窗口（crontab `*/5 16-18`）
+    未过判 warn，`now` 可注入，过点/历史日照旧红；
+    ② `check_parity_trace` 未到 15:40 影子时点就指控"cron 没跑" ⇒ 文案改"时点未到"，
+    过点与 delta 非零仍按原判；
+    ③ `check_heartbeat` 读不到文件报**假红**（`heartbeat.default_path()` 是相对路径，
+    操作者从 `~`/scratch 跑就读不到；实测加 `--heartbeat` 立刻绿 engine=6s）⇒
+    新增 `resolve_heartbeat_path()`：显式 ＞ cwd/var/ ＞ 仓库根/var/，都没有判 **skip**
+    并列出试过的路径（"没证据"≠"线挂了"），detail 写出用的哪个文件；
+    ④ 人读输出不写"池从哪来" ⇒ 头部加 `｜池 <pool_source>`（cwd 无 config.yaml 时
+    "股票池为空"会被误读成"没什么要查的"）
+  - [x] 修后现网复跑原文贴 `report-t54.md` §3：仓库根等价环境 **红 0 / exit 0**；
+    上一交易日 2026-10-29 **8 绿 / 2 警 / 0 红**（NAV 恰 1 行自洽、parity delta 全零）；
+    从 `$HOME` 跑也 **红 0**（两条 skip 讲清试过哪些路径）；`--money-only`/`--json` 均可用
+  - [x] 工具只读性双证：`m3_verify.py` 409 行零写 SQL（grep INSERT/UPDATE/DELETE/DROP/CREATE 无命中）
+    + 新增断言"跑完全套账户库字节不变"；报告里同时**如实说明** sha1 前后差不能当证据（现网 cron 每分钟在写）
+  - 🔧 **顺带照出两件运维事实（不改，交主 AI）**：
+    ① 影子 cron 未装（`crontab -l | grep -c shadow-day` = **0**），而 runbook §3 第 3 条
+    要求影子期每天跑——10-29 那条 parity:diff 是手工跑的 ⇒ 切换日第一周"新线是否漂移"
+    的唯一外部对照会断档；② 现网 engine cron 是 `* 9-15 * * 1-5`、`AGENT_DUE` 20:30 起才追问
+    ⇒ 看板显示"agent 无记录"不等于没跑，切换日照读清单时要知道这一点
 - [ ] **Hermes 在途**：T15b2/b3 继续；T52 交付后审其接口分析与语义清单
