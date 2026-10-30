@@ -134,16 +134,19 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
     return cfg
 
 
-def session_fingerprint(cfg: dict) -> str:
-    """会改变账本语义的配置指纹（漂移即拒续，G-T13-5）。"""
+def session_fingerprint(cfg: dict, intraday: bool = False) -> str:
+    """会改变账本语义的配置指纹（漂移即拒续，G-T13-5）。
+
+    `intraday=True`（M3b 日内多跳）：**排除 symbols**——每跳意图决定标的，
+    池集合天然不同，不改账本语义（init_cash/费率/口径才是语义）。
+    """
     base = cfg["base"]
-    return config_fingerprint({
+    payload = {
         "accounts": base["accounts"],
         "run_type": base["run_type"],
-        "frequency": base["frequency"],
+        "frequency": base["frequency"],   # 1d 与 1m 的成交语义完全不同（R2）
         "capital_gain_tax_rate": base["capital_gain_tax_rate"],
         "matching_type": cfg["mod"]["sys_simulation"]["matching_type"],
-        "frequency": base["frequency"],      # 1d 与 1m 的成交语义完全不同（R2）
         "price_limit": cfg["mod"]["sys_simulation"]["price_limit"],
         "slippage": cfg["mod"]["sys_simulation"]["slippage"],
         # T38：费率也改账本语义，必须进指纹（改了费率还想续跑昨天的状态 = 两本账混着算）
@@ -154,9 +157,11 @@ def session_fingerprint(cfg: dict) -> str:
         "ledger": cfg["mod"]["ptpaper"]["ledger"],
         "bundle": base["data_bundle_path"],
         "db": cfg["mod"]["ptpaper"]["db"],
-        "symbols": sorted(cfg["mod"]["ptpaper"]["symbols"]),
         "require_bands": cfg["mod"]["ptpaper"]["require_bands"],
-    })
+    }
+    if not intraday:
+        payload["symbols"] = sorted(cfg["mod"]["ptpaper"]["symbols"])
+    return config_fingerprint(payload)
 
 
 def check_session_gates(evidence: dict, plan: list, *, handler_calls: int,
@@ -249,7 +254,7 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
                        matching_type=matching_type, fee=fee,
                        require_today_reference=require_today_reference,
                        ledger=ledger, frequency=frequency)
-    fp = session_fingerprint(cfg)
+    fp = session_fingerprint(cfg, intraday=intraday_resume)
 
     gate = SessionGate(state_dir) if state_dir else None
     if gate:
