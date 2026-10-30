@@ -354,11 +354,14 @@ def test_ledger_decide_legacy_config_does_not_write(broker, tmp_path, monkeypatc
     ({}, True, "legacy", None),
     ({"executor": "legacy"}, False, "legacy", None),      # 旧线不需要 rqalpha
     ({"executor": "rqalpha"}, True, "rqalpha", None),
-    ({"executor": "rqalpha"}, False, "rqalpha", "拒绝启动"),
+    # M3 切换后新语义（分层架构）：engine 进程只判定+入队（queue 纯 sqlite），
+    # 执行由引擎 venv 的 rq tick 承担——rqalpha 不装在交易 venv 不再是拒启动
+    # 理由；但队列不可写仍拒（意图无处去=比静默退回更糟的静默丢失）。
+    ({"executor": "rqalpha"}, False, "rqalpha", None),
     ({"executor": "rq"}, True, "legacy", "只能是 legacy|rqalpha"),
 ])
 def test_startup_guard_refuses_ambiguous_base(cfg, avail, expect_ex, expect_err):
-    """runbook §5.2：底座在启动时校验并打印；未知值/框架缺失一律拒绝，不许静默降级。"""
+    """runbook §5.2：底座在启动时校验并打印；未知值一律拒绝，不许静默降级。"""
     ex, err = ld.startup_guard(cfg, rqalpha_available=avail)
     assert ex == expect_ex
     assert (expect_err in err) if expect_err else (err is None)
