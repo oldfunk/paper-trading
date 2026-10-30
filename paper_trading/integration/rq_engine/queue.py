@@ -47,22 +47,29 @@ def _conn(db_path: str | Path) -> sqlite3.Connection:
 
 def enqueue(db_path: str | Path, symbol, side: str, volume: int,
             rule_ref: str = "", detail: dict | None = None) -> str:
-    """入队一个意图（同 key 未决意图去重——引擎侧已有防重，这里是第二道）。"""
+    """入队一个意图。
+
+    biz_id 带时间戳唯一后缀（同 key 执行完再触发必须能入队——早先用 key
+    当主键 + INSERT OR IGNORE 会把 executed 后的第二次触发静默吞掉）；
+    未决去重只拦"同 key 已在队列里"的情况（第二道防线，第一道在引擎
+    的 mark_order/每日同规则闸）。
+    """
     key = intent_key(symbol, side, volume)
     ts = datetime.now().isoformat(timespec="seconds")
+    biz = f"{key}@{ts}"
     with _conn(db_path) as c:
         row = c.execute(
-            "SELECT biz_id FROM rq_intents WHERE biz_id=? AND status='pending'",
-            (key,)).fetchone()
+            "SELECT biz_id FROM rq_intents WHERE biz_id LIKE ?"
+            " AND status IN ('pending','queued')", (f"{key}@",)).fetchone()
         if row:
             return key                    # 已有待决同款意图——幂等返回
         c.execute(
             "INSERT OR IGNORE INTO rq_intents"
             " (biz_id, symbol, side, volume, rule_ref, detail, status, created_at)"
             " VALUES (?,?,?,?,?,?,'queued',?)",
-            (key, str(symbol).split(".")[0], str(side).upper(), int(volume),
+            (biz, str(symbol).split(".")[0], str(side).upper(), int(volume),
              rule_ref, json.dumps(detail or {}, ensure_ascii=False), ts))
-    return key
+    return biz
 
 
 def pending(db_path: str | Path) -> list[dict]:

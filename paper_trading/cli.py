@@ -1947,6 +1947,10 @@ def main() -> None:
                 # 按会话结果推进队列状态（FILLED 的标 executed；未成交留 queued 下跳续）
                 filled_syms = {str(t.get("symbol", "")).split(".")[0]
                                for t in (res.get("evidence", {}).get("trades") or [])}
+                if filled_syms and not res.get("error") \
+                        and res.get("gates", {}).get("ok"):
+                    # T47-G1 落账：会话成交 → paper_account.db（守卫+三分量+op_log）
+                    res["ledger"] = _ledger_apply(bridge, res, today)
                 for it in intents:
                     if it["symbol"] in filled_syms:
                         _q.mark(acct_db, it["biz_id"], "executed",
