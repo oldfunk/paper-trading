@@ -22,11 +22,32 @@ from .store import RawDayBarStore
 
 class PaperDataSource(BaseDataSource):
     def __init__(self, base_config, store: RawDayBarStore,
-                 override_available_range: bool = True) -> None:
+                 override_available_range: bool = True,
+                 minute: bool = False) -> None:
         super().__init__(base_config, market=MARKET.CN)
         self._pt_store = store
         self._override = override_available_range
+        self._minute = minute
         self.register_day_bar_store(INSTRUMENT_TYPE.CS, store)
+
+    def get_bar(self, instrument, dt, frequency):
+        """M3b：开源 BaseDataSource 对 `frequency != '1d'` 直接
+        NotImplementedError（`base_data_source/data_source.py:232`，分钟查询
+        只在商业版 rqdatac 数据源里）——子类覆盖为从我们的分钟 store 查询
+        （`datetime <= dt` 的最后一根，分钟 bar 的标准 ≤ 语义，返回 numpy 行
+        与基类一致，由 data_proxy 包 BarObject）。日线走基类。"""
+        if frequency == "1d" or not self._minute:
+            return super().get_bar(instrument, dt, frequency)
+        import numpy as np
+        from rqalpha.utils.datetime_func import convert_dt_to_int
+        bars = self._pt_store.get_bars(instrument.order_book_id)
+        if bars is None or len(bars) == 0:
+            return None
+        dt_int = convert_dt_to_int(dt)
+        i = int(np.searchsorted(bars["datetime"], dt_int, side="right")) - 1
+        if i < 0:
+            return None
+        return bars[i]
 
     def available_data_range(self, frequency):
         if not self._override:

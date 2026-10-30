@@ -113,7 +113,8 @@ class PtPaperMod(AbstractMod):
                 require_today_reference=bool(getattr(mod_config, "require_today_reference", True)))
         env.set_data_source(PaperDataSource(
             env.config.base, self._store,
-            override_available_range=bool(getattr(mod_config, "override_available_range", True))))
+            override_available_range=bool(getattr(mod_config, "override_available_range", True)),
+            minute=(freq == "1m")))
 
         state_dir = getattr(mod_config, "state_dir", "") or ""
         if state_dir:
