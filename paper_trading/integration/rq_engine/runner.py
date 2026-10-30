@@ -62,6 +62,7 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
                  fee: Any = None,                  # TradingConfig 或四项费率 dict（T51）
                  require_today_reference: bool = True,
                  ledger: bool = False,
+                 frequency: str = "1d",           # M3b："1m" = 5 分钟 bar 驱动分钟会话
                  extra: Optional[dict] = None) -> dict:
     """一个模拟日的 rqalpha 配置（纯函数，便于离线测试）。
 
@@ -80,7 +81,7 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
             "start_date": today,
             "end_date": today,
             "accounts": {"STOCK": float(init_cash)},
-            "frequency": "1d",
+            "frequency": frequency,      # M3b："1m" 分钟会话（5 分钟 bar 驱动）
             "data_bundle_path": bundle,
             "capital_gain_tax_rate": 0.0,
             "locale": "zh_CN",
@@ -106,7 +107,11 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
             },
             "ptpaper": {
                 "enabled": True,
-                "priority": 50,
+                "priority": 200,  # T55-R1：最后 start_up，此时框架 decider 已注册，
+                                  # mod 自己的 start() 里可直接装过户费 overlay
+                                  #（旧值 50 先于 sys_transaction_cost(100)，只能靠
+                                  # POST_BEFORE_TRADING 事件装——resume 跳过该事件
+                                  # ⇒ 续跑进程每笔少收过户费，T52-R1 钱类 bug）
                 "db": str(Path(data_db).resolve()),
                 "bundle": bundle,
                 "today": today,
@@ -119,6 +124,7 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
                 "transfer_fee_rate": transfer_fee_rate,   # 框架没有这项，mod 里补
                 "require_today_reference": bool(require_today_reference),  # T50-C
                 "ledger": bool(ledger),                   # T47-G1/G3：会话成交是否落现网账本
+                "frequency": frequency,                   # M3b：mod 按此选日线/分钟 store
             },
         },
     }
@@ -137,6 +143,7 @@ def session_fingerprint(cfg: dict) -> str:
         "frequency": base["frequency"],
         "capital_gain_tax_rate": base["capital_gain_tax_rate"],
         "matching_type": cfg["mod"]["sys_simulation"]["matching_type"],
+        "frequency": base["frequency"],      # 1d 与 1m 的成交语义完全不同（R2）
         "price_limit": cfg["mod"]["sys_simulation"]["price_limit"],
         "slippage": cfg["mod"]["sys_simulation"]["slippage"],
         # T38：费率也改账本语义，必须进指纹（改了费率还想续跑昨天的状态 = 两本账混着算）
@@ -215,8 +222,16 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
                 workdir: Optional[str] = None, force: bool = False,
                 require_bands: bool = True, matching_type: str = "current_bar",
                 fee: Any = None, require_today_reference: bool = True,
-                ledger: bool = False) -> dict:
-    """跑一个模拟日（**G-T13-9：一个进程只允许一次**）。"""
+                ledger: bool = False, frequency: str = "1d",
+                intraday_resume: bool = False,
+                executed_ids: Optional[set] = None) -> dict:
+    """跑一个模拟日（**G-T13-9：一个进程只允许一次**）。
+
+    `intraday_resume=True`（M3b 日内多跳）：同日续跑放行（SessionGate intraday）。
+    `executed_ids`：**意图幂等清单**（调用方从账本当日 orders 取，key 按
+    `symbol[:6]_side_volume` 归一——T52-R4：plan 用 6 位码、框架成交是
+    `000792.XSHE`，不归一就会重复下单）。handle_bar 跳过已执行意图。
+    """
     global _SESSION_USED
     if _SESSION_USED:
         raise RuntimeError("G-T13-9：本进程已跑过一个 rqalpha 会话；"
@@ -233,19 +248,20 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
                        evidence=evidence_path, require_bands=require_bands,
                        matching_type=matching_type, fee=fee,
                        require_today_reference=require_today_reference,
-                       ledger=ledger)
+                       ledger=ledger, frequency=frequency)
     fp = session_fingerprint(cfg)
 
     gate = SessionGate(state_dir) if state_dir else None
     if gate:
-        gate.check(date.fromisoformat(today), fp, force=force)
+        gate.check(date.fromisoformat(today), fp, force=force,
+                   intraday_resume=intraday_resume)
 
     _register_mod()
 
     from rqalpha import run_func               # 只有真要跑时才需要 rqalpha
 
     global _STATE
-    st = _SessionState(plan)
+    st = _SessionState(plan, executed_ids=set(executed_ids or ()))
     _STATE = st
     err = None
     try:
@@ -280,11 +296,19 @@ class _SessionState:
     本对象只当状态容器。
     """
 
-    def __init__(self, plan: list) -> None:
+    def __init__(self, plan: list, executed_ids: Optional[set] = None) -> None:
         self.plan = plan or []
+        #: T52-R4 意图幂等：key = `symbol[:6]_side_volume`（6 位码归一——
+        #: plan 用 '000792'、框架成交是 '000792.XSHE'，不归一过滤会失效重复下单）
+        self.executed_ids = set(executed_ids or ())
         self.handler_dates: list = []
         self.orders: list = []
         self.snapshots: list = []
+
+    @staticmethod
+    def intent_key(symbol, side: str, volume: int) -> str:
+        code = str(symbol).split(".")[0][:6].zfill(6)
+        return f"{code}_{side.upper()}_{int(volume)}"
 
     def _snap(self, context, tag: str) -> dict:
         from rqalpha.const import POSITION_DIRECTION
@@ -313,9 +337,20 @@ class _SessionState:
         for act in self.plan:
             if act.get("action") not in ("buy", "sell") or not act.get("volume"):
                 continue
+            side = act["action"].upper()
+            vol_i = int(act["volume"])
+            # 意图幂等（T52-R4）：账本当日已执行过的意图直接跳过——日内多跳
+            # 续跑时防重复下单的第一道闸（第二道 = SessionGate intraday）
+            key = self.intent_key(act["symbol"], side, vol_i)
+            if key in self.executed_ids:
+                self.orders.append({"symbol": to_order_book_id(act["symbol"]),
+                                    "side": side, "quantity": vol_i,
+                                    "status": "SKIPPED_EXECUTED", "filled": 0})
+                continue
             ob = to_order_book_id(act["symbol"])
-            vol = int(act["volume"]) * (1 if act["action"] == "buy" else -1)
+            vol = vol_i * (1 if act["action"] == "buy" else -1)
             o = order_shares(ob, vol)
+            self.executed_ids.add(key)          # 提交即记（防止同跳内重复提交）
             if o is None:
                 # 前端风控挡下：没有 Order 对象，原因在 mod 的事件采集里
                 self.orders.append({"symbol": ob,

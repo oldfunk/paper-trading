@@ -202,3 +202,153 @@ class RawDayBarStore:
 def _date_from_int(v: int) -> date:
     s = str(int(v))
     return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+
+# ---------------------------------------------------------------------------
+# M3b：分钟 store（5 分钟 bar 喂 rqalpha 1m 频率；主 AI 2026-10-30，一天迁移令）
+# ---------------------------------------------------------------------------
+BAR_DTYPE_MINUTE = np.dtype([
+    ("datetime", np.int64),
+    ("open", np.float64),
+    ("high", np.float64),
+    ("low", np.float64),
+    ("close", np.float64),
+    ("volume", np.float64),
+    ("total_turnover", np.float64),
+    ("prev_close", np.float64),
+    ("limit_up", np.float64),
+    ("limit_down", np.float64),
+])
+
+
+def _dt2i_minute(ts: str) -> int:
+    """'YYYY-MM-DDTHH:MM:SS' → rqalpha 分钟编码 YYYYMMDDHHMM00。"""
+    s = str(ts).replace("T", " ")[:16]
+    d = s[:10].replace("-", "")
+    hm = s[11:16].replace(":", "")
+    return int(d) * 1_000_000 + int(hm) * 100
+
+
+class RawMinuteBarStore:
+    """`AbstractDayBarStore` 的分钟版鸭子实现（接口同名 get_bars）。
+
+    5 分钟 bar（`minute_bars` period=5，raw 口径）→ rqalpha `frequency=1m`。
+    rqalpha 1m 事件源按**日历逐分钟**发 BAR 事件（simulation_event_source
+    `_get_stock_trading_minutes`）；无 bar 的分钟 `bar_dict` 为空，策略侧
+    自行跳过（`bar is None`）。涨跌停带按日供给（同日所有分钟同一带，
+    prev_close = 该日日线 raw close 的前一日值）——带缺失仍 fail-closed
+    拒供（G-T13-3 口径不变）。
+    """
+
+    def __init__(self, bars_by_symbol: dict[str, list], *, today=None,
+                 require_bands: bool = True,
+                 day_prev_close: Optional[dict] = None):
+        self.today = _as_date(today) if today is not None else None
+        self.require_bands = require_bands
+        self._bars: dict[str, np.ndarray] = {}
+        self.stats: dict[str, dict] = {}
+        self.gate_rejected: dict[str, str] = {}
+        self._build(bars_by_symbol, day_prev_close or {})
+        self.problems: list[str] = []
+
+    @classmethod
+    def from_data_db(cls, db, symbols, *, today=None, require_bands: bool = True):
+        """从 `minute_bars`（period=5）读当日及历史分钟线。
+
+        prev_close/带：从 `daily_bars_raw` 日线序列取（每分钟 bar 的带 =
+        所属交易日的 [前日 close × 档位]）；日线 raw 缺该日则该日分钟拒供。
+        """
+        today_d = _as_date(today) if today is not None else date.today()
+        data: dict[str, list] = {}
+        day_pc: dict[str, dict] = {}
+        for s in symbols:
+            sym = to_symbol(s) if "." in str(s) else str(s)
+            mrows = db.get_minute_bars(sym, period="5", limit=100000)
+            if not mrows:
+                continue
+            # 日线 raw 序列 → 每日 prev_close（同日分钟共用）
+            drows = db.get_raw_bars(sym, limit=400) or []
+            pc_by_day: dict[str, tuple] = {}
+            closes = [(str(r.timestamp)[:10], float(r.close)) for r in drows]
+            closes.sort()
+            for i, (d, c) in enumerate(closes):
+                if i > 0:
+                    pc_by_day[d] = (closes[i - 1][1], c)
+            day_pc[str(s)] = {k: v for k, v in pc_by_day.items()}
+            data[str(s)] = mrows
+        store = cls(data, today=today_d, require_bands=require_bands,
+                    day_prev_close=day_pc)
+        return store
+
+    def _build(self, bars_by_symbol: dict[str, list],
+               day_prev_close: dict[str, dict]) -> None:
+        problems: list[str] = []
+        for symbol, rows in bars_by_symbol.items():
+            obid = to_order_book_id(symbol)
+            series = []
+            for r in rows:
+                ts = str(r.timestamp if hasattr(r, "timestamp") else r["ts"])
+                d = ts[:10]
+                if self.today is not None and d > self.today.isoformat():
+                    continue
+                series.append((ts, r))
+            series.sort(key=lambda x: x[0])
+            if not series:
+                continue
+            arr = np.zeros(len(series), dtype=BAR_DTYPE_MINUTE)
+            for col in ("prev_close", "limit_up", "limit_down", "total_turnover"):
+                arr[col] = math.nan
+            pcmap = day_prev_close.get(symbol, {})
+
+            def _g(row, key):
+                """dict（db 返回）与对象两种行形态统一取值。"""
+                if isinstance(row, dict):
+                    return row.get(key)
+                return getattr(row, key, None)
+
+            for i, (ts, r) in enumerate(series):
+                o, h, l, c = (float(_g(r, "open")), float(_g(r, "high")),
+                              float(_g(r, "low")), float(_g(r, "close")))
+                if not all(x > 0 and math.isfinite(x) for x in (o, h, l, c)):
+                    problems.append(f"{symbol} {ts}：OHLC 非法")
+                    continue
+                arr[i]["datetime"] = _dt2i_minute(ts)
+                arr[i]["open"], arr[i]["close"] = o, c
+                arr[i]["high"], arr[i]["low"] = h, l
+                arr[i]["volume"] = float(_g(r, "volume") or 0)
+                amt = _g(r, "amount")
+                arr[i]["total_turnover"] = float(amt) if amt else math.nan
+                pcinfo = pcmap.get(ts[:10])
+                if pcinfo:
+                    pc = pcinfo[0]
+                    up, down = limit_prices(pc, symbol, is_st=False)
+                    arr[i]["prev_close"] = pc
+                    arr[i]["limit_up"], arr[i]["limit_down"] = up, down
+            arr = arr[arr["datetime"] > 0]
+            self._bars[obid] = arr
+            self.stats[obid] = {
+                "symbol": symbol, "bars": int(len(arr)),
+                "bands_ok": int(np.isfinite(arr["limit_up"]).sum()) if len(arr) else 0,
+            }
+            if self.require_bands and len(arr):
+                miss = int(np.count_nonzero(~np.isfinite(arr["limit_up"])))
+                if miss == len(arr):
+                    problems.append(f"{symbol} 全部分钟缺带（日线 raw prev_close 缺失？）")
+                if not math.isfinite(arr["limit_up"][-1]):
+                    problems.append(f"{symbol} 最后一根分钟缺带——拒供")
+        if problems and self.require_bands:
+            raise BandMissingError("M3b 分钟带门禁不过：" + "；".join(problems[:8]))
+
+    # ---- 接口（与 RawDayBarStore 同签名）------------------------------
+    def get_bars(self, order_book_id: str) -> np.ndarray:
+        return self._bars.get(order_book_id, np.empty(0, dtype=BAR_DTYPE_MINUTE))
+
+    def get_date_range(self, order_book_id: str):
+        bars = self._bars.get(order_book_id)
+        if bars is None or len(bars) == 0:
+            t = self.today or date.today()
+            v = t.year * 10_000_000_000 + t.month * 100_000_000 + t.day * 1_000_000
+            return v, v
+        return int(bars["datetime"][0]), int(bars["datetime"][-1])
+
+    def order_book_ids(self) -> list:
+        return sorted(self._bars)

@@ -40,13 +40,13 @@ class PtPaperMod(AbstractMod):
     def _count(self, event):
         self._counts[str(getattr(event.event_type, "value", event.event_type)).upper()] += 1
 
-    def _install_costs(self, event) -> None:
-        """补过户费（裁决 5）——挂在 POST_BEFORE_TRADING 上是**顺序要求**，不是偏好：
+    def _install_costs(self, event=None) -> None:
+        """补过户费（裁决 5 / T55-R1 修复）。
 
-        `ptpaper` 的 priority 是 50，比 `sys_transaction_cost`（默认 100）先 start_up
-        （`mod/__init__.py:68` 按 priority 排序后依次 start_up），所以在自己的
-        `start_up` 里根本还看不到框架的 decider。等第一个"盘前"事件派发时，
-        所有 mod 都已 start_up，才是稳定的插入点。
+        T52-R1：旧实现只挂 POST_BEFORE_TRADING——resume 跳过该事件 ⇒ **续跑进程
+        每笔成交少收过户费**（实测 other_fees 0.0221→0.0）。修复：ptpaper
+        priority 改 200（最后 start_up，框架 decider 已注册），start_up 里直接装；
+        事件监听保留为幂等兜底（`_cost_wrapped` 防重复套层）。
         """
         if self._cost_wrapped:
             return
@@ -98,11 +98,19 @@ class PtPaperMod(AbstractMod):
         self._cost_rate = float(getattr(mod_config, "transfer_fee_rate", 0.0) or 0.0)
         today = date.fromisoformat(mod_config.today)
         db = DataDBManager(mod_config.db)
-        self._store = RawDayBarStore.from_data_db(
-            db, list(mod_config.symbols), days=int(getattr(mod_config, "days", 260)),
-            today=today, require_bands=bool(getattr(mod_config, "require_bands", True)),
-            st_set=set(getattr(mod_config, "st_set", None) or ()),
-            require_today_reference=bool(getattr(mod_config, "require_today_reference", True)))
+        freq = str(getattr(mod_config, "frequency", "1d") or "1d")
+        if freq == "1m":
+            # M3b 分钟会话：5 分钟 bar（minute_bars period=5，raw 口径）驱动
+            from .store import RawMinuteBarStore
+            self._store = RawMinuteBarStore.from_data_db(
+                db, list(mod_config.symbols), today=today,
+                require_bands=bool(getattr(mod_config, "require_bands", True)))
+        else:
+            self._store = RawDayBarStore.from_data_db(
+                db, list(mod_config.symbols), days=int(getattr(mod_config, "days", 260)),
+                today=today, require_bands=bool(getattr(mod_config, "require_bands", True)),
+                st_set=set(getattr(mod_config, "st_set", None) or ()),
+                require_today_reference=bool(getattr(mod_config, "require_today_reference", True)))
         env.set_data_source(PaperDataSource(
             env.config.base, self._store,
             override_available_range=bool(getattr(mod_config, "override_available_range", True))))
@@ -130,6 +138,9 @@ class PtPaperMod(AbstractMod):
                 pass
         env.event_bus.add_listener(EVENT.TRADE, self._on_trade)
         if self._cost_rate > 0:
+            # T55-R1：start_up 直接装（priority=200 时框架 decider 已在），
+            # resume 跳过 BEFORE_TRADING 也不再漏装；事件监听保留为幂等兜底
+            self._install_costs()
             env.event_bus.add_listener(EVENT.POST_BEFORE_TRADING, self._install_costs)
 
     def tear_down(self, code, exception=None):

@@ -151,7 +151,11 @@ class SessionGate:
         except Exception as exc:            # noqa: BLE001 - 元数据坏了也要停线
             raise SessionGateError(f"session.json 解析失败：{exc}") from exc
 
-    def check(self, today: date, fingerprint: str, *, force: bool = False) -> dict:
+    def check(self, today: date, fingerprint: str, *, force: bool = False,
+              intraday_resume: bool = False) -> dict:
+        """`intraday_resume=True`（M3b 日内多跳）：同日 + 有 state + 指纹一致
+        ⇒ 放行续跑（T52 实证：resume 跳 before_trading，意图幂等由调用方
+        `executed_ids` 提供）；同日**无** state 或指纹漂移仍拒。"""
         meta = self.read()
         if meta is None:
             return {"allowed": True, "prior": None, "force": force}
@@ -162,6 +166,8 @@ class SessionGate:
                 "换现金基数/费率/数据文件后续跑，会把两个口径的账本拼在一起")
         last = str(meta.get("last_day") or "")
         if last and last >= today.isoformat() and not force:
+            if intraday_resume and last == today.isoformat():
+                return {"allowed": True, "prior": last, "intraday": True}
             raise SessionGateError(
                 f"状态已推进到 {last}，本次请求 {today.isoformat()} 不晚于它；"
                 "同日重跑会重复下单（resume 只跳 before_trading，handle_bar 会再执行一次）")
