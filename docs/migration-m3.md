@@ -23,6 +23,20 @@
 M3 行写的"cron 切 rqalpha 常驻（一天一进程）"**不一致**，请显式改计划文本，
 别让 cron 和实现各说一套。本文余下章节按"要真切换"来写。
 
+### 0.1 T47 实现落点（`worker/t47` 待 review ⇒ **缺口尚未关闭**，这里只给"工具长什么样"）
+
+| 缺口 | 现在的命令/入口 | 默认 | 关闭判据还差什么 |
+|---|---|---|---|
+| G1 | `rq day … --ledger`（成交/拒单/费用三分量落 `orders/fills/t1_freeze/op_log[rq:fill|rq:reject]`）；`--ledger-dry` 只报告不写库 | **不落账**（`build_config(ledger=False)`） | review + 一次现网受控落账（前后账本指纹核对，照 T42 做法） |
+| G2 | 同上路径自动接 `record_close_nav` ⇒ `nav_history` + `op_log[rq-nav]`；旧线当天已记 `nav:close` 则让位 | 只在 `--ledger` 生效 | 现网连续一天 `nav_history` 恰 1 行 |
+| G3 | `config.yaml`/`engine.local.yaml` 的 `engine.executor: legacy|rqalpha`；`cli ledger executor`（只读看当前底座 + 最近切换留痕）；守护进程启动即校验，未知值/装了旧线没装 rqalpha ⇒ **exit 2 不降级** | `legacy` | 现网切换/回退各一次演练（`op_log[m3:switch]` 两条） |
+| G4 | `cli ledger archive --archive-dir DIR --yes [--allow-existing] [--stamp S]`：sqlite 冷备 → `chmod 444` → 新开账（cash/持仓/**未解冻 T+1**）→ `op_log[ledger:archive]` | 无 `--yes` 直接拒绝；账本非空且无 `--allow-existing` 拒绝 | 切换日实操一次，产出 §4 ③ 要的 `M3-BRIDGE-<date>.md` |
+
+⚠️ **一处仍未闭合的双活风险**（report-t47 §7-Q1）：`engine.executor=rqalpha` 时
+`paper_trading.engine` 守护进程**本身还是旧线撮合**——T47 只给了"新线成交怎么落账"，
+没有擅自让守护进程停单。§4 的顺序铁律（先停旧再启新）目前仍靠人工执行，
+它归 T48 执行模型拍板后一起解。
+
 ## 1. 规格对比（切换前后到底变不变）
 
 | 维度 | 旧自研线 | rqalpha 线 | 结论 |
@@ -59,7 +73,7 @@ M3 行写的"cron 切 rqalpha 常驻（一天一进程）"**不一致**，请显
 | 5 | cron 交易日历 | `0 10 * * 6 … calendar sync` | **保留** | 新线的 `raw_freshness`/`is_trading_day` 也依赖 `var/trading_calendar.json` |
 | 6 | cron raw 采集 | 无（手工/影子三步） | **新增 15:40 `data fetch-raw`** | 草稿见 `report-t42.md §5`；≥15:35 是批复 ③ 的硬时刻 |
 | 7 | cron 影子对账 | 无 | 15:45 `rq shadow-day`（引擎 venv） | 需要 `--state-dir`/`--shadow-dir`；切换后是否继续跑双轨 = 主 AI 决定（建议第一周继续，作为 T46 的"影子对账连续"项） |
-| 8 | cron **新线执行**（G1 关闭后） | 无 | 建议 09:35 一轮 + 15:05 一轮（收盘定稿后），**一天一进程** | 必须带 `--state-dir`（persist + SessionGate）；两轮回同一 state 会被闸拒 ⇒ 每轮独立 state 或按日分目录 |
+| 8 | cron **新线执行**（G1 关闭后） | 无 | **执行模型待定，见 `docs/worker/report-t48.md`**（"09:35 + 15:05 两轮"已被主 AI 否决：盘中每分钟止损语义不可丢） | 现状实测：同日复用 state 会被 `SessionGate` 以 exit 4 拒（"同日重跑会重复下单"）；单会话 2.4 s / 171 MB（NEC 实测）。切换前必须先定 ①/②/③，别照本行旧建议装 cron |
 | 9 | 面板 | `paper-trading-dashboard`（8080，systemd unit） | **保留** | 面板读 `nav_history`/`op_log`：G2 不关闭则切换后面板净值断供 |
 | 10 | 账本 | `paper_account.db` | 归档 + 新开账（G4） | §4 Phase 1 ③ |
 | 11 | 行情库 | `data.db`（`daily_bars`=qfq、`daily_bars_raw`=28,339 行、`minute_bars`） | **不改** | T40 已回填；AI 展示层继续吃 qfq 列（口径标签由 T31 钉住） |

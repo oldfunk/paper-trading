@@ -198,15 +198,17 @@ def intraday_reference(symbols, *, quotes: Optional[dict] = None,
                        get_quotes=None) -> dict:
     """当日独立参照：腾讯实时快照（与 akshare/新浪**不同源**，符合独立基准原则）。
 
-    拿不到就返回 {}——当日缺参照不判死，由 `raw_flip_watch()` 负责 T+1 停线。
+    T50-A：这条路径**就是**给盘后用的（母库 T 日 `close_raw` 是 NULL），所以默认
+    入口带 `allow_closing=True`——否则 15:00 以后 `get_quotes` 直接回空，
+    "当日跨源对照"永远拿不到参照（report-t42 §4 的实测）。
+    注入 `get_quotes`/`quotes` 的调用方（测试、其它口径）保持原契约，不受影响。
     """
     if quotes is None:
         fn = get_quotes
         if fn is None:
-            try:
-                from paper_trading.data.realtime import get_quotes as fn
-            except Exception:               # noqa: BLE001 - 无网络/依赖缺失
-                return {}
+            def fn(codes):
+                from paper_trading.data.realtime import get_quotes as _gq
+                return _gq([str(c) for c in codes], allow_closing=True)
         try:
             quotes = fn([str(s) for s in symbols]) or {}
         except Exception:                   # noqa: BLE001
@@ -363,20 +365,25 @@ def raw_flip_watch(db, symbols, today: Optional[date] = None,
 
 
 def flip_watch_with_mother(db, symbols, today=None, days: int = 30,
-                          max_lag: int = MAX_LAG_TRADING_DAYS) -> dict:
+                           max_lag: int = MAX_LAG_TRADING_DAYS,
+                           start: Optional[date] = None,
+                           end: Optional[date] = None) -> dict:
     """读母库后跑逐日闸（CLI `raw-coverage --gate` 与 `sync_raw` 共用同一口径）。
 
     参照窗口 = 采集窗口（`fetch_window`），单位不一致那个坑就是从这里根除的。
+    `start/end`（T47 顺手项，裁决 3）指名日期区间时用区间，不给就按 `--days` 换算。
     """
     today_d = _as_date(today or date.today())
-    start, _end = fetch_window(days, today_d)
+    win_start, win_end = fetch_window(days, today_d)
+    start_d = _as_date(start) if start else win_start
+    end_d = _as_date(end) if end else win_end
     syms = [str(s).strip().zfill(6) for s in (symbols or [])]
     refs: dict = {}
     mother_ok = True
     try:
         from paper_trading.integration import mother as _m
 
-        raw = _m.raw_close_map(syms, since=start.isoformat()) or {}
+        raw = _m.raw_close_map(syms, since=start_d.isoformat()) or {}
         # 注意形状：raw_close_map 返回 {code: {date: row}}，这里要的是**内层** {date: row}。
         # 早先写成 `refs[s] = raw_close_map([s], ...)`（整包外层），于是
         # `max(v)` 取到的是标的代码而不是日期、`ds in have` 永远为假——
@@ -385,15 +392,16 @@ def flip_watch_with_mother(db, symbols, today=None, days: int = 30,
     except Exception as exc:              # noqa: BLE001 - 母库不可用时显式标不完整
         logger.warning("raw 逐日闸读母库失败（%s）→ 本轮审计标记为不完整", exc)
         mother_ok = False
-    return raw_flip_watch(db, syms, today=today_d, max_lag=max_lag,
+    return raw_flip_watch(db, syms, today=end_d, max_lag=max_lag,
                           ref_asof={s: (max(v) if v else "") for s, v in refs.items()},
                           # 母库读失败 ⇒ 参照存在性"未知"（ref_days=None）而不是"没有"，
                           # 未验料的行才会被记成 audit_incomplete 而不是假装审计完整
                           ref_days=_ref_date_set(refs) if mother_ok else None,
-                          since=start, days=days)
+                          since=start_d, days=days)
 
 
 def sync_raw(db, symbols, *, days: int = 30,
+             start: Optional[date] = None, end: Optional[date] = None,
              fetch: Optional[Callable[[str, int], list[Bar]]] = None,
              reference: Optional[Callable[[list[str], int], dict]] = None,
              today: Optional[date] = None, now: Optional[datetime] = None,
@@ -406,19 +414,23 @@ def sync_raw(db, symbols, *, days: int = 30,
     `reference=NO_REFERENCE` 表示显式单源（`--no-mother-ref`），此时**不回退读母库**。
     """
     today_d = _as_date(today or date.today())
-    start, _end = fetch_window(days, today_d)
+    win_start, win_end = fetch_window(days, today_d)
+    # T47 顺手项（裁决 3）：`--days` 只是"窗口规模"的含糊参数，回填要能指名日期区间；
+    # 给了 start/end 就以它为准，采集/参照/逐日闸三处仍共用这一份窗口（T41 裁决 1）。
+    start_d = _as_date(start) if start else win_start
+    end_d = _as_date(end) if end else win_end
     if fetch is None:
         from paper_trading.data.akshare_fetcher import AkshareFetcher
 
         def fetch(sym, d):
-            return AkshareFetcher.fetch_daily_raw(sym, start_date=start.strftime("%Y%m%d"))
+            return AkshareFetcher.fetch_daily_raw(sym, start_date=start_d.strftime("%Y%m%d"))
     symbols = [str(s).strip().zfill(6) for s in (symbols or [])]
     single_source = reference is NO_REFERENCE
     refs: dict = {}
     if reference is None:
         try:
             from paper_trading.integration import mother as _m
-            refs = {c: _m.raw_close_map([c], days=days, since=start.isoformat()).get(c, {})
+            refs = {c: _m.raw_close_map([c], days=days, since=start_d.isoformat()).get(c, {})
                     for c in symbols}
         except Exception as exc:              # noqa: BLE001 - 母库不可用则全部走单源
             logger.warning("母库 raw 参照不可用（%s），本轮单源写入 checked=0", exc)
@@ -427,8 +439,11 @@ def sync_raw(db, symbols, *, days: int = 30,
         refs = reference(symbols, days) or {}
 
     intraday_map: dict = {}
-    day = today_d.isoformat()
-    enforce = session_closed(now or datetime.now())
+    # 盘中跨源对照只对"真实今天"成立：回填历史区间时没有当天的实时价可比，
+    # 硬套会把整批历史行报成 intraday_missing（fail-loud 不能用在错的日子）。
+    day_d = end_d if end_d < today_d else today_d
+    day = day_d.isoformat()
+    enforce = session_closed(now or datetime.now()) and day_d == today_d
     if enforce:
         intraday_map = (intraday if intraday is not None
                         else intraday_reference(symbols, quotes=quotes))
@@ -437,7 +452,8 @@ def sync_raw(db, symbols, *, days: int = 30,
     no_today_bar = 0
     for sym in symbols:
         try:
-            bars = fetch(sym, days) or []
+            bars = [b for b in (fetch(sym, days) or [])
+                    if start_d <= _as_date(b.timestamp) <= end_d]
         except Exception as exc:              # noqa: BLE001 - 单只失败不影响整批
             results.append({"symbol": sym, "written": 0, "status": "fetch_error",
                             "error": f"{type(exc).__name__}: {str(exc)[:120]}"})
@@ -452,12 +468,12 @@ def sync_raw(db, symbols, *, days: int = 30,
         results.append(sync_symbol(sym, bars, verdict, db))
     written = sum(r["written"] for r in results)
     ref_asof = {s: (max(v) if v else "") for s, v in (refs or {}).items()}
-    flip = raw_flip_watch(db, symbols, today=today_d, ref_asof=ref_asof,
+    flip = raw_flip_watch(db, symbols, today=end_d, ref_asof=ref_asof,
                           ref_days=None if single_source else _ref_date_set(refs),
-                          since=start, days=days)
+                          since=start_d, days=days)
     return {"today": day, "requested": len(symbols),
             "written": written, "results": results,
-            "ref_window": {"start": start.isoformat(), "end": _end.isoformat(),
+            "ref_window": {"start": start_d.isoformat(), "end": end_d.isoformat(),
                            "single_source": bool(single_source),
                            "symbols_with_ref": sum(1 for v in refs.values() if v)},
             "intraday_enforced": enforce,
@@ -466,6 +482,24 @@ def sync_raw(db, symbols, *, days: int = 30,
             "intraday_no_today_bar": no_today_bar,
             "flip_watch": {k: v for k, v in flip.items() if k != "per_symbol"},
             "rejected": [r["symbol"] for r in results if r["status"] == "rejected"]}
+
+
+def today_reference_state(db, symbol: str,
+                          today: Optional[date] = None) -> dict:
+    """**今天这根 bar 有没有独立参照**（T50-C 的判据，喂引擎前必须问一次）。
+
+    三态：
+    - `checked`     今天这根已同日对照过（母库或盘后收盘快照）⇒ 可以喂引擎；
+    - `unchecked`   今天这根在库里但 `checked=0` ⇒ **不许喂**（fail-closed）；
+    - `no_today_bar` 今天这根还没采到 ⇒ 不由本判据管（新鲜度闸 `raw_freshness`
+      会把它当陈旧处理），所以这里只报状态、不做二次停线。
+    """
+    today_d = _as_date(today or date.today())
+    d = today_d.isoformat()
+    flags = db.raw_date_flags(str(symbol), since=d, until=d)
+    if not flags:
+        return {"state": "no_today_bar", "date": d}
+    return {"state": "checked" if flags.get(d) else "unchecked", "date": d}
 
 
 def raw_freshness(db, symbols, today: Optional[date] = None,

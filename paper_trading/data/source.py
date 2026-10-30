@@ -74,12 +74,17 @@ class BarSource:
         return self.db.get_bars(symbol, limit=limit)
 
     def engine_raw_bars(self, symbol: str, limit: int = 30,
-                        today=None, max_lag: int = 1) -> list:
+                        today=None, max_lag: int = 1,
+                        require_today_reference: bool = True) -> list:
         """引擎唯一允许的取数口：**只有原始价，且必须新鲜**（T31 G-T13-1/2）。
 
         任何不满足的情况返回 `[]`——按 AGENTS"缺数据不下单"处理，
         绝不降级回 qfq 列（那正是 2026-10-27 尺度污染的路径）。
         拒绝原因写在 `self.last_engine_reject`，由调用方入 op_log。
+
+        `require_today_reference`（T50-C，默认开）：**今天这根没有独立参照就不喂**——
+        盘后采集若没做成当日跨源对照（母库 NULL + 收盘快照也没对上），
+        `checked=0` 的当日 bar 属于"未经验证的价"，不许进撮合。
         """
         self.last_engine_reject = None
         try:
@@ -94,13 +99,18 @@ class BarSource:
         if bad:
             self.last_engine_reject = f"caliber_not_raw: {bad[0].adjust!r}"
             return []
-        from paper_trading.data.raw_feed import raw_freshness
+        from paper_trading.data.raw_feed import raw_freshness, today_reference_state
 
         fresh = raw_freshness(self.db, [symbol], today=today, max_lag=max_lag).get(symbol, {})
         if fresh.get("stale"):
             self.last_engine_reject = (f"raw_stale: last={fresh.get('last')} "
                                        f"lag={fresh.get('lag')}")
             return []
+        if require_today_reference:
+            st = today_reference_state(self.db, symbol, today=today)
+            if st["state"] == "unchecked":
+                self.last_engine_reject = f"today_bar_unchecked: {st['date']}"
+                return []
         return bars
 
     def source_of(self, symbol: str) -> str:

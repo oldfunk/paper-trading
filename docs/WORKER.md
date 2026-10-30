@@ -796,30 +796,95 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 > 是"现在还不能切"的全部原因——**T47 补齐它们 = M3 硬前提**；T48 解执行模型。
 > Qoder 三件 + 顺手一件 + T51；Hermes 审查件。
 
-- [ ] **T47（Qoder，P0·M3 硬前提）四缺口补齐**（runbook `migration-m3.md` G1-G4）：
-  - [ ] **G1 新线写账本**：rq_engine runner 接 PaperBroker 适配（影子 evidence
-    路径升级为正式执行路径；`shadow.py` 的对照用法保留），成交/拒单/费用落
-    `orders/fills/op_log`——钱类件，逐字段测试 + 变异
-  - [ ] **G2 NAV 记录器**：新线每日收盘 `record_nav`（对齐旧线 `nav:close`
-    语义：业务日判重、无交易也记、幂等）——面板净值不断供
-  - [ ] **G3 回退开关**：config 键（**必须进 `engine/config.py:27-37` DEFAULTS
-    白名单**否则静默丢弃）+ 状态进 session_fingerprint + 落 `op_log`；
-    切换/回退各一次演练测试
-  - [ ] **G4 归档/新开账工具**：`cli` 子命令（冷备 → chmod 444 → 新开账
-    NAV 对齐 → 留痕 `op_log[ledger:archive]`），幂等可重入
-  - [ ] 顺手：`fetch-raw --start/--end`（裁决 3）
-  - [ ] `report-t47.md`；按协议附裁决核销清单
-- [ ] **T48（Qoder，P0·M3 执行模型方案）**：保留**每分钟执行语义**的方案
-  对比（不改码，出方案）——① 每分钟短窗口进程（T13 已证 start=end=今日
-  可行，量 5s/次开销与 state 重放开销）② 常驻长窗口（逐日推进；T13 §4.4
-  重复结算、§4.7 进程内重入两坑的解法）③ 分层混合（盘中快路径 + 日终
-  rqalpha 结算对账的边界划分与双账本风险）；每方案给：止损延迟上界、
-  state/账本一致性风险、实施工作量、回退难度；**带 T13/T45 约束原文**；
-  `report-t48.md` → 我拍板后实施
-- [ ] **T50（Qoder，P0·小）盘后防线修复**（裁决 1）：(a) 盘后专用新鲜度
-  （收盘快照缓存，18:00 后采集可用当日对照）→ (c) `source.py:76-104` 引擎
-  取数口查 `checked`（当日无参照 bar fail-closed 不喂）；顺序不可反；
-  回归测试（盘后采集能对照、无参照 bar 进不了引擎）+ `report-t50.md`
+- [x] **T47（Qoder，P0·M3 硬前提）四缺口补齐**：`worker/t47`（堆叠在 `worker/t48`），
+    runbook `migration-m3.md` G1-G4 ⇒ **待 review 不合 main**；全套 **568 passed / 9 skipped**
+    （基线 515/9 ⇒ 新增 53 条钱类测试，零回归）
+  - [x] **G1 新线写账本**：`PaperBroker.apply_external_fill()`（G1 原语：**不重判价/不加滑点/
+    不重算费**，只做一致性守卫 + 复用旧线同一批落账原语 ⇒ `avg_cost` 含费、T+1 解冻日、
+    `peak_price` 口径逐位一致）；`ledger.post_session()` 把成交/拒单/费用三分量落
+    `orders/fills/t1_freeze/op_log[rq:fill|rq:reject]`；`mod_entry` 补出
+    `commission/tax/other_fees` 三分量 ⇒ **缺任一分量整批拒绝落账**（不拿 `cost` 去猜拆分）；
+    守卫失败**停批**（后面的笔不写）；biz_id 幂等判定用 `has_op_with()` 全表按 action 查，
+    **不用最近 N 条窗口**（本仓已证面板问答会把目标行挤出窗口）。`shadow.py` 一字未改（对照用法保留）
+  - [x] **G2 NAV 记录器**：`ledger.record_close_nav()` 业务日判重（复用 `has_operation()`，
+    `date` 写进 **result** 以支持跨日补记）、**零成交也记**、幂等；金额调 `broker.get_nav()`
+    不另写公式（测试断言与旧线逐位相同，含 `pnl` 对 `initial_cash`）；双轨期旧线已记
+    `nav:close` 则新线**让位**（同业务日两行净值会让面板与 verify 双双失真）；持仓缺价 ⇒
+    拒记 `price_missing` 而不是按 0 市值写
+  - [x] **G3 回退开关**：`engine/config.py:33` `DEFAULTS["executor"]="legacy"`（**进了白名单**，
+    测试直接验"yaml 写了不被吞"；变异⑧删这行 ⇒ 3 条必红）+ `session_fingerprint` 含
+    `ledger`（变异⑩）+ `op_log[m3:switch]` 同日同值只记一行 + **守护进程启动校验**
+    （`startup_guard`：未知值/`rqalpha` 却没装 ⇒ **exit 2 不降级**，真子进程退出码有测试）。
+    演练=离线两向：`m3:switch` 双向留痕 + **键不存在 vs 键=legacy 六表逐位一致**（§5.2 回退回归）；
+    **现网真跑一天的切换/回退需授权** → questions.md Q2
+  - [x] **G4 归档/新开账工具**：`cli ledger archive --archive-dir DIR --yes [--allow-existing]`
+    = sqlite `backup()` 冷备（不是 `cp`）→ `chmod 444` → **账本非空且无 `--allow-existing` 直接拒**
+    （拒绝时源文件 SHA 不变，冷备已先落盘）→ `.pre-reopen-<stamp>` 现场副本 → 新开账对齐
+    归档 `cash + 持仓 +`**未解冻 T+1**（不搬 `t1_freeze` 会让切换日买的票永远卖不掉，测试盯着
+    解冻入口）→ `op_log[ledger:archive]`（含归档行数清点）。幂等可重入：同 `--stamp` 重跑
+    `archive_reused=True` 且归档 mtime/字节不变；`-journal/-wal` 存在 ⇒ 有人在写，拒绝动手。
+    另有 `cli ledger executor`（只读看当前底座 + 最近切换留痕）
+  - [x] 顺手：`fetch-raw --start/--end`（裁决 3）：`sync_raw(start=, end=)` +
+    `flip_watch_with_mother(start=, end=)`，采集/母库参照/逐日闸**三处仍同源**；
+    新语义=区间终点早于真实今天时**不做盘中跨源**（历史日没有当天实时价可比），
+    默认路径强制跨源那条**一字未松**（有测试对照）。⚠️ 我这次改名漏了两处引用 + 签名，
+    既有回归网 **17 条立刻红**（report-t47 §2.3）
+  - [x] `report-t47.md` + 裁决核销清单（§1 逐条对照派发原文与 §5.2 开关规格）；
+    `spikes/mutation_t47.py` 14 个源码级变异 2/1/2/3/1/2/1/3/3/1/1/1/1/1 条必红、还原 88 全绿；
+    `docs/migration-m3.md` 加 §0.1「T47 实现落点」（只标工具长什么样，**不宣布缺口已关闭**——
+    关闭判据要 review + 现网演练）；三个决定点进 questions.md（Q1 双活防护归谁 /
+    Q2 现网演练授权 / Q3 `m3 verify` 要不要长出新留痕项）
+- [x] **T48（Qoder，P0·M3 执行模型方案）**：`worker/t48`（堆叠在 `worker/t50`），
+    **只出方案不改码**，`docs/worker/report-t48.md` → 等主 AI 拍板后实施
+  - [x] 三方案各自给全四项（止损延迟上界 / state·账本一致性风险 / 实施工作量 / 回退难度）：
+    **①每分钟短窗口进程** 延迟≈1 分钟，但一致性风险**高**——同日再跑必然重复下单
+    （T13 §4.7 实测：resume 只跳 `before_trading`，`handle_bar` 再执行一次；
+    现网闸文案即照此写），要做成需新建日内共享状态 + 计划增量语义 + 幂等闸改写，
+    且把 §4.4 的重复结算每天放大 240 倍；**②常驻长窗口（分钟线驱动）** 延迟同样≈1 分钟，
+    状态只有一份、幂等天然成立，风险中等，**方向正确但前置是分钟线**
+    （`minute_bars` 现在只有 5 分钟周期 / 2,304 行 / 无每日采集与新鲜度闸 ⇒ 今天跑不起来）；
+    **③分层混合** 延迟不变、工作量最小、回退最易，但rqalpha 不当成交真相源
+    ⇒ **不满足 M3 定义**，只适合当兜底/M2 延长线
+  - [x] **开销用 NEC 实测而非估算**：单会话（38 只 × 3 年 raw，1 笔成交，费用 9.7708 与手算一致）
+    **2.42 s / 峰值 RSS 171 MB**；其中 `import rqalpha` 固定 **0.83 s / 95 MB**；
+    同日复用 state 被闸拒 **0.93 s / exit 4**；无共享状态连跑 5 次 ⇒ **每次成交 1000 股
+    = 净买 5000 股**（重复成交风险的直接证据）；①每日机时外推 240×2.4 s ≈ 9.7 分钟
+  - [x] **带 T13/T45 约束原文**：§0 逐字引 T13 §4.4（重复结算 + 指标致命）与 §4.7
+    （一天一进程、`should_resume/should_run_init` 核心无实现）、
+    G-T13-5/9 现网闸文案、以及主 AI "两轮否决"的原文理由
+  - [x] 给出推荐顺序（拍板参考，不越权）：先做 **G1+G2（T47）**——它是 ①②③ 共同地基；
+    ②的分钟线供数列为前置；①不推荐；③只作兜底
+  - ✏️ 顺手修正一处**会伤人的过时建议**：`docs/migration-m3.md` §3 #8 原写
+    "建议 09:35 一轮 + 15:05 一轮"——该方案已被裁决否决（丢盘中止损语义），
+    照 runbook 执行的人会照着装；现改为指向 report-t48 并附实测约束
+- [x] **T50（Qoder，P0·小）盘后防线修复**（`worker/t50`，**待 review**；裁决 1）
+  - [x] (a) 盘后专用新鲜度：`realtime.py` 新增 `is_closing_snapshot()`
+    （当天 + ts≥15:00 + 时龄 ≤`QUOTE_CLOSING_MAX_AGE=9h`，**跨日自动作废**）、
+    `quote_usable(allow_closing=)`、`get_quotes(allow_closing=, now=)`；
+    撮合/风控仍走 `quote_fresh` 180 秒，一字未改；`intraday_reference` 默认入口带上
+    `allow_closing`。**真机（NEC 19:32 真实快照）：`intraday_checked 0→38`、
+    `intraday_missing 38→0`，今日 38 行 checked=1 从 0→38，全库 28,264→28,302**
+  - [x] (c) 当日无参照 bar 不喂引擎：`raw_feed.today_reference_state()` 三态 +
+    **两道闸同装**——`source.engine_raw_bars`（文档承诺的口）与
+    `RawDayBarStore.from_data_db`（**真正喂 rqalpha 的那条**）；被挡标的记
+    `gate_rejected` 并进 evidence。**真机：抹掉 600036 当日参照 ⇒ store 只供 000651、
+    框架以"没有市场数据"拒单、`gate_rejected={"600036":"today_bar_unchecked"}`、
+    旧线照买 ⇒ `position_delta=-1000` 把"挡"显式照出来**
+  - [x] 顺序 (a)→(c) 未反（先 (c) 会让每天 15:35–母库更新之间全线停摆）；(b) 未做（按裁决否决）
+  - [x] 回归测试 + `report-t50.md`：新增 **15 条**（含 (a)→(c) 因果链、四种错形状快照、
+    跨日作废、双路径 get_quotes 对照）；既有 `test_engine_raw_bars_returns_fresh_raw`
+    按新语义补 `checked_dates`（它原验的正是"无参照也放行"）；
+    `spikes/mutation_t50.py` 四个源码级变异 2/1/1/1 条必红、还原 54 全绿；
+    全套 **515 passed / 9 skipped**（基线 499/9 零回归）
+  - 🔴 **顺手撞破：`BarSource.engine_raw_bars` 这个"引擎唯一取数口"是纸面的**——
+    全仓生产代码没人调它，真正的喂料是 `store.py:95 db.get_raw_bars` 直连
+    ⇒ 只按派发文改 `source.py` 的话 (c) **完全不生效**。已两道闸都装并写明哪道才是真的
+  - ⚠️ 行为变更（影子期/切换须知）：当日采集失败 ⇒ 那只标的**当天不下单**（以前会用未验证的价）；
+    `require_today_reference` 已进会话指纹（换档需新 state，别用 `--force`）；
+    现网 `data.db` 今日 38 行仍是 `checked=0`（我只写 scratch），
+    **下一次授权采集或 15:40 cron 首跑前，新线对"今天"不下单**（by design）
+  - ➡️ 两个待你定的小点：① 母库沪市近端滞后（18 只停在 10-23/10-27）是否转母项目；
+    ② `m3 verify` 要不要新增一项读 `evidence.gate_rejected`（我不在 T50 里顺手扩已验收的 T46 面）
 - [ ] **T51（Qoder，P1·口径唯一）费率三真相源收敛**（T43 地图发现）：
   `models/types.py:119-122` / `engine/backtest.py:22 FeeModel` /
   `rq_engine/costs.py:31-36` 三处费率 + `cli.py:2173/2228` 与

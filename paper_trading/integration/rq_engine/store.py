@@ -18,7 +18,10 @@ from typing import Iterable, Optional
 
 import numpy as np
 
+from paper_trading.utils import get_logger
 from .bands import limit_prices
+
+logger = get_logger(__name__)
 
 BAR_DTYPE = np.dtype([
     ("datetime", np.int64),
@@ -84,18 +87,40 @@ class RawDayBarStore:
         self.st_set = set(st_set or ())
         self._bars: dict[str, np.ndarray] = {}
         self.stats: dict[str, dict] = {}
+        self.gate_rejected: dict[str, str] = {}      # 被参照闸挡下的标的 → 原因
         self._build(bars_by_symbol)
 
     @classmethod
     def from_data_db(cls, db, symbols, *, days: int = 260, today=None,
-                     require_bands: bool = True, st_set: Optional[set] = None):
-        """从 `DataDBManager` 的 raw 表读（引擎唯一允许的数据源）。"""
+                     require_bands: bool = True, st_set: Optional[set] = None,
+                     require_today_reference: bool = True):
+        """从 `DataDBManager` 的 raw 表读（引擎唯一允许的数据源）。
+
+        `require_today_reference`（T50-C）：**今天这根没有独立参照的标的直接不供**，
+        而不是降级喂进去——母库 T 日 `close_raw` 为 NULL 且盘后快照也没对上的日子，
+        引擎就该"缺数据不下单"。被挡的标的记在 `gate_rejected` 里，随 evidence 出，
+        这样"为什么今天没成交"是可审计的，不是一句"无 bar"。
+        """
+        from paper_trading.data.raw_feed import today_reference_state
+
         data = {}
+        rejected = {}
+        today_d = _as_date(today) if today is not None else None
         for s in symbols:
-            rows = db.get_raw_bars(to_symbol(s) if "." in str(s) else str(s), limit=days)
+            sym = to_symbol(s) if "." in str(s) else str(s)
+            if require_today_reference and today_d is not None:
+                st = today_reference_state(db, sym, today=today_d)
+                if st["state"] == "unchecked":
+                    rejected[sym] = "today_bar_unchecked"
+                    continue
+            rows = db.get_raw_bars(sym, limit=days)
             if rows:
                 data[str(s)] = rows
-        return cls(data, today=today, require_bands=require_bands, st_set=st_set)
+        store = cls(data, today=today, require_bands=require_bands, st_set=st_set)
+        store.gate_rejected = rejected
+        if rejected:
+            logger.warning("G-T13-1-C 当日无独立参照，拒供：%s", rejected)
+        return store
 
     # ---- 构建 ----------------------------------------------------------
     def _build(self, bars_by_symbol: dict[str, list]) -> None:

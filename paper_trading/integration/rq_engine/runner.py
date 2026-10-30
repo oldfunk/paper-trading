@@ -58,6 +58,8 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
                  override_available_range: bool = True,
                  matching_type: str = "current_bar",
                  fee: Optional[dict] = None,
+                 require_today_reference: bool = True,
+                 ledger: bool = False,
                  extra: Optional[dict] = None) -> dict:
     """一个模拟日的 rqalpha 配置（纯函数，便于离线测试）。
 
@@ -111,6 +113,8 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
                 "evidence": evidence,
                 "pre_load": True,
                 "transfer_fee_rate": transfer_fee_rate,   # 框架没有这项，mod 里补
+                "require_today_reference": bool(require_today_reference),  # T50-C
+                "ledger": bool(ledger),                   # T47-G1/G3：会话成交是否落现网账本
             },
         },
     }
@@ -134,6 +138,9 @@ def session_fingerprint(cfg: dict) -> str:
         # T38：费率也改账本语义，必须进指纹（改了费率还想续跑昨天的状态 = 两本账混着算）
         "cost": cfg["mod"]["sys_transaction_cost"],
         "transfer_fee_rate": cfg["mod"]["ptpaper"]["transfer_fee_rate"],
+        "require_today_reference": cfg["mod"]["ptpaper"]["require_today_reference"],
+        # T47-G3：落不落现网账本是最大的语义差，必须进指纹（换了就得新会话）
+        "ledger": cfg["mod"]["ptpaper"]["ledger"],
         "bundle": base["data_bundle_path"],
         "db": cfg["mod"]["ptpaper"]["db"],
         "symbols": sorted(cfg["mod"]["ptpaper"]["symbols"]),
@@ -203,7 +210,8 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
                 init_cash: float = INIT_CASH_DEFAULT, state_dir: str = "",
                 workdir: Optional[str] = None, force: bool = False,
                 require_bands: bool = True, matching_type: str = "current_bar",
-                fee: Optional[dict] = None) -> dict:
+                fee: Optional[dict] = None, require_today_reference: bool = True,
+                ledger: bool = False) -> dict:
     """跑一个模拟日（**G-T13-9：一个进程只允许一次**）。"""
     global _SESSION_USED
     if _SESSION_USED:
@@ -219,7 +227,9 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
     cfg = build_config(today=today, data_db=data_db, bundle=bundle, symbols=symbols,
                        init_cash=init_cash, state_dir=state_dir,
                        evidence=evidence_path, require_bands=require_bands,
-                       matching_type=matching_type, fee=fee)
+                       matching_type=matching_type, fee=fee,
+                       require_today_reference=require_today_reference,
+                       ledger=ledger)
     fp = session_fingerprint(cfg)
 
     gate = SessionGate(state_dir) if state_dir else None

@@ -22,6 +22,14 @@ from paper_trading.utils.trading_calendar import as_date, is_trading_day, load_h
 logger = get_logger(__name__)
 
 
+class LedgerConsistencyError(RuntimeError):
+    """外部引擎的成交与账本对不上（T47-G1）。
+
+    这是钱类 fail-loud：宁可抛错停笔，也**不**把一笔"账本付不起/卖不出"的成交
+    写进库——写坏的账本比少下一单严重得多，而且会污染后面所有 NAV 与门禁判定。
+    """
+
+
 class PaperBroker:
     """
     本地模拟撮合器。
@@ -386,6 +394,69 @@ class PaperBroker:
         )
         return order
 
+    def apply_external_fill(self, *, symbol: str, direction: int, volume: int,
+                            price: float, commission: float = 0.0,
+                            stamp_duty: float = 0.0, transfer_fee: float = 0.0,
+                            filled_at: Optional[datetime] = None,
+                            order_type: Optional[OrderType] = None):
+        """把**外部引擎已经成交**的结果落进账本（T47-G1，rqalpha 是撮合真相源）。
+
+        与 `submit_order` 的区别就是这条路径存在的全部理由：
+        **不重判价格、不加滑点、不重算费用、不重做涨跌停/资金校验的"决定"**——
+        那些判定已经在框架里做完了（L1 数值红线：影响成交价/持仓/盈亏的数值
+        必须来自框架返回值）。这里只做两件事：
+        1. **一致性守卫**：钱不够/仓不够直接抛 `LedgerConsistencyError`。
+           引擎算出的结果与账本对不上时，写坏账本比不下单严重得多 ⇒ fail-loud；
+        2. 复用既有的落账原语（`_execute_buy/_execute_sell/_persist_order/_persist_fill`），
+           所以 avg_cost 含费、T+1 冻结、`t1_freeze` 解冻日、peak_price 等口径
+           与旧线**一字不差**——两条线共用一份账本算法，不另写一套。
+        """
+        sym = str(symbol).strip().zfill(6)
+        vol = int(volume)
+        px = float(price)
+        if vol <= 0 or px <= 0:
+            raise LedgerConsistencyError(
+                f"外部成交非法：{sym} direction={direction} volume={vol} price={px}")
+        if int(direction) not in (1, -1):
+            raise LedgerConsistencyError(f"外部成交方向必须是 1/-1，收到 {direction!r}")
+        amount = px * vol
+        commission = float(commission or 0.0)
+        stamp_duty = float(stamp_duty or 0.0)
+        transfer_fee = float(transfer_fee or 0.0)
+
+        order = Order(symbol=sym, direction=int(direction), volume=vol,
+                      order_type=order_type or OrderType.LIMIT, limit_price=px)
+        if int(direction) == 1:
+            need = amount + commission + transfer_fee
+            have = self.get_cash()
+            if need > have + 1e-6:
+                raise LedgerConsistencyError(
+                    f"引擎要买 {sym} {vol} 股花 {need:.2f}，账本只有 {have:.2f}"
+                    f"——两本账已分叉，先归因再写库")
+            self._execute_buy(order, px, amount, commission, transfer_fee)
+        else:
+            pos = self.get_position(sym)
+            avail = int(pos.available_volume) if pos else 0
+            if avail < vol:
+                raise LedgerConsistencyError(
+                    f"引擎要卖 {sym} {vol} 股，账本可卖只有 {avail}"
+                    f"——两本账已分叉，先归因再写库")
+            self._execute_sell(order, px, amount, commission, stamp_duty, transfer_fee)
+
+        order.status = OrderStatus.FILLED
+        order.filled_volume = vol
+        order.filled_price = px
+        order.commission = commission
+        order.stamp_duty = stamp_duty
+        order.transfer_fee = transfer_fee
+        order.filled_at = filled_at or datetime.now()
+        self._persist_order(order)
+        self._persist_fill(order)
+        logger.info("外部成交落账: %s %s %s @ %.4f 费 %.4f",
+                    "BUY" if order.direction == 1 else "SELL", vol, sym, px,
+                    commission + stamp_duty + transfer_fee)
+        return order
+
     def _execute_buy(
         self, order: Order, price: float, amount: float,
         commission: float, transfer_fee: float,
@@ -662,6 +733,22 @@ class PaperBroker:
                  _json.dumps(result, ensure_ascii=False, default=str) if result else None,
                  cash_after, total_value_after),
             )
+
+    def has_op_with(self, action: str, needle: str) -> bool:
+        """某类流水里是否已出现包含 `needle` 的行（params 或 result，全表按 action 查）。
+
+        给新线落账的幂等判定用：**不能**用 `get_op_log(N)` 的窗口扫描——
+        面板高频问答会把目标行挤出最近 N 条，查不到就重复落账，
+        重复成交比漏记更致命（见 `get_op_log_day` 同款教训）。
+        """
+        esc = str(needle).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM op_log WHERE action = ? "
+                "AND (params LIKE ? ESCAPE '\\' OR result LIKE ? ESCAPE '\\') LIMIT 1",
+                (action, f"%{esc}%", f"%{esc}%"),
+            ).fetchone()
+        return bool(row)
 
     def get_op_log(self, limit: int = 50) -> list[dict]:
         """读取操作流水（倒序）。"""

@@ -1165,6 +1165,45 @@ def log_data_migrations(bridge) -> int:
     return n
 
 
+def _ledger_decide(args, bridge) -> bool:
+    """这次会话成交要不要落现网账本（T47-G1/G3）。
+
+    显式旗子优先；没给旗子就听 `engine.executor`——因为"切不切底座"是配置决定的
+    运维动作，而 `rq day` 的命令行是排障/演练入口，默认不许悄悄写钱类账本。
+    """
+    from paper_trading.engine.config import load_engine_config
+    from paper_trading.integration.rq_engine import ledger as _ld
+
+    if getattr(args, "no_ledger", False):
+        return False
+    if getattr(args, "ledger", None):
+        return True
+    ex = _ld.executor_from_config(load_engine_config(config_path=getattr(bridge, "config_path", None)))
+    _ld.trace_switch(bridge.broker, ex, args.today, reason="rq day")
+    return ex == "rqalpha"
+
+
+def _ledger_apply(bridge, res: dict, today: str, *, dry: bool = False) -> dict:
+    """落账 + 记收盘 NAV（G1+G2）；守卫失败时把错误带回，让调用方 exit≠0。
+
+    `dry=True` 时只返回"会写哪些笔"，一行都不进库、也不记 NAV——
+    切换日演练要看得见钱，但不能碰钱。
+    """
+    from paper_trading.integration.rq_engine import ledger as _ld
+
+    ev = res.get("evidence") or {}
+    out = _ld.post_session(bridge.broker, ev, today=today,
+                           fp=str((res.get("fingerprint") or "")), dry_run=dry)
+    if dry:
+        out["nav"] = {"recorded": False, "reason": "dry_run"}
+        return out
+    positions = [p.symbol for p in bridge.broker.get_all_positions() if p.total_volume]
+    prices = _ld.close_prices(bridge.data_db, positions, today)
+    out["nav"] = _ld.record_close_nav(bridge.broker, prices, today=today,
+                                      fp=str(res.get("fingerprint") or ""))
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Paper Trading Framework - CLI"
@@ -1332,6 +1371,10 @@ def main() -> None:
     data_raw_fetch.add_argument("--no-intraday", action="store_true",
                                 help="当日不做腾讯实时跨源对照（只用于排障；会留下"
                                      "intraday_missing 流水）")
+    data_raw_fetch.add_argument("--start", default=None,
+                                help="回填窗口起点 YYYY-MM-DD（T47 顺手项，给了就不再用 --days 换算）")
+    data_raw_fetch.add_argument("--end", default=None,
+                                help="回填窗口终点 YYYY-MM-DD（默认今天）")
     data_raw_fetch.add_argument("--json", action="store_true")
     data_raw_cov = data_sub.add_parser(
         "raw-coverage", help="原始价日线的覆盖/新鲜度/对照情况（只读）")
@@ -1364,6 +1407,26 @@ def main() -> None:
                            help="只看钱类项（切换日第一小时用）")
     m3_verify.add_argument("--json", action="store_true")
 
+    # ledger（T47-G3/G4：执行底座可见性 + 切换前的冷备归档/新开账）
+    ledger_parser = subparsers.add_parser(
+        "ledger", help="账本底座工具（executor 只读查看；archive 冷备旧账后新开）")
+    ledger_sub = ledger_parser.add_subparsers(dest="ledger_command")
+    ledger_ex = ledger_sub.add_parser(
+        "executor", help="只读：当前执行底座 + 最近的切换/回退留痕")
+    ledger_ex.add_argument("--today", default=None)
+    ledger_ex.add_argument("--json", action="store_true")
+    ledger_arch = ledger_sub.add_parser(
+        "archive", help="G4：sqlite 冷备旧账 → 只读归档 → 新开一本并对齐起点（会动账本！）")
+    ledger_arch.add_argument("--archive-dir", required=True,
+                             help="归档目录（旧账副本按 444 只读落这里）")
+    ledger_arch.add_argument("--stamp", default=None,
+                             help="归档时间戳后缀（默认当前时刻，重跑复用同份归档）")
+    ledger_arch.add_argument("--allow-existing", action="store_true",
+                             help="目标账本已有持仓/成交时仍允许原地重开（默认拒绝）")
+    ledger_arch.add_argument("--yes", action="store_true",
+                             help="二次确认：这个命令会删掉当前账本文件（已先归档）")
+    ledger_arch.add_argument("--json", action="store_true")
+
     # rq（T32：rqalpha 底座的一天一会话 / 双轨影子对照 / 状态体检）
     rq_parser = subparsers.add_parser(
         "rq", help="rqalpha 引擎会话（模拟线；需安装 rqalpha，NEC 生产 venv 默认不装）")
@@ -1385,6 +1448,13 @@ def main() -> None:
             p.add_argument("--state-dir", required=True,
                            help="会话状态目录（persist + session.json）")
             p.add_argument("--workdir", default=None)
+            p.add_argument("--ledger", action="store_true", default=None,
+                           help="把本次会话成交落到 --account-db 账本（T47-G1）；"
+                                "不传则按 config 的 engine.executor 决定")
+            p.add_argument("--no-ledger", action="store_true",
+                           help="强制只跑会话不落账（演练/排障）")
+            p.add_argument("--ledger-dry", action="store_true",
+                           help="落账演习：只算会写什么、一行都不写库（不记 NAV）")
         else:
             p.add_argument("--shadow-dir", required=True,
                            help="影子目录（独立 paper_account.db + rq 状态）")
@@ -1872,8 +1942,15 @@ def main() -> None:
                                                "commission_min": bc.commission_min,
                                                "stamp_duty_rate": bc.stamp_duty_rate,
                                                "transfer_fee_rate": bc.transfer_fee_rate})
+                    use_ledger = _ledger_decide(args, bridge)
+                    dry = bool(getattr(args, "ledger_dry", False))
+                    res["ledger_mode"] = "dry-run" if (use_ledger and dry) else use_ledger
+                    if use_ledger and not res["error"] and res["gates"]["ok"]:
+                        res["ledger"] = _ledger_apply(bridge, res, args.today, dry=dry)
                     emit(res)
                     if res["error"] or not res["gates"]["ok"]:
+                        sys.exit(1)
+                    if use_ledger and not (res.get("ledger") or {}).get("ok", True):
                         sys.exit(1)
                 else:
                     # 费率口径从现网 broker 配置带过去，两侧同源（否则对账比的是配置）
@@ -1925,6 +2002,51 @@ def main() -> None:
                 sys.exit(3)
             if res["red"]:
                 sys.exit(1)
+
+        elif args.command == "ledger":
+            from datetime import date as _date
+
+            from paper_trading.engine.config import load_engine_config
+            from paper_trading.integration.rq_engine import ledger as _ld
+
+            lc = getattr(args, "ledger_command", None)
+            if lc == "executor":
+                cfg = load_engine_config(config_path=getattr(bridge, "config_path", None))
+                ex = _ld.executor_from_config(cfg)
+                today = args.today or _date.today().isoformat()
+                switches = [o for o in bridge.broker.get_op_log(200)
+                            if o.get("action") == "m3:switch"][-5:]
+                out = {"executor": ex, "today": today,
+                       "ledger_writes_this_session": ex == "rqalpha",
+                       "last_switches": [{"timestamp": s.get("timestamp"),
+                                          "params": s.get("params")} for s in switches],
+                       "note": "底座由 engine.executor 决定；未当天留痕的会话不代表没跑"}
+                if getattr(args, "json", False):
+                    emit(out)
+                else:
+                    print(f"执行底座：{ex}（rqalpha 时新会话成交直接落账）")
+                    for s in out["last_switches"]:
+                        print(f"  {s['timestamp']}  {s['params']}")
+                    if not switches:
+                        print("  （还没有 m3:switch 留痕——今天没跑过 rq day / 从没切换过）")
+            elif lc == "archive":
+                if not getattr(args, "yes", False):
+                    emit(None, ok=False,
+                         error="ledger archive 会**先冷备再删当前账本文件**（钱类不可逆）。"
+                               "确认无误请同时给 --yes；只想备份请不要跑这个命令")
+                    sys.exit(2)
+                try:
+                    out = _ld.archive_and_reopen(
+                        bridge.broker.db_path, args.archive_dir,
+                        stamp=args.stamp, allow_existing=args.allow_existing)
+                except (FileNotFoundError, RuntimeError) as exc:
+                    emit(None, ok=False, error=str(exc))
+                    sys.exit(1)
+                out["account_db"] = str(bridge.broker.db_path)
+                emit(out)
+            else:
+                parser.print_help()
+                sys.exit(2)
 
         elif args.command == "health":
             from paper_trading.utils import heartbeat as hb
@@ -2049,7 +2171,12 @@ def main() -> None:
                 # ⇒ 旗子形同虚设（实测带旗仍有 400 行 checked=1，report-t39 §6-B 附）。
                 # 默认路径也不再在这里自建参照：窗口对齐由 sync_raw 一处负责，两处口径不会分家。
                 ref = raw_feed.reference_for(bool(getattr(args, "no_mother_ref", False)))
+                from datetime import date as _dt
                 res = raw_feed.sync_raw(bridge.data_db, syms, days=args.days,
+                                        start=(_dt.fromisoformat(args.start)
+                                               if getattr(args, "start", None) else None),
+                                        end=(_dt.fromisoformat(args.end)
+                                             if getattr(args, "end", None) else None),
                                         reference=ref,
                                         intraday={} if getattr(args, "no_intraday",
                                                                 False) else None)

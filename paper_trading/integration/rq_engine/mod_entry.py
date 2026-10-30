@@ -57,11 +57,18 @@ class PtPaperMod(AbstractMod):
         if t is None:
             return
         tc = getattr(t, "transaction_cost", 0)
+        total = float(getattr(tc, "total", tc) or 0)
+        # 费用**三分量**必须逐笔留：账本的 orders/fills 是佣金/印花税/过户费三列，
+        # 只给一个合计数就得靠猜拆分（T47-G1：猜出来的费用拆分是账本腐烂的起点）。
+        commission = float(getattr(t, "commission", 0) or 0)
+        tax = float(getattr(t, "tax", 0) or 0)
         self._trades.append({
             "symbol": t.order_book_id, "datetime": str(t.datetime),
             "side": str(getattr(t.side, "value", t.side)).upper(),
             "price": round(float(t.last_price), 4), "volume": int(t.last_quantity),
-            "cost": round(float(getattr(tc, "total", tc) or 0), 4),
+            "cost": round(total, 4),
+            "commission": round(commission, 6), "tax": round(tax, 6),
+            "other_fees": round(total - commission - tax, 6),
             "position_effect": str(getattr(t.position_effect, "value",
                                            t.position_effect)).upper()})
 
@@ -94,7 +101,8 @@ class PtPaperMod(AbstractMod):
         self._store = RawDayBarStore.from_data_db(
             db, list(mod_config.symbols), days=int(getattr(mod_config, "days", 260)),
             today=today, require_bands=bool(getattr(mod_config, "require_bands", True)),
-            st_set=set(getattr(mod_config, "st_set", None) or ()))
+            st_set=set(getattr(mod_config, "st_set", None) or ()),
+            require_today_reference=bool(getattr(mod_config, "require_today_reference", True)))
         env.set_data_source(PaperDataSource(
             env.config.base, self._store,
             override_available_range=bool(getattr(mod_config, "override_available_range", True))))
@@ -135,6 +143,7 @@ class PtPaperMod(AbstractMod):
             "orders": self._orders,
             "rejects": self._rejects,
             "store_stats": getattr(self._store, "stats", {}),
+            "gate_rejected": getattr(self._store, "gate_rejected", {}),
             "provider": self._provider.snapshot() if self._provider else None,
             "cost": {"transfer_fee_rate": self._cost_rate,
                      "wrapped": self._cost_wrapped,
