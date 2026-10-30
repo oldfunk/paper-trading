@@ -149,3 +149,15 @@ def test_verify_all_is_read_only(broker, conn):
     mv.verify_all(broker=broker, data_db=None, symbols=[], today=TODAY,
                   cfg=TradingConfig(), now=datetime(2026, 10, 30, 14, 35))
     assert broker.db_path.read_bytes() == before
+
+
+# ---------------------------------------------------------------- ⑤ 池来源要看得见
+def test_format_text_shows_pool_source():
+    """从 `~` 跑时 cwd 没 config.yaml ⇒ 池为空；不写来源就会被误读成"没什么要查的"。"""
+    res = {"today": "2026-10-30", "items": [mv.item("raw_gate", "行情口径与新鲜度闸",
+                                                   "skip", "股票池为空")],
+           "green": 0, "warn": 0, "red": 0, "skipped": 1, "pool_source": "config: 未读到",
+           "rollback_required": False, "money_reds": [], "on_red": {}}
+    text = mv.format_text(res)
+    assert "池 config: 未读到" in text, text
+    assert "跳 1" in text

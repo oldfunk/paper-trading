@@ -394,7 +394,11 @@ def verify_all(*, broker, data_db, symbols: list, today: str,
 
 def format_text(res: dict) -> str:
     mark = {"green": "✅", "red": "❌", "warn": "⚠️ ", "skip": "⚪"}
-    lines = [f"M3 验证（{res['today']}）  绿 {res['green']} / 警 {res['warn']} / "
+    # 池来源必须出现在人读输出里：T54 在 NEC 实测——操作者从 `~` 跑时 cwd 没有
+    # config.yaml，标的池解出来是空的，raw_gate 于是报"股票池为空"；
+    # 看不见来源就会把它误读成"没什么要查的"。
+    pool = f"｜池 {res['pool_source']}" if res.get("pool_source") else ""
+    lines = [f"M3 验证（{res['today']}{pool}）  绿 {res['green']} / 警 {res['warn']} / "
              f"红 {res['red']} / 跳 {res['skipped']}"]
     for i in res["items"]:
         tag = "钱" if i["money"] else " "
