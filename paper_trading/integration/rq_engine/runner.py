@@ -305,16 +305,12 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
         gate.mark_done(date.fromisoformat(today), fp,
                        {"fills": verdict["fills"], "rejects": verdict["rejects"]})
         done = True
-    # `waiting` 是"到收盘为止仍未定局"的清单：决策时点未到的 bar 会先记 WAITING，
-    # 到点后又提交 ⇒ 直接返回原始累积表会把已下单的意图报成"还在等"（现网实测
-    # waiting_decision=3 但 3 条都已定局）⇒ 提交过的必须从等待清单里摘掉。
-    _submitted_bids = {str(s.get("biz_id") or "") for s in st.submits}
-    waiting_final = [w for w in st.waiting
-                     if str(w.get("biz_id") or "") not in _submitted_bids]
+    # `waiting` 是"到收盘为止仍未定局"的清单：提交过或记过结论的都摘掉（见
+    # `_SessionState.final_waiting`），否则归因表会把已定局的意图报成"还在等"。
     return {
         "today": today, "plan": plan, "error": err, "fingerprint": fp,
         "handler_dates": st.handler_dates, "orders": st.orders,
-        "submits": st.submits, "waiting": waiting_final,
+        "submits": st.submits, "waiting": st.final_waiting(),
         "snapshots": st.snapshots, "evidence": evidence, "gates": verdict,
         "session_marked_done": done, "evidence_path": evidence_path,
     }
@@ -368,6 +364,17 @@ class _SessionState:
         if decided is None or now is None:
             return "go"
         return "wait" if now < decided else "go"
+
+    def final_waiting(self) -> list:
+        """到本跳为止**仍未定局**的意图（提交过 / 被去重 / 被拒的都摘掉）。
+
+        `waiting` 本身是逐 bar 累积表（决策时点未到先记一条），直接当结论返回会
+        把已经定局的意图报成"还在等"——归因表报错时刻比不报更糟（现网实测：
+        waiting_decision=3，而三条其实都已 executed/rejected）。
+        """
+        settled = ({str(s.get("biz_id") or "") for s in self.submits}
+                   | {str(o.get("biz_id") or "") for o in self.orders})
+        return [w for w in self.waiting if str(w.get("biz_id") or "") not in settled]
 
     def _snap(self, context, tag: str) -> dict:
         from rqalpha.const import POSITION_DIRECTION

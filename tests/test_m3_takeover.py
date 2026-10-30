@@ -326,6 +326,8 @@ def test_handle_bar_sets_each_intent_once_and_tags_duplicates(monkeypatch):
     statuses = {o["biz_id"]: o["status"] for o in st.orders}
     assert statuses["b2"] == "SKIPPED_DUPLICATE"          # 不是 SKIPPED_EXECUTED
     assert len([o for o in st.orders if o["biz_id"] == "b1"]) == 1   # 不重复定局
+    assert len(st.waiting) == 3                           # 原始累积表仍留着早盘的"等"
+    assert st.final_waiting() == []                       # 定局表：三条都已定局
     out = Q.resolve_outcomes(plan, [{"symbol": "002192", "side": "BUY", "volume": 100,
                                      "order_id": 1, "price": 45.04}],
                              st.orders, st.submits,
