@@ -15,6 +15,25 @@ from paper_trading.integration.settings import mother_db_path, mother_dir  # noq
 from paper_trading.integration.sources import (SRC_LOCAL_AKSHARE,  # noqa: E402
                                                SRC_UNAVAILABLE)
 
+# ---------------------------------------------------------------- 相对日期（T53 根治）
+# 两次 flaky 教训：① fixture 写死 2026-10-26 而产品用墙钟判新鲜度 ⇒ 过几天 lag
+# 跨过阈值就翻红；② `today+10` 正好落周六 ⇒ 交易日语义的断言随机失效。
+# ⇒ 日期一律由"真实今天"倒推，并且**必须是工作日**；只有明确的历史场景
+#   （分红报告期 2025-12-31、无重叠对照 2026-09-01）允许写死绝对值。
+def _weekday(offset_days: int) -> date:
+    """今天偏移若干天后，回退到最近的工作日（周六/周日往前挪）。"""
+    d = date.today() + timedelta(days=offset_days)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+D_LATEST = _weekday(0).isoformat()     # 母库"最新一日"（今天或上一个工作日）
+D_PREV = _weekday(-1).isoformat()      # 母库"前一日"
+D_NEXT = _weekday(1).isoformat()       # 交易日历里的"下一排期"
+D_SEQ = [_weekday(-3 - i).isoformat() for i in range(3)][::-1]   # 本地三日升序
+
+
 REQUIRED = {
     "kline_daily": {"code", "trade_date", "close"},
     "financial_summary": {"stock_code"},
@@ -67,24 +86,24 @@ def _mk_sd(root: Path) -> Path:
         session_json TEXT, source TEXT);
     """)
     c.execute("""INSERT INTO kline_daily VALUES
-        ('600519','2026-10-26',1500,1510,1490,1505,1000000,1500000000,1505,1505,0.1,1000000000,1505),
-        ('600519','2026-10-23',1490,1500,1480,1495,900000,1300000000,1495,1495,0.1,1000000000,1495),
-        ('300750','2026-10-26',200,210,190,205,500000,100000000,205,1200,0.1,500000000,NULL),
-        ('300750','2026-10-23',190,200,180,195,400000,80000000,195,1150,0.1,500000000,NULL)""")
-    c.execute("INSERT INTO financial_summary VALUES ('600519', 20.5, 18.2, '2026-10-23T22:00:00')")
+        ('600519','%s',1500,1510,1490,1505,1000000,1500000000,1505,1505,0.1,1000000000,1505),
+        ('600519','%s',1490,1500,1480,1495,900000,1300000000,1495,1495,0.1,1000000000,1495),
+        ('300750','%s',200,210,190,205,500000,100000000,205,1200,0.1,500000000,NULL),
+        ('300750','%s',190,200,180,195,400000,80000000,195,1150,0.1,500000000,NULL)""" % (D_LATEST, D_PREV, D_LATEST, D_PREV))
+    c.execute("INSERT INTO financial_summary VALUES ('600519', 20.5, 18.2, '%sT22:00:00')" % D_PREV)
     c.execute("INSERT INTO dividend_annual VALUES ('600519','2025-12-31', 3.0, 6.5, 2.0, 'em')")
-    c.execute("INSERT INTO benchmark_daily VALUES ('000001','2026-10-26', 11000)")
+    c.execute("INSERT INTO benchmark_daily VALUES ('000001','%s', 11000)" % D_LATEST)
     c.execute("""INSERT INTO news_item (code,name,title,summary,source,published_at,sentiment,ai_brief)
-        VALUES ('600519','贵州茅台','测试标题','测试摘要','akshare_em','2026-10-26 09:00',0.2,'测试简报')""")
+        VALUES ('600519','贵州茅台','测试标题','测试摘要','akshare_em','%s 09:00',0.2,'测试简报')""" % D_LATEST)
     c.execute("""INSERT INTO screening_result (run_id,run_date,code,name,score,pe,pb,roe,reason,strategy_tags,dividend_yield,score_detail,status)
-        VALUES ('r1','2026-10-23','600519','贵州茅台',90.0,20.0,5.0,20.0,'测试理由','value',2.0,'{"total":90}','active')""")
+        VALUES ('r1','%s','600519','贵州茅台',90.0,20.0,5.0,20.0,'测试理由','value',2.0,'{"total":90}','active')""" % D_PREV)
     c.execute("INSERT INTO watchlist_thesis (code,core_thesis,sell_conditions) VALUES ('600519','测试论点','跌破 1400 卖出')")
     c.execute("""INSERT INTO analysis_outcome (stock_code,analysis_date,signal,confidence,verdict,entry_price)
-        VALUES ('600519','2026-10-23','buy',0.8,'通过','1495')""")
-    c.execute("INSERT INTO market_index (index_code,index_name,current_value,change_percent,pe,pb,date) VALUES ('000001','上证指数',3300,0.5,13.0,1.3,'2026-10-26')")
+        VALUES ('600519','%s','buy',0.8,'通过','1495')""" % D_PREV)
+    c.execute("INSERT INTO market_index (index_code,index_name,current_value,change_percent,pe,pb,date) VALUES ('000001','上证指数',3300,0.5,13.0,1.3,'%s')" % D_LATEST)
     c.execute("INSERT INTO instrument VALUES ('CN:600519','CN','600519','SSE','贵州茅台','active')")
-    c.execute("INSERT INTO trading_calendar VALUES ('CN','2026-10-27',1,'{}','test')")
-    c.execute("INSERT INTO trading_calendar VALUES ('CN','2026-10-26',1,'{}','test')")
+    c.execute("INSERT INTO trading_calendar VALUES ('CN','%s',1,'{}','test')" % D_NEXT)
+    c.execute("INSERT INTO trading_calendar VALUES ('CN','%s',1,'{}','test')" % D_LATEST)
     c.commit()
     c.close()
     return sd
@@ -99,7 +118,7 @@ def sd(tmp_path):
 
 def _local_bar(code, days):
     # 真实量级：同日 qfq 双源差 <0.01%（尺度闸按此假设对照）
-    return [{"timestamp": f"2026-10-2{i}T00:00:00", "open": 1490, "high": 1500,
+    return [{"timestamp": f"{D_SEQ[i - 1]}T00:00:00", "open": 1490, "high": 1500,
              "low": 1485, "close": 1490 + i, "volume": 1000}
             for i in range(1, 4)]
 
@@ -115,17 +134,17 @@ def test_block_marks_stale_by_asof():
 
 
 def test_daily_bars_mother_first_then_local(sd):
+    # T53：基准日显式注入（不传就是墙钟，但断言依赖墙钟正是两次 flaky 的成因）
     out = mother.daily_bars(["600519", "000001"], days=5,
-                            local_bars=_local_bar, mother=sd)
+                            local_bars=_local_bar, mother=sd, today=D_LATEST)
     assert out["600519"]["source"] == "mother:kline_daily"
-    assert out["600519"]["available"] and out["600519"]["asof"] == "2026-10-26"
+    assert out["600519"]["available"] and out["600519"]["asof"] == D_LATEST
     assert out["600519"]["bars"][0]["close"] == 1505
     assert out["600519"]["adj"] == "qfq"          # 有 close_qfq 用前复权
-    # stale 是 asof 与今天的函数（fixture 日期写死 2026-10-26，随真实时间推移
-    # 必然变 stale——第二次日期 flaky 教训）：断言改为"与新鲜度规则一致"
-    # 而不是断言某个写死的布尔值；fixture 动态化另行派发。
-    assert out["600519"]["stale"] is mother._stale(
-        "2026-10-26", 3, date.today().isoformat())
+    # 基准日注入后 stale 与墙钟无关；fixture 又由真实今天倒推 ⇒ 两个前提都在
+    assert out["600519"]["stale"] is False
+    lag = (date.today() - date.fromisoformat(D_LATEST)).days
+    assert 0 <= lag <= 3, f"fixture 的 D_LATEST={D_LATEST} 距今天 {lag} 天，超出新鲜窗口"
     assert out["000001"]["source"] == SRC_LOCAL_AKSHARE
     assert out["000001"]["available"]
 
@@ -141,8 +160,8 @@ def test_daily_bars_qfq_null_falls_back_hfq(sd):
 def test_scale_guard_rejects_polluted_mother(sd):
     """尺度闸：母库同日价与本地差 7.9 倍（事故场景）→ 拒用母库回退本地。"""
     def polluted_local(code, days):
-        # 合成母库 600519 2026-10-23 close=1495；本地给 189（差 ~8 倍）
-        return [{"timestamp": "2026-10-23T00:00:00", "open": 185, "high": 192,
+        # 合成母库 600519 前一日 close=1495；本地给 189（差 ~8 倍）——必须同日
+        return [{"timestamp": f"{D_PREV}T00:00:00", "open": 185, "high": 192,
                  "low": 180, "close": 189.0, "volume": 1000}]
 
     out = mother.daily_bars(["600519"], days=5, local_bars=polluted_local,
@@ -157,7 +176,7 @@ def test_scale_guard_rejects_polluted_mother(sd):
 def test_scale_guard_allows_small_diff(sd):
     """同日差 <10%（真实双源抖动）→ 母库正常放行。"""
     def close_local(code, days):
-        return [{"timestamp": "2026-10-23T00:00:00", "open": 1490, "high": 1500,
+        return [{"timestamp": f"{D_PREV}T00:00:00", "open": 1490, "high": 1500,
                  "low": 1485, "close": 1493.0, "volume": 1000}]
 
     out = mother.daily_bars(["600519"], days=5, local_bars=close_local,
@@ -212,7 +231,7 @@ def test_news_mother_preferred_then_local(sd):
     sqlite3.connect(empty / "data" / "db" / "stock_dashboard.db").close()
     mother.reset_cache()
     local = {"available": True, "items": [{"title": "本地快讯"}],
-             "fetched_at": "2026-10-26"}
+             "fetched_at": D_LATEST}
     out2 = mother.news(codes=["600519"], local_news=lambda: local, mother=empty)
     assert out2["source"] == SRC_LOCAL_AKSHARE
 
@@ -276,7 +295,7 @@ def test_calendar_sync_history_only_falls_back(sd, tmp_path, monkeypatch):
     """
     from paper_trading.utils import trading_calendar as tc_mod
 
-    # 合成库日历行都是 2026-10-26/27（历史/今天）；把未来全删，模拟只回填历史
+    # 合成库日历行是 D_LATEST/D_NEXT（今天/明天）；把未来全删，模拟只回填历史
     conn = sqlite3.connect(sd / "data" / "db" / "stock_dashboard.db")
     conn.execute("DELETE FROM trading_calendar WHERE trade_date >= DATE('now')")
     conn.commit()
@@ -303,7 +322,7 @@ def test_calendar_sync_history_only_falls_back(sd, tmp_path, monkeypatch):
 def test_compare_bars_local_vs_mother(sd):
     out = mother.compare_bars(
         ["600519"], days=10, mother=sd,
-        local_bars=lambda c, d: [{"timestamp": f"2026-10-2{i}T00:00:00",
+        local_bars=lambda c, d: [{"timestamp": f"{D_SEQ[i - 1]}T00:00:00",
                                   "open": 10, "high": 11, "low": 9,
                                   "close": 10 + i, "volume": 1}
                                  for i in range(1, 4)])
@@ -337,7 +356,7 @@ def test_ttl_cache_hits_across_connections(sd):
     # 模拟母库更新（改值）
     c = sqlite3.connect(db)
     c.execute("UPDATE kline_daily SET close_qfq=9999, close_adj=9999, close=9999 "
-              "WHERE code='600519' AND trade_date='2026-10-26'")
+              "WHERE code='600519' AND trade_date=?", (D_LATEST,))
     c.commit()
     c.close()
     # TTL 内第二次调用（独立连接）：命中缓存 → 仍是旧值 1505
@@ -352,7 +371,7 @@ def test_ttl_cache_hits_across_connections(sd):
     # 还原（合成库供后续用例）
     c = sqlite3.connect(db)
     c.execute("UPDATE kline_daily SET close_qfq=1505, close_adj=1505, close=1505 "
-              "WHERE code='600519' AND trade_date='2026-10-26'")
+              "WHERE code='600519' AND trade_date=?", (D_LATEST,))
     c.commit()
     c.close()
     mother.reset_cache()
@@ -404,11 +423,11 @@ def test_local_fallback_sorts_and_asof_latest(sd):
     """H-6：本地回退必须自己排序，asof 取最新日（旧代码取 bars[0] 会失真）。"""
     def desc_local(code, days):
         # 故意降序返回：调用方顺序不可信
-        return [{"timestamp": "2026-10-23T00:00:00", "open": 1495, "high": 1500,
+        return [{"timestamp": f"{D_SEQ[2]}T00:00:00", "open": 1495, "high": 1500,
                  "low": 1490, "close": 1495.0, "volume": 1},
-                {"timestamp": "2026-10-21T00:00:00", "open": 1491, "high": 1496,
+                {"timestamp": f"{D_SEQ[0]}T00:00:00", "open": 1491, "high": 1496,
                  "low": 1486, "close": 1491.0, "volume": 1},
-                {"timestamp": "2026-10-22T00:00:00", "open": 1493, "high": 1498,
+                {"timestamp": f"{D_SEQ[1]}T00:00:00", "open": 1493, "high": 1498,
                  "low": 1488, "close": 1493.0, "volume": 1}]
 
     out = mother.daily_bars(["600519"], days=5, local_bars=desc_local,
@@ -416,8 +435,8 @@ def test_local_fallback_sorts_and_asof_latest(sd):
     blk = out["600519"]
     assert blk["source"] == SRC_LOCAL_AKSHARE
     assert [b["date"] for b in blk["bars"]] == \
-        ["2026-10-21", "2026-10-22", "2026-10-23"], "回退分支必须升序"
-    assert blk["asof"] == "2026-10-23", "asof 必须是最新日（非最老日）"
+        D_SEQ, "回退分支必须升序"
+    assert blk["asof"] == D_SEQ[2], "asof 必须是最新日（非最老日）"
 
 
 def test_abs_sanity_rejects_unit_error(sd):

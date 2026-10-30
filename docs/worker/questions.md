@@ -1,4 +1,4 @@
-# questions.md — 员工 AI 疑问与阻塞（追加式，勿删他人条目）
+﻿# questions.md — 员工 AI 疑问与阻塞（追加式，勿删他人条目）
 
 ## 2026-10-27 · T5' 反驳审查完成，含 2 条 P0（详见 `report-t5.md`）
 
@@ -530,3 +530,31 @@ resume 每跳都重放 SETTLEMENT（本次同日实测 `closable` 仍为 0，没
 **R4 顺手记下的一条实现坑**：意图幂等的"已执行清单"键归一是真的坑——plan 用 6 位代码、
 框架成交是 `000792.XSHE`，我第一版因此过滤失效（当天又买了一遍，实测持仓 200）。
 真实实现从 T47 的 orders 表取清单时请照 `symbol[:6]` 归一，写进实施说明。
+## 2026-10-30 · Qoder（T53 交付时）：日期 flaky 的病根是"基准日没作为参数"，请定一条约定
+
+T53 治的是您派的那条（`test_mother_contract` fixture 动态化 + 全测试扫描）。
+补了两个注入点（`sources.block(..., today=)`、`mother.daily_bars(..., today=)`，
+默认行为不变），把 mother 路径的日期全部改成"相对真实今天的最近工作日"，
+并用**拨钟实验**验收：`python spikes/clock_shift_t53.py 7` 把墙钟拨快 7 天真跑全套——
+治前 21 红（含 mother 那条），治后 mother 那条从红名单消失，真实日历上 594 全绿。
+
+**Q1 类 B 的 15 条什么时候做**（`test_agent` 7／`test_engine_cond` 3／
+`test_m1_correctness` 3／`test_engine_switch` 1／`test_runtime` 1）
+它们是同一族：写死日期 + 产品某处读墙钟。我没在这件里一起改，因为这三个文件正是
+Hermes/OpenCode 在途的 T15b2/b3 范围，而切换日就在本周末——不在切换前 48 小时
+动别人在途的测试与产品入口。请选：(A) 切换后派 T56 一次做完（验收命令已现成）；
+(B) 您判定"真实日历上它们是绿的"⇒ 不排期，只保留工具；(C) 现在就做（我不建议）。
+
+**Q2 要不要把这条写进 AGENTS（我建议写）**
+「**任何新鲜度/交易日判定都必须收 `today`/`now` 参数，不许在函数体内
+`from datetime import date` 后直接读墙钟**」。理由：本仓已经为此翻车三次
+（T34 `today+10` 落周六、T46/T53 stale 写死布尔、本次 mother 路径），
+而且函数内 import 让 monkeypatch 也拦不住——只能靠约定堵源头。
+写进 AGENTS 后，下一个任务会自动带注入点；不写就还会再生。
+
+**Q3 拨钟诊断器自身的 3 条噪声要不要修**
+`clock_shift_t53.py` 用假 `date` 类替换模块属性，平拨 0 天就红 3 条
+（`test_core::test_t1_calendar`、`test_runtime::test_tick_plan_window_is_idempotent`、
+`test_agent::test_plan_exists_still_snapshots_close_nav`——假类破坏 `isinstance`/比较语义）。
+现在把它们当"基线"在报告里扣掉了，够用。要不要我改成注入式插件（给产品传 today 而非换类）？
+这属于工具打磨，不在派发范围，等一句。

@@ -388,11 +388,14 @@ def daily_bars(codes: Iterable[str], days: int = 250,
                local_bars: Optional[Callable[[str, int], list]] = None,
                mother: Optional[Path] = None,
                ttl: float = TTL_QUOTES,
-               force_local: bool = False) -> dict:
+               force_local: bool = False,
+               today: Optional[str] = None) -> dict:
     """每只标的的日线（母库优先，缺该标的回退本地）。
 
     ``local_bars(code, days)`` 由调用方注入（返回本地 Bar 列表或字典列表）。
     ``force_local=True`` 时只看本地（用于本地 vs 母库对照）。
+    ``today``（T53）：新鲜度判定的基准日；缺省取墙钟。**测试请显式传**——
+    写死日期 + 墙钟判定就是这仓两次日期 flaky 的成因，注入后断言与日历无关。
     返回 ``{code: {"available","source","asof","adj","stale","bars":[...]}}``。
     """
     out: dict = {}
@@ -497,7 +500,7 @@ def daily_bars(codes: Iterable[str], days: int = 250,
             out[code] = {
                 "available": bool(bars), "source": source, "asof": asof,
                 "adj": adj,
-                "stale": bool(_stale(asof, 3, date.today().isoformat()))
+                "stale": bool(_stale(asof, 3, today or date.today().isoformat()))
                          if asof else False,
                 "bars": bars,
                 "scale_check": check,   # 同日双源对照（None=无法对照/未启用）
