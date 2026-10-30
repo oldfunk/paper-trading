@@ -172,9 +172,14 @@ def test_session_gate_rejects_corrupt_meta(tmp_path):
 
 # ---------- runner：配置与后置门禁（G-T13-6/7）----------
 def _cfg(tmp_path, state_dir=""):
+    # T51：费率必须显式给（现网 TradingConfig），这里统一从 config 口径取
+    from paper_trading.models import TradingConfig
+    from paper_trading.utils import fees as ufees
+
     return build_config(today="2026-10-28", data_db=str(tmp_path / "data.db"),
                         bundle="C:/bundle", symbols=["000792", "600519"],
-                        state_dir=state_dir, evidence=str(tmp_path / "ev.json"))
+                        state_dir=state_dir, evidence=str(tmp_path / "ev.json"),
+                        fee=ufees.fee_dict(TradingConfig()))
 
 
 def test_build_config_single_day_and_caliber_rules(tmp_path):

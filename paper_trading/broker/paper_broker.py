@@ -16,6 +16,7 @@ from paper_trading.models import (
     Position,
     TradingConfig,
 )
+from paper_trading.utils import fees
 from paper_trading.utils import get_logger
 from paper_trading.utils.trading_calendar import as_date, is_trading_day, load_holidays, next_trading_day
 
@@ -261,17 +262,17 @@ class PaperBroker:
             )
 
     def _calc_buy_cost(self, amount: float) -> tuple[float, float]:
-        """计算买入成本: (佣金, 过户费)。"""
-        commission = max(amount * self.config.commission_rate, self.config.commission_min)
-        transfer_fee = amount * self.config.transfer_fee_rate
-        return commission, transfer_fee
+        """计算买入成本: (佣金, 过户费)。
+
+        公式在 `utils/fees.py`（T51 口径唯一）：回测 FeeModel 与 `m3 verify`
+        的重算走的是同一个函数，所以"账本记的费用"与"检查说应该记的费用"
+        不可能各自漂移成两把尺子。
+        """
+        return fees.buy_cost(self.config, amount)
 
     def _calc_sell_cost(self, amount: float) -> tuple[float, float, float]:
-        """计算卖出成本: (佣金, 印花税, 过户费)。"""
-        commission = max(amount * self.config.commission_rate, self.config.commission_min)
-        stamp_duty = amount * self.config.stamp_duty_rate
-        transfer_fee = amount * self.config.transfer_fee_rate
-        return commission, stamp_duty, transfer_fee
+        """计算卖出成本: (佣金, 印花税, 过户费)。公式同样在 `utils/fees.py`。"""
+        return fees.sell_cost(self.config, amount)
 
     def _apply_slippage(self, price: float, direction: int) -> float:
         """应用滑点并按最小变动价位(0.01元)取整。direction=1买入(加价), direction=-1卖出(减价)。"""

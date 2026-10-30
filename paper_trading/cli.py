@@ -1938,10 +1938,9 @@ def main() -> None:
                                           plan=plan, init_cash=args.init_cash,
                                           state_dir=args.state_dir,
                                           workdir=args.workdir, force=args.force,
-                                          fee={"commission_rate": bc.commission_rate,
-                                               "commission_min": bc.commission_min,
-                                               "stamp_duty_rate": bc.stamp_duty_rate,
-                                               "transfer_fee_rate": bc.transfer_fee_rate})
+                                          # T51：直接把现网 TradingConfig 交给引擎侧，
+                                          # 不再在这里手搓四项费率 dict（搓错键就是一次口径分叉）
+                                          fee=bc)
                     use_ledger = _ledger_decide(args, bridge)
                     dry = bool(getattr(args, "ledger_dry", False))
                     res["ledger_mode"] = "dry-run" if (use_ledger and dry) else use_ledger
@@ -1953,17 +1952,16 @@ def main() -> None:
                     if use_ledger and not (res.get("ledger") or {}).get("ok", True):
                         sys.exit(1)
                 else:
-                    # 费率口径从现网 broker 配置带过去，两侧同源（否则对账比的是配置）
+                    # 费率口径从现网 broker 配置带过去，两侧同源（否则对账比的是配置）。
+                    # T51：直接交 TradingConfig 本体，`shadow_day` 用 as_fee_dict 归一，
+                    # 这里不再手搓 dict（手搓过一次就把键名搓丢了）
                     bc = bridge.broker.config
                     res = _sh.shadow_day(today=args.today, data_db=args.data_db,
                                         bundle=bundle, symbols=args.symbols, plan=plan,
                                         shadow_dir=args.shadow_dir,
                                         production_account_db=str(bridge.broker.db_path),
                                         init_cash=args.init_cash, force=args.force,
-                                        fee={"commission_rate": bc.commission_rate,
-                                             "commission_min": bc.commission_min,
-                                             "stamp_duty_rate": bc.stamp_duty_rate,
-                                             "transfer_fee_rate": bc.transfer_fee_rate})
+                                        fee=bc)
                     if not getattr(args, "no_op_log", False):
                         _sh.record_to(bridge.broker, res)   # 裁决 4：默认留痕
                     emit(res)
@@ -2349,16 +2347,14 @@ def main() -> None:
                     emit(None, ok=False, error="本地无日线数据，先跑 sync")
                     sys.exit(3)
                 full_cfg = load_config(args.config)
-                trading = full_cfg.get("trading") or {}
-                # 与实盘同一套口径：滑点/风控参数从 config 读，网格结论才可比
-                slip_fixed = float(trading.get("slippage_fixed", 0.01))
+                # T51：费率/滑点的唯一来源是 `load_config(...)["trading_config"]`。
+                # 旧写法读 `full_cfg["trading"]`——那个键**不存在**（load_config 返回的是
+                # `trading_config`），于是 `.get(...) or {}` 恒为空、每次都用硬编码兜底，
+                # config.yaml 改成什么回测/网格都不动（report-t51 §1）。
+                tcfg = full_cfg["trading_config"]
+                slip_fixed = float(tcfg.slippage_fixed)
                 risk_cfg = full_cfg.get("risk")
-                fee = FeeModel(
-                    commission_rate=float(trading.get("commission_rate", 0.00025)),
-                    commission_min=float(trading.get("commission_min", 5.0)),
-                    stamp_duty_rate=float(trading.get("stamp_duty_rate", 0.0005)),
-                    transfer_fee_rate=float(trading.get("transfer_fee_rate",
-                                                         0.00001)))
+                fee = FeeModel.from_trading_config(tcfg)
                 grid_days = sorted(all_days)[-days_n:]
                 grid_minutes = {}
                 if args.grid in INTRADAY_GRIDS:
@@ -2406,14 +2402,9 @@ def main() -> None:
                 sys.exit(3)
             days = sorted(all_days)[-args.days:]
             full_cfg = load_config(args.config)
-            trading_cfg = full_cfg.get("trading") or {}
+            tcfg = full_cfg["trading_config"]        # T51：口径唯一，见上处注释
             risk_cfg = full_cfg.get("risk")
-            fee = FeeModel(
-                commission_rate=float(trading_cfg.get("commission_rate", 0.00025)),
-                commission_min=float(trading_cfg.get("commission_min", 5.0)),
-                stamp_duty_rate=float(trading_cfg.get("stamp_duty_rate", 0.0005)),
-                transfer_fee_rate=float(trading_cfg.get("transfer_fee_rate", 0.00001)),
-            )
+            fee = FeeModel.from_trading_config(tcfg)
             # 日内规则需要分钟线；没有就如实少跑，不假装跑过（回测器会写进 skipped）
             minutes_by_day = {}
             if any(str(r.get("type") or "") in INTRADAY_TYPES
@@ -2422,8 +2413,7 @@ def main() -> None:
             # 回测默认口径 = 实盘：固定滑点 + 同一组仓位上限（config.yaml）
             res = Backtester(cfg, fee=fee,
                              slippage_pct=args.slippage_pct,
-                             slippage_fixed=float(trading_cfg.get(
-                                 "slippage_fixed", 0.01)),
+                             slippage_fixed=float(tcfg.slippage_fixed),
                              risk=risk_cfg).run(
                                  bars_by_sym, days, initial_cash=args.cash,
                                  minutes_by_day=minutes_by_day)

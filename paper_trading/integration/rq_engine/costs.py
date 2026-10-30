@@ -37,20 +37,21 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-# 现网费率（与 models/types.py TradingConfig 默认值、config.yaml 一致）
-COMMISSION_RATE = 0.00025        # 佣金 万 2.5
-COMMISSION_MIN = 5.0             # 单笔最低佣金（元）
-STAMP_DUTY_RATE = 0.0005         # 印花税 千 0.5（卖出单边）
-TRANSFER_FEE_RATE = 0.00001      # 过户费 0.001%（双向）
-
-# rqalpha 框架的基准费率（用来把现网率换算成倍率）
+# rqalpha 框架的基准费率（用来把现网率换算成倍率）——**这不是现网费率**，
+# 是框架源码里的默认值，唯一作用是当除数（`deciders.py:73/78`）。
 RQ_STOCK_COMMISSION_RATE = 0.0008    # deciders.py:73
 RQ_STOCK_TAX_RATE = 0.0005           # deciders.py:78
 
+# T51（纪律 7 口径唯一）：这里原本抄了四个现网费率常量
+# （COMMISSION_RATE/COMMISSION_MIN/STAMP_DUTY_RATE/TRANSFER_FEE_RATE），
+# 于是"不传 fee 就用现网默认"变成第二条真相源——config.yaml 改了引擎照旧按旧数跑。
+# 现在费率**必须由调用方显式传入**（`runner.build_config` 从 `TradingConfig` 取），
+# 拿不到就报错，不许在这里留第二份数字。
 
-def stock_cost_mod_config(*, commission_rate: float = COMMISSION_RATE,
-                          commission_min: float = COMMISSION_MIN,
-                          stamp_duty_rate: float = STAMP_DUTY_RATE) -> dict:
+
+def stock_cost_mod_config(*, commission_rate: float,
+                          commission_min: float,
+                          stamp_duty_rate: float) -> dict:
     """`config.mod.sys_transaction_cost` 参数（纯函数，进会话指纹）。
 
     倍率是**除法换算**，所以传 0 会得 0 倍率（等于免佣）而不是报错——
@@ -114,7 +115,7 @@ def make_overlay_class() -> type:
     return _OVERLAY_CLS
 
 
-def install_transfer_fee(env: Any, rate: float = TRANSFER_FEE_RATE,
+def install_transfer_fee(env: Any, rate: float,
                          *, types: Optional[tuple] = None,
                          market: Any = None) -> list[str]:
     """把已注册的股票 decider 包一层过户费，返回被包裹的 instrument_type 名。
@@ -153,6 +154,9 @@ def overlay_stats(env: Any, *, types: Optional[tuple] = None) -> list[dict]:
     return out
 
 
-def transfer_fee_amount(amount: float, rate: float = TRANSFER_FEE_RATE) -> float:
-    """现网口径的过户费（旧引擎侧同一公式，测试用来交叉核对）。"""
+def transfer_fee_amount(amount: float, rate: float) -> float:
+    """现网口径的过户费（旧引擎侧同一公式，测试用来交叉核对）。
+
+    `rate` 必须显式给（T51：这里不留默认值，否则又是一条第二真相源）。
+    """
     return abs(float(amount)) * float(rate)

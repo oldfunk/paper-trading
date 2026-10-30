@@ -14,6 +14,17 @@ import pytest
 from paper_trading.integration.rq_engine import costs, shadow
 from paper_trading.integration.rq_engine.runner import (build_config, check_session_gates,
                                                      session_fingerprint)
+from paper_trading.models import TradingConfig
+from paper_trading.utils import fees as _fees
+
+
+def _fee(**over):
+    """现网费率（来自 TradingConfig）+ 指定覆盖项。
+
+    T51 之后 `fee` 必须四项齐备：只给一项就报错——"半份费率"混着默认值用，
+    正是这次要根除的第二真相源。
+    """
+    return {**_fees.fee_dict(TradingConfig()), **over}
 
 
 def _cfg(**kw):
@@ -25,13 +36,21 @@ def _cfg(**kw):
 
 # ---------- ① 费率换算（纯函数）----------
 def test_stock_cost_mod_config_matches_production_rates():
-    c = costs.stock_cost_mod_config()
+    # 费率从 config 侧显式传入（T51：costs.py 不再自带数字）
+    c = costs.stock_cost_mod_config(**{k: v for k, v in _fee().items()
+                                       if k != "transfer_fee_rate"})
     # 万 2.5 = 万八 × 0.3125；印花税千 0.5 = 千 0.5 × 1；最低佣金 5 元
     assert c["stock_commission_multiplier"] == pytest.approx(0.00025 / 0.0008)
     assert c["stock_commission_multiplier"] == pytest.approx(0.3125)
     assert c["stock_min_commission"] == 5.0
     assert c["tax_multiplier"] == pytest.approx(1.0)
     assert c["pit_tax"] is False          # 现网印花税固定，不看历史时点
+
+
+def test_stock_cost_mod_config_requires_every_rate():
+    """不给费率就 TypeError：兜底数字是第二真相源（纪律 7）。"""
+    with pytest.raises(TypeError):
+        costs.stock_cost_mod_config()
 
 
 def test_zero_rates_map_to_zero_multipliers():
@@ -44,16 +63,25 @@ def test_zero_rates_map_to_zero_multipliers():
 
 # ---------- ② build_config / 会话指纹 ----------
 def test_build_config_pins_rates_instead_of_framework_defaults():
-    cfg = _cfg()
+    cfg = _cfg(fee=_fee())
     tc = cfg["mod"]["sys_transaction_cost"]
     assert tc["stock_commission_multiplier"] != 1.0, "框架默认万八，配置里必须换算掉"
-    assert cfg["mod"]["ptpaper"]["transfer_fee_rate"] == costs.TRANSFER_FEE_RATE
+    assert cfg["mod"]["ptpaper"]["transfer_fee_rate"] == TradingConfig().transfer_fee_rate
+
+
+def test_build_config_refuses_missing_or_partial_fee():
+    """缺 fee 或只给一项 ⇒ ValueError（旧行为是"不传就用抄来的现网默认值"）。"""
+    with pytest.raises(ValueError, match="费率来源"):
+        _cfg()
+    with pytest.raises(ValueError, match="缺"):
+        _cfg(fee={"commission_rate": 0.0003})
+    with pytest.raises(ValueError, match="显式给出"):
+        _cfg(fee=None)
 
 
 def test_build_config_accepts_custom_fee_dict():
-    fee = {"commission_rate": 0.0001, "commission_min": 3.0,
-           "stamp_duty_rate": 0.001, "transfer_fee_rate": 0.00002}
-    cfg = _cfg(fee=fee)
+    cfg = _cfg(fee=_fee(commission_rate=0.0001, commission_min=3.0,
+                        stamp_duty_rate=0.001, transfer_fee_rate=0.00002))
     assert cfg["mod"]["sys_transaction_cost"]["stock_commission_multiplier"] \
         == pytest.approx(0.0001 / 0.0008)
     assert cfg["mod"]["sys_transaction_cost"]["tax_multiplier"] == pytest.approx(2.0)
@@ -65,10 +93,10 @@ def test_build_config_accepts_custom_fee_dict():
 
 def test_fee_change_moves_session_fingerprint():
     """G-T13-5：费率是账本语义，改了还想续跑昨天的状态 = 两本账混着算。"""
-    fp_default = session_fingerprint(_cfg())
-    fp_other = session_fingerprint(_cfg())
-    fp_fee = session_fingerprint(_cfg(fee={"commission_rate": 0.0003}))
-    fp_transfer = session_fingerprint(_cfg(fee={"transfer_fee_rate": 0.00003}))
+    fp_default = session_fingerprint(_cfg(fee=_fee()))
+    fp_other = session_fingerprint(_cfg(fee=_fee()))
+    fp_fee = session_fingerprint(_cfg(fee=_fee(commission_rate=0.0003)))
+    fp_transfer = session_fingerprint(_cfg(fee=_fee(transfer_fee_rate=0.00003)))
     assert fp_default == fp_other
     assert fp_fee != fp_default
     assert fp_transfer != fp_default
@@ -216,7 +244,7 @@ def test_overlay_adds_transfer_fee_to_other_fees():
 
     inner = InnerDecider(multiplier=0.3125)
     env = FakeEnv({(INSTRUMENT_TYPE.CS, None): inner})
-    wrapped = costs.install_transfer_fee(env, costs.TRANSFER_FEE_RATE)
+    wrapped = costs.install_transfer_fee(env, TradingConfig().transfer_fee_rate)
     assert wrapped == ["CS"]                      # INSTRUMENT_TYPE.CS 的 value（const.py:148）
 
     dec = env._transaction_cost_deciders[(INSTRUMENT_TYPE.CS, None)]   # 存的是对象本身
@@ -293,11 +321,9 @@ def test_overlay_stats_shape():
 
 # ---------- ⑧ 过户费公式与旧引擎一致 ----------
 def test_transfer_fee_amount_matches_legacy_formula():
-    from paper_trading.models import TradingConfig
-
+    """过户费公式与旧线 `utils.fees` 同一把尺子（T38 原意，T51 起费率不再自带）。"""
     cfg = TradingConfig()
-    assert costs.transfer_fee_amount(500000.0) == pytest.approx(500000.0 * cfg.transfer_fee_rate)
-    assert costs.TRANSFER_FEE_RATE == cfg.transfer_fee_rate
-    assert costs.COMMISSION_RATE == cfg.commission_rate
-    assert costs.COMMISSION_MIN == cfg.commission_min
-    assert costs.STAMP_DUTY_RATE == cfg.stamp_duty_rate
+    assert costs.transfer_fee_amount(500000.0, cfg.transfer_fee_rate)         == pytest.approx(500000.0 * cfg.transfer_fee_rate)
+    # 旧线侧同一个数：broker 的过户费 = 成交额 × 同一费率
+    assert _fees.buy_cost(cfg, 500000.0)[1] == pytest.approx(
+        costs.transfer_fee_amount(500000.0, cfg.transfer_fee_rate))
