@@ -97,14 +97,15 @@ def executed_keys_from_ledger(db_path: str | Path, day: str) -> set[str]:
             "SELECT name FROM sqlite_master WHERE type='table'")}
         src = "fills" if "fills" in tables else "orders"
         cols = {r[1] for r in c.execute(f"PRAGMA table_info({src})")}
-        day_col = "trade_date" if "trade_date" in cols else (
-            "date" if "date" in cols else "created_at")
-        side_col = "side" if "side" in cols else "direction"
+        day_col = "timestamp" if "timestamp" in cols else (
+            "trade_date" if "trade_date" in cols else "date")
+        side_col = "direction" if "direction" in cols else "side"
         rows = c.execute(
             f"SELECT symbol, {side_col}, volume FROM {src}"
             f" WHERE {day_col} LIKE ?", (f"{day}%",)).fetchall()
         for sym, side, vol in rows:
             s = str(side)
+            # fills.direction 是 int（paper_broker：1 买 / -1 卖）；orders.side 可能是文本
             norm = "BUY" if s in ("1", "buy", "BUY", "B") else "SELL"
             keys.add(intent_key(sym, norm, vol))
     finally:
