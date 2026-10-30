@@ -298,6 +298,13 @@ class RawMinuteBarStore:
             for col in ("prev_close", "limit_up", "limit_down", "total_turnover"):
                 arr[col] = math.nan
             pcmap = day_prev_close.get(symbol, {})
+            # 盘中/当日日线 raw 未出时，用最近可得日的 close 当"今日前收盘"
+            # （band 语义 = 该分钟所属交易日的昨收；daily_bars_raw 只到昨天时，
+            # 昨天的 close 就是今天的 prev_close）
+            latest_known_close = None
+            if pcmap:
+                last_day = max(pcmap)
+                latest_known_close = pcmap[last_day][1]
 
             def _g(row, key):
                 """dict（db 返回）与对象两种行形态统一取值。"""
@@ -320,6 +327,11 @@ class RawMinuteBarStore:
                 pcinfo = pcmap.get(ts[:10])
                 if pcinfo:
                     pc = pcinfo[0]
+                elif latest_known_close is not None:
+                    pc = latest_known_close      # 当日日线未出：用最近已知收盘
+                else:
+                    pc = None
+                if pc:
                     up, down = limit_prices(pc, symbol, is_st=False)
                     arr[i]["prev_close"] = pc
                     arr[i]["limit_up"], arr[i]["limit_down"] = up, down
