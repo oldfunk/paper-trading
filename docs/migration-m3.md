@@ -190,3 +190,18 @@ M3 行写的"cron 切 rqalpha 常驻（一天一进程）"**不一致**，请显
 - 面板 `admin_token` 存在浏览器 localStorage，换机/换账本后要重存（:120-121）。
 - `ufw` 放行 8080；"本机 curl 200 ≠ 局域网可达"（:98-102）。
 - cron 路径必须显式 `/home/nec/...`（Pi→NEC 迁移后 `/home/pi` 是旧真相，:71/:95）。
+
+---
+
+## 执行记录（2026-10-30 15:45-19:50，用户 24 小时迁移令，主 AI 亲执行）
+
+| 步 | 动作 | 验证 |
+|---|---|---|
+| 1 | 5 分钟线回填（新浪 106 天历史深度实测后批量拉取） | 191,862 行 / 38 只（minute_bars 总 194,166） |
+| 2 | R1 修复：overlay 安装点 → mod start_up（priority 200） | 续跑跳实测 other_fees 0.02167/0.07228 非零 |
+| 3 | 分钟 store + get_bar 覆盖（开源版拒 1m 查询） | 分钟会话 240 跳/session |
+| 4 | 意图队列 + 执行分叉 + rq tick | 端到端：入队→成交@44.94（盘中价）→fills 落账→rq:fill/rq-nav→m3:switch 留痕 |
+| 5 | 切换：engine.local.yaml `executor: rqalpha` + cron `2-59/5 9-15 * * 1-5` rq tick | engine --once 以 rqalpha 底座正常运行；m3 verify 钱类 4 项绿 |
+| 回退 | `executor: legacy`（一行）+ 删 tick cron 行；rq_intents 残留 queued 意图人工核对 | 旧线 PaperBroker 路径零改动 |
+
+**已知保守语义**（记录在案）：同日同标的同量（intent_key 级）二次触发被幂等拦截——追加仓位需不同量或次日；tick 按 symbol 批量标 executed 的粒度待精化（按 biz_id 匹配）。
