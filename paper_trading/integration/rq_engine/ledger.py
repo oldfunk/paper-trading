@@ -161,16 +161,26 @@ def executor_from_config(cfg) -> str:
 def startup_guard(cfg, *, rqalpha_available: bool) -> tuple[str, Optional[str]]:
     """启动时把底座解析成合法值并裁决"能不能启动"（runbook §5.2）。返回 `(executor, error)`。
 
-    两条都不许静默：未知值直接报错，`rqalpha` 而框架没装也报错——
-    "偷偷用旧线跑一天"比"今天没跑"难查得多（AGENTS 纪律 3 fail-closed）。
+    两条都不许静默：未知值直接报错；`rqalpha` 底座的可执行性按**分层架构**判——
+    engine 进程（交易 venv）在 rqalpha 底座下只做"判定+意图入队"（queue 模块，
+    纯 sqlite，不需要 rqalpha），**执行由 `rq tick`（引擎 venv）承担**。所以
+    守卫不再要求 engine 进程自己装 rqalpha（T52 后架构如此）；但意图队列必须
+    可写，否则"判定完的意图无处去"= 比静默退回旧线更糟的静默丢失。
     """
     try:
         ex = executor_from_config(cfg)
     except ValueError as exc:
         return "legacy", str(exc)
-    if ex == "rqalpha" and not rqalpha_available:
-        return ex, ("engine.executor=rqalpha，但本环境没有 rqalpha：拒绝启动"
-                    "（不许静默退回旧线撮合；NEC 生产 venv 默认不装，见 report-t39）")
+    if ex == "rqalpha":
+        try:
+            import sqlite3 as _sq
+            from paper_trading.integration.rq_engine import queue as _q
+            db = cfg.get("account_db_path") or "paper_account.db"
+            _q._conn(db).close()               # noqa: SLF001 - 建表即验证可写
+        except Exception as exc:                # noqa: BLE001
+            return ex, ("engine.executor=rqalpha，但意图队列不可用："
+                        f"{type(exc).__name__}: {exc}（拒绝启动——判定完的意图"
+                        "无处去比静默退回旧线更糟）")
     return ex, None
 
 
