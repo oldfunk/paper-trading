@@ -356,9 +356,9 @@ class _SessionState:
                 bar = bar_dict[ob]
             except Exception:                 # noqa: BLE001 - KeyError/AttributeError 均视为无 bar
                 bar = None
-            bp = float(getattr(bar, "last_price", 0) or 0) if bar is not None else 0.0
-            if not bp and bar is not None:
-                bp = float(getattr(bar, "close", 0) or 0)   # 分钟 bar 无 last_price 时用 close
+            # 只用 close（BarObject 保证有；last_price 走 __getattr__ 会抛
+            # CustomException 而非 AttributeError，getattr default 兜不住）
+            bp = float(getattr(bar, "close", 0) or 0) if bar is not None else 0.0
             if bar is None or not bp:
                 continue
             vol = vol_i * (1 if act["action"] == "buy" else -1)
