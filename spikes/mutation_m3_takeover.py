@@ -85,6 +85,14 @@ CASES = [
     ("⑪ 分钟线供给项退回「不查」（日内停摆没人知道）", "verify",
      '    if executor != "rqalpha":\n        return item("minute_feed", "分钟线供给（新线命脉）", "skip",\n                    "executor 非 rqalpha，本项不适用")',
      '    if executor == "never":\n        return item("minute_feed", "分钟线供给（新线命脉）", "skip", "不适用")'),
+    # 下面两条是 2026-10-30 现网验收（scratch 干净账本跑真会话）照出来的形状：
+    # 不在纯函数单测里就会被漏掉，所以既补了假 rqalpha 的会话测试，也在这里各挂一条变异。
+    ("⑫ 同跳同款去重被当成「已成交」（3 executed 对 1 笔成交）", "queue",
+     '        if status == "SKIPPED_DUPLICATE":',
+     '        if status == "__NEVER__":'),
+    ("⑬ 一条意图在多根 bar 上反复定局（后记的 SKIPPED 洗掉真状态）", "runner",
+     "            if bid and bid in self._handled:\n                continue",
+     "            if False:\n                continue"),
 ]
 
 if __name__ == "__main__":

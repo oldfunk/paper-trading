@@ -274,6 +274,92 @@ def test_minute_feed_after_close_is_warn_not_red(data_db_with_minutes):
     assert r["status"] == "warn"
 
 
+# ============================================ ②b 会话侧定局（假 rqalpha，现网实测形状）
+class _Bar:
+    def __init__(self, close):
+        self.close = close
+
+
+class _Ctx:
+    def __init__(self, now):
+        self.now = now
+
+
+def _fake_rqalpha(monkeypatch):
+    """把 `rqalpha.api.order_shares` 换成记数桩：本地没有 rqalpha 也能跑 handle_bar。"""
+    import sys
+    import types
+
+    calls = []
+    api = types.ModuleType("rqalpha.api")
+
+    def order_shares(ob, vol):
+        calls.append((ob, vol))
+        return None                     # 返回 None ⇒ 走 NOT_CREATED 记录分支
+
+    api.order_shares = order_shares
+    root = types.ModuleType("rqalpha")
+    root.api = api
+    monkeypatch.setitem(sys.modules, "rqalpha", root)
+    monkeypatch.setitem(sys.modules, "rqalpha.api", api)
+    return calls
+
+
+def test_handle_bar_sets_each_intent_once_and_tags_duplicates(monkeypatch):
+    """日内续跑重放多根 bar：一条意图只定一次局，同跳同款第二条记 DUPLICATE。
+
+    现网 2026-10-30 的实测形状——旧写法把"会话内去重"也记成 SKIPPED_EXECUTED，
+    于是 3 条意图全部标 executed，而账本只有 1 笔成交。
+    """
+    calls = _fake_rqalpha(monkeypatch)
+    plan = [intent("b1", decided_at="2026-10-30T14:30:00"),
+            intent("b2", decided_at="2026-10-30T14:30:05"),        # 同款第二条
+            intent("b3", symbol="000858", action="sell", decided_at="2026-10-30T14:30:00")]
+    st = _SessionState(plan, executed_ids=set())
+    bar_dict = {"002192.XSHE": _Bar(45.04), "000858.XSHE": _Bar(60.0)}
+    for hh, mm in ((9, 31), (14, 29)):                   # 决策时点之前的两根 bar
+        st.handle_bar(_Ctx(datetime(2026, 10, 30, hh, mm)), bar_dict)
+    assert st.submits == [] and len(st.waiting) == 3    # 只记等待，一单未提
+    st.handle_bar(_Ctx(datetime(2026, 10, 30, 14, 30)), bar_dict)
+    st.handle_bar(_Ctx(datetime(2026, 10, 30, 14, 31)), bar_dict)   # 之后的 bar 继续重放
+    assert [c[0] for c in calls] == ["002192.XSHE", "000858.XSHE"], calls
+    statuses = {o["biz_id"]: o["status"] for o in st.orders}
+    assert statuses["b2"] == "SKIPPED_DUPLICATE"          # 不是 SKIPPED_EXECUTED
+    assert len([o for o in st.orders if o["biz_id"] == "b1"]) == 1   # 不重复定局
+    out = Q.resolve_outcomes(plan, [{"symbol": "002192", "side": "BUY", "volume": 100,
+                                     "order_id": 1, "price": 45.04}],
+                             st.orders, st.submits,
+                             {w["biz_id"] for w in st.waiting})
+    got = {u["biz_id"]: u["status"] for u in out["updates"]}
+    assert got == {"b1": "executed", "b2": "rejected", "b3": "rejected"}, got
+    assert out["stats"]["executed"] == 1                  # executed 笔数 == 成交笔数
+
+
+def test_ledger_idempotent_key_still_marks_executed(monkeypatch):
+    """账本当日真有同款成交（跨跳续跑）⇒ 这条意图确实不用再做，标 executed 合理。"""
+    _fake_rqalpha(monkeypatch)
+    plan = [intent("b1", decided_at="2026-10-30T14:30:00")]
+    st = _SessionState(plan, executed_ids={"002192_BUY_100"})
+    st.handle_bar(_Ctx(datetime(2026, 10, 30, 14, 35)),
+                  {"002192.XSHE": _Bar(45.0)})
+    assert st.orders[0]["status"] == "SKIPPED_EXECUTED"
+    assert st.orders[0]["from"] == "ledger"
+    out = Q.resolve_outcomes(plan, [], st.orders, st.submits, set())
+    assert out["updates"][0]["status"] == "executed"
+    assert out["stats"] == {"executed": 0, "executed_idempotent": 1,
+                           "rejected": 0, "kept": 0}
+
+
+def test_by_biz_keeps_real_status_over_later_skipped_record():
+    """同一 biz 被记两条时，补记的 SKIPPED_* 不许盖掉真状态（洗白路径）。"""
+    intents = [intent("b1")]
+    orders = [{"biz_id": "b1", "status": "NOT_CREATED", "message": "可平仓量为 0"},
+              {"biz_id": "b1", "status": "SKIPPED_EXECUTED", "from": "ledger"}]
+    out = Q.resolve_outcomes(intents, [], orders, submits=[{"biz_id": "b1"}])
+    assert out["updates"][0]["status"] == "rejected"
+    assert "可平仓量为 0" in out["updates"][0]["result"]["reason"]
+
+
 # ==================================================== ③b 分钟线日内采集（新线命脉）
 def _bars(day: str, slots: list[str], px=44.9):
     return [{"ts": f"{day}T{s}", "open": px, "high": px, "low": px, "close": px,

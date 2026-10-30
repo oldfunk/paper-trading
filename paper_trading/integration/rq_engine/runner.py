@@ -305,10 +305,16 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
         gate.mark_done(date.fromisoformat(today), fp,
                        {"fills": verdict["fills"], "rejects": verdict["rejects"]})
         done = True
+    # `waiting` 是"到收盘为止仍未定局"的清单：决策时点未到的 bar 会先记 WAITING，
+    # 到点后又提交 ⇒ 直接返回原始累积表会把已下单的意图报成"还在等"（现网实测
+    # waiting_decision=3 但 3 条都已定局）⇒ 提交过的必须从等待清单里摘掉。
+    _submitted_bids = {str(s.get("biz_id") or "") for s in st.submits}
+    waiting_final = [w for w in st.waiting
+                     if str(w.get("biz_id") or "") not in _submitted_bids]
     return {
         "today": today, "plan": plan, "error": err, "fingerprint": fp,
         "handler_dates": st.handler_dates, "orders": st.orders,
-        "submits": st.submits, "waiting": st.waiting,
+        "submits": st.submits, "waiting": waiting_final,
         "snapshots": st.snapshots, "evidence": evidence, "gates": verdict,
         "session_marked_done": done, "evidence_path": evidence_path,
     }
@@ -327,7 +333,15 @@ class _SessionState:
         self.plan = plan or []
         #: T52-R4 意图幂等：key = `symbol[:6]_side_volume`（6 位码归一——
         #: plan 用 '000792'、框架成交是 '000792.XSHE'，不归一过滤会失效重复下单）
-        self.executed_ids = set(executed_ids or ())
+        #: `_ledger_keys` 只装**账本当日真有成交**的 key；会话内新提交的 key 走
+        #: `_submitted_keys`——两者混用（旧写法）会让"同跳的第二条同款意图"也被
+        #: 标成"幂等命中已成交"，而账本里根本没有它第二笔（现网 2026-10-30 实测）。
+        self._ledger_keys = set(executed_ids or ())
+        self.executed_ids = set(self._ledger_keys)
+        self._submitted_keys: set = set()
+        #: 一条意图一个会话只定一次局（日内续跑会重放当天全部 bar，不设这道闸
+        #: 同一 biz_id 会在早盘记一条、晚盘再记一条，归因表拿"最后一条"当结论）
+        self._handled: set = set()
         self.handler_dates: list = []
         self.orders: list = []
         self.snapshots: list = []
@@ -391,6 +405,8 @@ class _SessionState:
             # 16:49 造出来的意图成交在 09:31 那根 bar 上——成交价不再属于决策时点，
             # 且每次跳都重放当天早盘 ⇒ 账本价格系统性失真、影子 fee_delta 永不归零。
             decided = _parse_dt(act.get("decided_at"))
+            if bid and bid in self._handled:
+                continue                       # 本条意图这个会话已经定过局，不再刷记录
             if self.decide(act, now) == "wait":
                 if bid not in self._waiting_seen:
                     self._waiting_seen.add(bid)
@@ -399,14 +415,26 @@ class _SessionState:
                                          "decided_at": str(decided),
                                          "status": "WAITING_DECISION"})
                 continue
-            # 意图幂等（T52-R4）：账本当日已执行过的意图直接跳过——日内多跳
+            # 意图幂等（T52-R4）：**账本**当日已成交的同款意图直接跳过——日内多跳
             # 续跑时防重复下单的第一道闸（第二道 = SessionGate intraday）
             key = self.intent_key(act["symbol"], side, vol_i)
-            if key in self.executed_ids:
+            if key in self._ledger_keys:
+                self._handled.add(bid)
                 self.orders.append({"biz_id": bid,
                                     "symbol": to_order_book_id(act["symbol"]),
                                     "side": side, "quantity": vol_i,
-                                    "status": "SKIPPED_EXECUTED", "filled": 0})
+                                    "status": "SKIPPED_EXECUTED", "filled": 0,
+                                    "from": "ledger"})
+                continue
+            if key in self._submitted_keys:
+                # 同跳里第二条同款：只提交第一笔，第二条**不算成交**（现网 2026-10-30
+                # 就是把这条标成了 executed，账本里却只有一笔）
+                self._handled.add(bid)
+                self.orders.append({"biz_id": bid,
+                                    "symbol": to_order_book_id(act["symbol"]),
+                                    "side": side, "quantity": vol_i,
+                                    "status": "SKIPPED_DUPLICATE", "filled": 0,
+                                    "message": "同跳同款意图只提交第一笔（去重）"})
                 continue
             ob = to_order_book_id(act["symbol"])
             # 5 分钟对齐空档：rqalpha 1m 事件按日历逐分钟，5 分钟 bar 只在
@@ -424,7 +452,8 @@ class _SessionState:
                 continue
             vol = vol_i * (1 if act["action"] == "buy" else -1)
             o = order_shares(ob, vol)
-            self.executed_ids.add(key)          # 提交即记（防同跳内重复提交）
+            self._handled.add(bid)
+            self._submitted_keys.add(key)      # 会话内已提交（≠ 账本已成交，别混）
             self.submits.append({"biz_id": bid, "symbol": ob, "side": side,
                                  "volume": vol_i, "decided_at": str(decided or ""),
                                  "submitted_at": str(now)})

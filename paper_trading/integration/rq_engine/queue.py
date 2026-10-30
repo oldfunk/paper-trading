@@ -146,7 +146,16 @@ def resolve_outcomes(intents: list[dict], posted: list[dict], orders: list[dict]
     """
     waiting = set(waiting or ())
     pool = [p for p in (posted or []) if p]
-    by_biz = {str(o.get("biz_id") or ""): o for o in (orders or []) if o.get("biz_id")}
+    by_biz: dict = {}
+    for o in (orders or []):
+        bid_o = str(o.get("biz_id") or "")
+        if not bid_o:
+            continue
+        prev = by_biz.get(bid_o)
+        # 同一 biz_id 一天内可能被多根 bar 记到：真状态优先，补记的 SKIPPED_*
+        # 不许把 FILLED/REJECTED/NOT_CREATED 盖掉（否则"没成交"能被洗成"已成交"）
+        if prev is None or str(prev.get("status", "")).startswith("SKIPPED"):
+            by_biz[bid_o] = o
     submitted = {str(s.get("biz_id") or "") for s in (submits or []) if s.get("biz_id")}
     updates: list[dict] = []
     stats = {"executed": 0, "executed_idempotent": 0, "rejected": 0, "kept": 0}
@@ -172,10 +181,19 @@ def resolve_outcomes(intents: list[dict], posted: list[dict], orders: list[dict]
             stats["executed"] += 1
             continue
         o = by_biz.get(bid) or {}
-        if o.get("status") == "SKIPPED_EXECUTED":
+        status = str(o.get("status") or "")
+        if status == "SKIPPED_EXECUTED":
             updates.append({"biz_id": bid, "status": "executed",
                             "result": {"reason": "幂等命中：当日同款已成交"}})
             stats["executed_idempotent"] += 1
+            continue
+        if status == "SKIPPED_DUPLICATE":
+            # 会话内去重挡下的第二条同款意图：账本里**没有**它的成交，
+            # 标 executed 就是"意图数与成交笔数对不上"的那种假账
+            updates.append({"biz_id": bid, "status": "rejected",
+                            "result": {"reason": str(o.get("message")
+                                                     or "同跳同款意图去重：只提交第一笔")}})
+            stats["rejected"] += 1
             continue
         if bid in submitted:
             why = str(o.get("message") or o.get("status") or "本跳未成交")[:160]
