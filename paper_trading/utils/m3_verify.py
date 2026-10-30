@@ -209,6 +209,110 @@ def check_raw_gate(db, symbols, today, days: int = 60) -> dict:
                 f"{len(symbols)} 只全部新鲜且逐日台账完整", on_red="回退")
 
 
+def check_minute_feed(data_db, symbols, today: str, now: Optional[datetime] = None,
+                      executor: str = "rqalpha", max_lag_min: int = 20) -> dict:
+    """分钟会话的命脉：`minute_bars` 必须有**当天**、且日内不陈旧的数据。
+
+    M3 接管③：新线用 1 分钟会话撮合后，分钟线就是它的行情真相源。
+    回填只解决历史；**日内不采集 = 新线没有 bar 可撮合**，
+    表现是"意图在队列里静静过期"而不是报错——正是纪律 4 说的静默故障。
+    """
+    from pathlib import Path as _P
+
+    tn = now or datetime.now()
+    if executor != "rqalpha":
+        return item("minute_feed", "分钟线供给（新线命脉）", "skip",
+                    "executor 非 rqalpha，本项不适用")
+    db_path = getattr(data_db, "db_path", None) or data_db
+    try:
+        conn = sqlite3.connect(f"file:{_P(str(db_path))}?mode=ro", uri=True)
+    except Exception as exc:                        # noqa: BLE001
+        return item("minute_feed", "分钟线供给（新线命脉）", "skip", f"库打不开：{exc}")
+    try:
+        try:
+            latest = conn.execute("SELECT MAX(ts) FROM minute_bars").fetchone()[0]
+        except sqlite3.OperationalError:
+            return item("minute_feed", "分钟线供给（新线命脉）", "red",
+                        "minute_bars 表不存在（新线无数据可撮合）", on_red="归因/采集")
+        n_today = conn.execute("SELECT COUNT(*) FROM minute_bars"
+                               " WHERE substr(ts,1,10)=?", (today,)).fetchone()[0]
+        syms_today = conn.execute("SELECT COUNT(DISTINCT symbol) FROM minute_bars"
+                                  " WHERE substr(ts,1,10)=?", (today,)).fetchone()[0]
+    finally:
+        conn.close()
+    detail = f"今天 {n_today} 行 / {syms_today} 只；最新 {latest}"
+    mins = tn.hour * 60 + tn.minute
+    in_session = 9 * 60 + 5 <= mins <= 15 * 60 + 5
+    if n_today == 0:
+        return item("minute_feed", "分钟线供给（新线命脉）",
+                    "red" if in_session else "warn",
+                    f"{detail}——**没有当天分钟线**：日内采集未跑"
+                    f"（{'盘中' if in_session else '非盘中'}）", on_red="归因/采集")
+    if latest and in_session:
+        try:
+            lag = (tn - datetime.fromisoformat(str(latest))).total_seconds() / 60.0
+        except ValueError:
+            lag = 0.0
+        if lag > max_lag_min:
+            return item("minute_feed", "分钟线供给（新线命脉）", "red",
+                        f"{detail}；盘中陈旧 {lag:.0f} 分钟（阈值 {max_lag_min}）",
+                        on_red="归因/采集")
+    return item("minute_feed", "分钟线供给（新线命脉）", "green", detail,
+                on_red="归因/采集")
+
+
+def check_intent_queue(conn, today: str, now: Optional[datetime] = None,
+                       executor: str = "rqalpha", backlog_min: int = 20) -> dict:
+    """意图队列：executed 必须有落账流水、未决不许积压、跨日不许补执行。
+
+    P0-3 的形状就是"标了 executed、账本里没有这笔"；这里把它变成每次验证必查项。
+    """
+    if not _has_table(conn, "rq_intents"):
+        if executor != "rqalpha":
+            return item("intent_queue", "意图队列与账本相符", "skip", "未切换（队列表未建）")
+        return item("intent_queue", "意图队列与账本相符", "red",
+                    "executor=rqalpha 但没有 rq_intents 表（引擎没在入队？）",
+                    on_red="归因（配置/部署）")
+    rows = _rows(conn, "SELECT biz_id, status, created_at, result FROM rq_intents"
+                       " WHERE substr(created_at,1,10)>=? ORDER BY created_at", (today,))
+    by: dict = {}
+    for r in rows:
+        by[r["status"]] = by.get(r["status"], 0) + 1
+    phantom = [r["biz_id"] for r in rows
+               if r["status"] == "executed" and "order_id" not in str(r.get("result") or "")]
+    tn = now or datetime.now()
+    stale_pending = []
+    for r in rows:
+        if r["status"] not in ("pending", "queued"):
+            continue
+        try:
+            age_min = (tn - datetime.fromisoformat(str(r["created_at"]))
+                       ).total_seconds() / 60.0
+        except ValueError:
+            age_min = 0.0
+        if age_min > backlog_min:
+            stale_pending.append({"biz_id": r["biz_id"], "age_min": round(age_min)})
+    cross_day = [r["biz_id"] for r in _rows(
+        conn, "SELECT biz_id FROM rq_intents WHERE status IN ('pending','queued')"
+              " AND created_at < ?", (today + "T00:00:00",))]
+    summary = f"今日 {len(rows)} 条 {by or {}}"
+    if phantom:
+        return item("intent_queue", "意图队列与账本相符", "red",
+                    f"标 executed 却无落账 order_id 的意图 {len(phantom)} 条："
+                    f"{phantom[:5]}（{summary}）", money=True,
+                    on_red="回退/归因：意图被吞或落账失败")
+    if stale_pending:
+        return item("intent_queue", "意图队列与账本相符", "red",
+                    f"未决意图积压 >{backlog_min} 分钟：{stale_pending[:3]}（{summary}）",
+                    on_red="归因（rq tick 未跑/venv/采集）")
+    if cross_day:
+        return item("intent_queue", "意图队列与账本相符", "warn",
+                    f"跨日未决 {len(cross_day)} 条（tick 未跑则不会自动过期）："
+                    f"{cross_day[:5]}", on_red="归因")
+    return item("intent_queue", "意图队列与账本相符", "green",
+                summary if rows else "今日无意图（队列空）", on_red="回退/归因")
+
+
 # ---------------- 审计与链路检查 ----------------
 def check_parity_trace(conn, today: str, now: Optional[datetime] = None) -> dict:
     """影子对账留痕：当天要有 `parity:diff`，且三个 delta 全零或已归因。"""
@@ -321,7 +425,7 @@ def resolve_heartbeat_path(path=None, *, cwd=None, root=None) -> tuple:
 
 def check_heartbeat(path=None, now: Optional[datetime] = None,
                     thresholds: Optional[dict] = None, *,
-                    cwd=None, root=None) -> dict:
+                    cwd=None, root=None, executor: str = "legacy") -> dict:
     """引擎/代理心跳：在"本该跳"的时段里超时 ⇒ 线根本没跑（面板与 cron 的唯一活着证据）。
 
     非应跳时段（周末/夜间）不判停滞，但会把"为什么没判"写出来——
@@ -334,7 +438,12 @@ def check_heartbeat(path=None, now: Optional[datetime] = None,
         return item("heartbeat", "引擎/代理心跳", "skip",
                     f"找不到心跳文件（试过：{'; '.join(tried)}）——"
                     "请用 --heartbeat 指定，或在仓库根运行")
-    th = thresholds or hb.DEFAULT_THRESHOLDS
+    th = dict(thresholds or hb.DEFAULT_THRESHOLDS)
+    if executor == "rqalpha":
+        th.setdefault("rq_tick", hb.RQ_TICK_THRESHOLD)
+        # 采集器"装过才追问"：没装 intraday cron 的部署不该为它假红；装过又停了必须响
+        if hb.age("minute", path=resolved, now=now) is not None:
+            th.setdefault("minute", hb.MINUTE_THRESHOLD)
     try:
         ages = {n: hb.age(n, path=resolved, now=now) for n in th}
         dues = {n: hb.due(n, now=now) for n in th}
@@ -361,7 +470,7 @@ def check_heartbeat(path=None, now: Optional[datetime] = None,
 # ---------------- 汇总 ----------------
 def verify_all(*, broker, data_db, symbols: list, today: str,
                cfg, days: int = 60, heartbeat_path=None,
-               now: Optional[datetime] = None) -> dict:
+               now: Optional[datetime] = None, executor: str = "legacy") -> dict:
     """跑全套并给结论；钱类红 ⇒ `rollback_required=True`（§5.6 底线）。"""
     conn = sqlite3.connect(str(broker.db_path))
     conn.row_factory = sqlite3.Row
@@ -372,11 +481,13 @@ def verify_all(*, broker, data_db, symbols: list, today: str,
             check_nav(conn, today, now=now),
             check_duplicate_fills(conn, today),
             check_raw_gate(data_db, symbols, today, days=days),
+            check_minute_feed(data_db, symbols, today, now=now, executor=executor),
+            check_intent_queue(conn, today, now=now, executor=executor),
             check_parity_trace(conn, today, now=now),
             check_audit_trail(conn, today),
             check_plan_chain(conn, today),
             check_conditional_chain(conn, today),
-            check_heartbeat(path=heartbeat_path, now=now),
+            check_heartbeat(path=heartbeat_path, now=now, executor=executor),
         ]
     finally:
         conn.close()

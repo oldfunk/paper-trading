@@ -15,6 +15,7 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rq_intents (
@@ -45,6 +46,11 @@ def _conn(db_path: str | Path) -> sqlite3.Connection:
     return c
 
 
+def _same_key(biz_id: str, key: str) -> bool:
+    """biz_id 是否是这个意图 key（裸 key 或 `key@时刻[#序号]`）。"""
+    return biz_id == key or str(biz_id).startswith(key + "@")
+
+
 def enqueue(db_path: str | Path, symbol, side: str, volume: int,
             rule_ref: str = "", detail: dict | None = None) -> str:
     """入队一个意图。
@@ -56,15 +62,19 @@ def enqueue(db_path: str | Path, symbol, side: str, volume: int,
     """
     key = intent_key(symbol, side, volume)
     ts = datetime.now().isoformat(timespec="seconds")
-    biz = f"{key}@{ts}"
     with _conn(db_path) as c:
-        row = c.execute(
-            "SELECT biz_id FROM rq_intents WHERE biz_id LIKE ?"
-            " AND status IN ('pending','queued')", (f"{key}@",)).fetchone()
-        if row:
+        # 精确前缀比对，不走 LIKE：key 里的 `_` 在 LIKE 里是单字符通配，会跨标的误命中
+        rows = c.execute("SELECT biz_id, status FROM rq_intents").fetchall()
+        if any(_same_key(r[0], key) and r[1] in ("pending", "queued") for r in rows):
             return key                    # 已有待决同款意图——幂等返回
+        taken = {r[0] for r in rows}
+        biz = f"{key}@{ts}"
+        seq = 0
+        while biz in taken:              # 同一秒内"执行完又触发"会撞主键 ⇒ 加序号，不许多吞一次
+            seq += 1
+            biz = f"{key}@{ts}#{seq}"
         c.execute(
-            "INSERT OR IGNORE INTO rq_intents"
+            "INSERT INTO rq_intents"
             " (biz_id, symbol, side, volume, rule_ref, detail, status, created_at)"
             " VALUES (?,?,?,?,?,?,'queued',?)",
             (biz, str(symbol).split(".")[0], str(side).upper(), int(volume),
@@ -73,12 +83,130 @@ def enqueue(db_path: str | Path, symbol, side: str, volume: int,
 
 
 def pending(db_path: str | Path) -> list[dict]:
+    """待决意图（带 `decided_at` = 入队时刻，会话侧按它决定在哪根 bar 提交）。"""
     with _conn(db_path) as c:
         rows = c.execute(
-            "SELECT biz_id, symbol, side, volume FROM rq_intents"
+            "SELECT biz_id, symbol, side, volume, created_at FROM rq_intents"
             " WHERE status IN ('pending','queued') ORDER BY created_at").fetchall()
     return [{"biz_id": r[0], "symbol": r[1], "action": r[2].lower(),
-             "volume": int(r[3])} for r in rows]
+             "volume": int(r[3]), "decided_at": r[4]} for r in rows]
+
+
+def backlog(db_path: str | Path) -> dict:
+    """队列体检（m3 verify 用）：状态分布 + 最老未决意图的年龄。"""
+    with _conn(db_path) as c:
+        try:
+            dist = {r[0]: int(r[1]) for r in c.execute(
+                "SELECT status, COUNT(*) FROM rq_intents GROUP BY status")}
+            oldest = c.execute(
+                "SELECT MIN(created_at) FROM rq_intents"
+                " WHERE status IN ('pending','queued')").fetchone()[0]
+        except sqlite3.OperationalError:            # 表还没建（旧线未切换）
+            return {"exists": False}
+    return {"exists": True, "by_status": dist, "oldest_pending": oldest}
+
+
+def expire_stale(db_path: str | Path, day: str) -> list[str]:
+    """把**早于今天**的未决意图标 expired 并返回其 biz_id。
+
+    规则：意图是"某个交易日的某个分钟做出的决定"，隔日再执行就是用昨天的决定
+    交易今天的价格 ⇒ 宁可过期让规则重新触发，也不跨日补执行（跨日补单是不可归因的）。
+    """
+    with _conn(db_path) as c:
+        rows = c.execute(
+            "SELECT biz_id FROM rq_intents WHERE status IN ('pending','queued')"
+            " AND substr(created_at,1,10) < ?", (day,)).fetchall()
+        ids = [r[0] for r in rows]
+        for b in ids:
+            c.execute("UPDATE rq_intents SET status='expired', result=? WHERE biz_id=?",
+                      (json.dumps({"reason": "跨日未执行，过期（决策只在当日内有效）",
+                                   "expired_on": day}, ensure_ascii=False), b))
+    return ids
+
+
+def _code6(symbol) -> str:
+    return str(symbol).split(".")[0][:6].zfill(6)
+
+
+def resolve_outcomes(intents: list[dict], posted: list[dict], orders: list[dict],
+                     submits: list[dict], waiting: Optional[set] = None,
+                     *, posting_ok: bool = True) -> dict:
+    """会话结果 → 逐笔队列状态（M3 接管②，修 P0-3 的核心判定）。
+
+    规则（**只做有证据的推进**）：
+    1. `posted`（T47-G1 真正落进账本的那笔，带 symbol/side/volume/order_id）按
+       (标的, 方向, 量) 逐笔认领，一条只能认领一次 ⇒ 买 100 的成交绝不会替
+       同标的"卖 100"或"买 200"完成意图；
+    2. 账本当日已有同款成交（会话回报 SKIPPED_EXECUTED）⇒ 标 executed 并注明幂等命中，
+       留在队列里只会每跳空转；
+    3. 提交过但没有落账成交 ⇒ `rejected` + 框架原因（含收盘未成交被 after_trading
+       拒掉的那种），**不许静默消失**；
+    4. 没提交（决策时点未到 / 等对齐 bar）⇒ 保持 queued，下一跳继续；
+    5. 落账失败（`posting_ok=False`）⇒ 谁都不许多标，全部留在队列里等归因。
+    """
+    waiting = set(waiting or ())
+    pool = [p for p in (posted or []) if p]
+    by_biz = {str(o.get("biz_id") or ""): o for o in (orders or []) if o.get("biz_id")}
+    submitted = {str(s.get("biz_id") or "") for s in (submits or []) if s.get("biz_id")}
+    updates: list[dict] = []
+    stats = {"executed": 0, "executed_idempotent": 0, "rejected": 0, "kept": 0}
+    if not posting_ok:
+        return {"updates": [], "stats": {"kept": len(intents)},
+                "unclaimed": [], "needs_attention": [
+                    {"biz_id": it.get("biz_id"), "why": "落账失败，全部保持未决"}
+                    for it in intents][:5]}
+    for it in intents:
+        bid = str(it.get("biz_id") or "")
+        side = str(it.get("side") or ("BUY" if str(it.get("action", "")).lower() == "buy"
+                                       else "SELL")).upper()
+        want = (_code6(it.get("symbol")), side, int(it.get("volume") or 0))
+        hit = next((i for i, p in enumerate(pool) if (
+            _code6(p.get("symbol")), str(p.get("side") or "BUY").upper(),
+            int(p.get("volume") or 0)) == want), None)
+        if hit is not None:
+            p = pool.pop(hit)
+            updates.append({"biz_id": bid, "status": "executed",
+                            "result": {"order_id": p.get("order_id"),
+                                       "price": p.get("price"),
+                                       "fill_biz_id": p.get("biz_id")}})
+            stats["executed"] += 1
+            continue
+        o = by_biz.get(bid) or {}
+        if o.get("status") == "SKIPPED_EXECUTED":
+            updates.append({"biz_id": bid, "status": "executed",
+                            "result": {"reason": "幂等命中：当日同款已成交"}})
+            stats["executed_idempotent"] += 1
+            continue
+        if bid in submitted:
+            why = str(o.get("message") or o.get("status") or "本跳未成交")[:160]
+            updates.append({"biz_id": bid, "status": "rejected",
+                            "result": {"reason": why, "order_status": o.get("status")}})
+            stats["rejected"] += 1
+            continue
+        stats["kept"] += 1
+    return {"updates": updates, "stats": stats,
+            "unclaimed": [{"symbol": p.get("symbol"), "side": p.get("side"),
+                           "volume": p.get("volume")} for p in pool],
+            "waiting": sorted(waiting)}
+
+
+def apply_outcomes(db_path: str | Path, updates: list[dict]) -> dict:
+    """按会话/落账结果精确推进队列状态（M3 接管②，修 P0-3 的"按标的批量标"）。
+
+    只承认调用方给的**逐笔**结果：`{biz_id, status, result}`。
+    没有结果的意图保持原状态（未决），绝不因为"同标的成交过"就顺带完成。
+    """
+    done = {"executed": 0, "rejected": 0, "kept": 0}
+    with _conn(db_path) as c:
+        for u in updates:
+            st = str(u.get("status") or "")
+            if st not in ("executed", "rejected", "failed"):
+                continue
+            c.execute("UPDATE rq_intents SET status=?, result=? WHERE biz_id=?",
+                      (st, json.dumps(u.get("result") or {}, ensure_ascii=False),
+                       u.get("biz_id")))
+            done[st] = done.get(st, 0) + 1
+    return done
 
 
 def mark(db_path: str | Path, biz_id: str, status: str,

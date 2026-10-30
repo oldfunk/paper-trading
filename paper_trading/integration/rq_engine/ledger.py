@@ -92,9 +92,12 @@ def post_session(broker, evidence: dict, *, today: str, fp: str = "",
             errors.append({"why": "ledger_inconsistent", "biz_id": biz_id,
                            "error": str(exc)})
             break                      # 守卫失败就停，不继续写后面的笔
+        # `side` 必须带出来：`rq tick` 靠 (标的, 方向, 数量) 逐笔认领成交，
+        # 少了方向就把"买 100"错配给同标的的"卖 100"意图（M3 接管②）
         posted.append({"biz_id": biz_id, "order_id": order.order_id,
                        "symbol": order.symbol, "volume": order.filled_volume,
-                       "price": order.filled_price})
+                       "price": order.filled_price,
+                       "side": "BUY" if order.direction == 1 else "SELL"})
         # `date` 放 result：`has_operation` 的跨日补记判重认的是 result 里的业务日
         # （Issue #2 的教训——只按 timestamp 匹配，补跑昨天的会话永远查不到旧行）
         broker.log_operation("rq:fill", {"biz_id": biz_id, "session": fp[:16]}, True,

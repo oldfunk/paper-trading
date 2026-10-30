@@ -1607,6 +1607,8 @@ def main() -> None:
                              help="向源索取的回看天数（源上限约 22 个交易日）")
     minute_sync.add_argument("--retention-days", type=int, default=0,
                              help="保留最近 N 个已入库交易日，更早的删除（0=不删）")
+    minute_sync.add_argument("--intraday", action="store_true",
+                             help="盘中模式：只补「已收完」的 bar（新线撮合的命脉采集）")
     minute_sync.add_argument("--json", action="store_true")
 
     engine_opt = engine_sub.add_parser("optimize", help="参数网格搜索（按超额收益排序）")
@@ -1928,35 +1930,108 @@ def main() -> None:
                 if not rq_alpha_available():
                     emit({"ok": False, "error": "本环境未安装 rqalpha（tick 需引擎 venv）"})
                     sys.exit(2)
+                # 防双活互锁（M3 接管③）：底座不是 rqalpha 时消费跳必须拒跑——
+                # 否则"旧线直接下单 + 残留意图被新线补单"会同时发生（不可归因）。
+                from paper_trading.engine.config import load_engine_config
+                from paper_trading.integration.rq_engine import ledger as _ld
+
+                try:
+                    _ex = _ld.executor_from_config(
+                        load_engine_config(getattr(bridge, "config_path", None)))
+                except ValueError as exc:
+                    emit({"ok": False, "error": f"底座配置非法：{exc}"})
+                    sys.exit(2)
+                if _ex != "rqalpha":
+                    emit({"ok": False,
+                          "error": f"engine.executor={_ex}，rq tick 拒绝消费（防新旧双活）；"
+                                   "要切换请把 engine.local.yaml 的 executor 设为 rqalpha"})
+                    sys.exit(2)
                 acct_db = str(bridge.broker.db_path)
                 today = _date.today().isoformat()
+                # 跨日未执行的意图先过期：意图是"某日某分钟的决定"，隔日补执行
+                # 等于拿昨天的决定交易今天的价格（不可归因），宁可让规则重触发。
+                expired = _q.expire_stale(acct_db, today)
                 intents = _q.pending(acct_db)[: int(args.limit)]
+
+                def _beat(detail: str) -> None:
+                    """每跳都写心跳：`rq tick` 死了要能响（队列在长而没人消费=静默故障）。"""
+                    from paper_trading.utils import heartbeat as _hb
+
+                    _hb.touch("rq_tick", detail=detail[:200])
+
                 if not intents:
-                    emit({"ok": True, "idle": True, "why": "队列空，本跳无事"})
+                    _beat("idle")
+                    emit({"ok": True, "idle": True, "why": "队列空，本跳无事",
+                          "expired": len(expired)})
                     sys.exit(0)
                 executed = _q.executed_keys_from_ledger(acct_db, today)
                 syms = sorted({i["symbol"] for i in intents})
+                # ---- 供给自证（接管③）：新线只认库里的 bar，而 minute_bars 没有盘中
+                # cron 在喂（旧线靠实时报价，切换后这条路断了）。本跳要用的标的先把
+                # "当日已收完的 bar"补齐，缺哪根如实进结果——不许静默丢机会。
+                from datetime import datetime as _dt
+
+                from paper_trading.data.minute import ensure_today_minutes
+
+                feed = ensure_today_minutes(bridge.data_db, syms, now=_dt.now())
+                if feed.get("errors"):
+                    logger.warning(f"rq tick 分钟线供给异常：{feed['errors']}")
                 state_root = _P(args.state_root or "var/rq_state")
                 state_dir = str(state_root / today)
+                plan = [{"biz_id": i["biz_id"], "symbol": i["symbol"],
+                         "action": i["action"], "volume": i["volume"],
+                         "decided_at": i.get("decided_at")}
+                        for i in intents]
                 res = _rq.run_session(
                     today=today, data_db=args.data_db, bundle=_bundle_path(None),
-                    symbols=syms, plan=intents, state_dir=state_dir,
+                    symbols=syms, plan=plan, state_dir=state_dir,
                     workdir=state_dir, fee=bridge.broker.config,
                     frequency="1m", intraday_resume=True,
                     executed_ids=executed, ledger=True)
-                # 按会话结果推进队列状态（FILLED 的标 executed；未成交留 queued 下跳续）
-                filled_syms = {str(t.get("symbol", "")).split(".")[0]
-                               for t in (res.get("evidence", {}).get("trades") or [])}
-                if filled_syms and not res.get("error") \
-                        and res.get("gates", {}).get("ok"):
+                trades = res.get("evidence", {}).get("trades") or []
+                led = None
+                posting_ok = True
+                if trades and not res.get("error") and res.get("gates", {}).get("ok"):
                     # T47-G1 落账：会话成交 → paper_account.db（守卫+三分量+op_log）
-                    res["ledger"] = _ledger_apply(bridge, res, today)
-                for it in intents:
-                    if it["symbol"] in filled_syms:
-                        _q.mark(acct_db, it["biz_id"], "executed",
-                                {"session": today})
+                    led = _ledger_apply(bridge, res, today)
+                    res["ledger"] = led
+                    posting_ok = bool(led.get("ok", True))
+                # ---- 逐笔归因（修 P0-3）：判定本体在 queue.resolve_outcomes，
+                # 那里有单测盯着；这里只负责把结论写回队列。
+                waiting = {str(w.get("biz_id") or "") for w in (res.get("waiting") or [])}
+                verdict = _q.resolve_outcomes(
+                    intents, ((led or {}).get("posted") or []), res.get("orders") or [],
+                    res.get("submits") or [], waiting, posting_ok=posting_ok)
+                for u in verdict["updates"]:
+                    r = dict(u.get("result") or {})
+                    r.setdefault("session", today)
+                    _q.mark(acct_db, u["biz_id"], u["status"], r)
+                st = verdict["stats"]
+                res["intent_outcomes"] = {
+                    "in": len(intents), "expired": len(expired),
+                    "executed": st.get("executed", 0) + st.get("executed_idempotent", 0),
+                    "rejected": st.get("rejected", 0), "kept_queued": st.get("kept", 0),
+                    "waiting_decision": len(waiting),
+                    "posted_unclaimed": len(verdict["unclaimed"]),
+                    "unclaimed": verdict["unclaimed"][:5],
+                    "posting_ok": posting_ok,
+                    "details": verdict["updates"][:20]}
+                if verdict["unclaimed"]:
+                    # 账本落了账却没人认领 ⇒ 意图与成交对不上号，必须显式可见
+                    logger.warning("落账成交有 %d 笔未被任何意图认领：%s",
+                                   len(verdict["unclaimed"]), verdict["unclaimed"][:3])
+                _beat(f"in={len(intents)} exec={res['intent_outcomes']['executed']} "
+                      f"rej={res['intent_outcomes']['rejected']}")
+                res["minute_feed"] = {"written": feed.get("written"),
+                                      "errors": feed.get("errors"),
+                                      "missing": {s: v.get("missing", [])[:3] for s, v in
+                                                  (feed.get("per_symbol") or {}).items()
+                                                  if v.get("missing")}}
                 emit(res)
                 if res.get("error") or not res.get("gates", {}).get("ok"):
+                    sys.exit(1)
+                if not posting_ok:
+                    # 钱类守卫：会话有成交但一笔都没落进账本 ⇒ 与"没跑成"同级，必须响
                     sys.exit(1)
             elif cmd == "state":
                 from datetime import date as _date
@@ -2038,6 +2113,8 @@ def main() -> None:
             from datetime import date as _date
             from pathlib import Path as _PP
 
+            from paper_trading.engine.config import load_engine_config
+            from paper_trading.integration.rq_engine import ledger as _ld
             from paper_trading.utils import m3_verify as _m3
 
             if (getattr(args, "m3_command", None) or "verify") != "verify":
@@ -2049,7 +2126,9 @@ def main() -> None:
             res = _m3.verify_all(broker=bridge.broker, data_db=bridge.data_db,
                                  symbols=syms, today=today,
                                  cfg=bridge.broker.config, days=args.days,
-                                 heartbeat_path=(_PP(hb_path) if hb_path else None))
+                                 heartbeat_path=(_PP(hb_path) if hb_path else None),
+                                 executor=_ld.executor_from_config(
+                                     load_engine_config(getattr(bridge, "config_path", None))))
             res["pool_source"] = note
             if getattr(args, "money_only", False):
                 res["items"] = [i for i in res["items"] if i["money"]]
@@ -2118,6 +2197,17 @@ def main() -> None:
                 th["engine"] = int(args.engine_max_age)
             if getattr(args, "agent_max_age", None):
                 th["agent"] = int(args.agent_max_age)
+            from paper_trading.engine.config import load_engine_config
+            from paper_trading.integration.rq_engine import ledger as _ldg
+
+            if _ldg.executor_from_config(
+                    load_engine_config(getattr(bridge, "config_path", None))) == "rqalpha":
+                # 切换后"消费跳没跑"就是新线停摆：只有真切换了才追问（不切不假红）
+                th.setdefault("rq_tick", hb.RQ_TICK_THRESHOLD)
+                # 采集器"装过才追问"：没装 intraday cron 的部署不该为它假红，
+                # 但装过又停了（有历史心跳、现在超时）必须响——那是静默丢机会。
+                if hb.age("minute") is not None:
+                    th.setdefault("minute", hb.MINUTE_THRESHOLD)
             if hc == "check":
                 prev = hb.read_status()
                 st = hb.check(thresholds=th or None)
@@ -2580,6 +2670,30 @@ def main() -> None:
                 syms = list(args.symbols or [])
                 if not syms:
                     syms = _resolve_syms(bridge, args)[0]
+                if getattr(args, "intraday", False):
+                    # 盘中模式（接管③）：只落"已收完"的 bar，未走完的那根不进库。
+                    # 新线撮合只认库里的 bar——没有盘中采集 = 14:xx 的决定没有 14:xx 的
+                    # bar 可撮合，意图隔日过期，机会被静默吞掉。
+                    from datetime import datetime as _dt
+
+                    from paper_trading.utils import heartbeat as _hb
+
+                    res = _min.ensure_today_minutes(bridge.data_db, syms,
+                                                    period=args.period,
+                                                    now=_dt.now())
+                    _hb.touch("minute", ok=not res["errors"],
+                              detail=f"written={res['written']} "
+                                     f"errors={','.join(res['errors'])[:60]}")
+                    if res["errors"]:
+                        bridge.broker.log_operation(
+                            "minute:gap", {"day": res["day"], "period": res["period"],
+                                           "errors": res["errors"],
+                                           "per_symbol": {s: v for s, v in
+                                                          res["per_symbol"].items()
+                                                          if v.get("error")}}, False,
+                            {"written": res["written"]}, None)
+                    emit(res)
+                    return
                 res = _min.sync_day(bridge.data_db, syms, day=args.day,
                                     period=args.period, days=args.days)
                 pruned = 0
