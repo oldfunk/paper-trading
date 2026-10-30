@@ -348,9 +348,18 @@ class _SessionState:
                                     "status": "SKIPPED_EXECUTED", "filled": 0})
                 continue
             ob = to_order_book_id(act["symbol"])
+            # 5 分钟对齐空档：rqalpha 1m 事件按日历逐分钟，5 分钟 bar 只在
+            # :35/:40/... 落地——无当根 bar 时下单会抛空消息 CustomException。
+            # 跳过等下一根（**不记 executed**，有 bar 的那跳再提交）
+            try:
+                bar = bar_dict.get(ob)
+            except Exception:                 # noqa: BLE001
+                bar = None
+            if bar is None or not float(getattr(bar, "last_price", 0) or 0):
+                continue
             vol = vol_i * (1 if act["action"] == "buy" else -1)
             o = order_shares(ob, vol)
-            self.executed_ids.add(key)          # 提交即记（防止同跳内重复提交）
+            self.executed_ids.add(key)          # 提交即记（防同跳内重复提交）
             if o is None:
                 # 前端风控挡下：没有 Order 对象，原因在 mod 的事件采集里
                 self.orders.append({"symbol": ob,
