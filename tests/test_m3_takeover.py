@@ -591,8 +591,16 @@ def test_mark_unavailable_settles_symbols_the_bundle_does_not_have(monkeypatch):
     assert out["stats"]["kept"] == 1                            # b-ok 仍在正常路径上等 bar
 
 
-def test_mark_unavailable_is_noop_without_an_instrument_table():
-    """拿不到标的表时**什么都不做**——不许靠猜测把意图判死（判错比不判更糟）。"""
+def test_mark_unavailable_distinguishes_no_table_from_empty_table():
+    """"问不到表"与"问到了、这些标的都不在表里"是两件事（现网重跑照出来的）。
+
+    上一版把两者混成 `if not known: return []`，于是**整跳标的都不在 bundle**
+    的情况（现网 920156 单独触发时正是这样）一条都不定局；而"问不到表"确实
+    该什么都不做——不许靠猜测判死一条意图。
+    """
     st = _SessionState([intent("b1", symbol="920156")], executed_ids=set())
-    assert st.mark_unavailable(None) == [] and st.mark_unavailable([]) == []
+    assert st.mark_unavailable(None) == []          # 问不到表 ⇒ 不判
     assert st.orders == []
+    st2 = _SessionState([intent("b1", symbol="920156")], executed_ids=set())
+    assert st2.mark_unavailable(set()) == ["b1"]    # 问到了且为空 ⇒ 全部定局
+    assert st2.orders[0]["status"] == "INSTRUMENT_UNAVAILABLE"

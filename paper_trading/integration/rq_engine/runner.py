@@ -407,9 +407,12 @@ class _SessionState:
         这里给它一个显式结论：`INSTRUMENT_UNAVAILABLE`（归因侧判 rejected，
         规则第二天可以重新触发）。
         """
-        known = {str(k) for k in (known_order_book_ids or [])}
-        if not known:
-            return []                      # 拿不到标的表就什么都不做（IdleSpin 闸仍在）
+        if known_order_book_ids is None:
+            return []            # **问不到表**才什么都不做（IdleSpin 闸在后面兜着）
+        known = {str(k) for k in known_order_book_ids}
+        # 空集合是合法答案——"这一跳的标的**全都不在** bundle 里"正是现网 920156
+        # 那一幕。上一版把 None 与 set() 混成一件事（`if not known`），于是单只
+        # 北交所意图的会话里一条都不定局，照样挂到明天被 expire_stale 悄悄清掉。
         out = []
         for act in self.plan:
             bid = str(act.get("biz_id") or "")
