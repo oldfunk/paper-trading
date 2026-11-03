@@ -1472,9 +1472,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": ok, "data": data if ok else None,
                             "error": err or None}, code=200 if ok else 400)
             elif u.path == "/api/llm/ask":
-                if not self._admin_ok(body):
-                    self._json({"ok": False, "error": "口令错误或未设置"}, code=403)
-                    return
+                # 2026-11-03 bug 修复：AI 问答是**只读咨询**（prompt→LLM→回复 +
+                # 审计流水），不写配置/不碰资金——此前被误列入写操作门禁，
+                # 换浏览器/无 admin_token 时（模型设置完全正确）也报
+                # "口令错误或未设置"。内网面板 + 无 Key 时 llm_ask 自然失败，
+                # 保留审计留痕即可，不再要写口令。
                 r = self._bridge().llm_ask(body.get("prompt", ""), body.get("system", ""))
                 self._json(r, code=200 if r.get("ok") else 502)
             elif u.path == "/api/agent/schedule":
