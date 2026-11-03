@@ -93,10 +93,8 @@ CASES = [
      "            if not bid or bid in self._handled or ob in known:",
      "            if True:\n                continue"),
     ("⑨ 把「问不到表」与「表里没有这只」混成一件（空集合不定局）", "runner",
-     "        if known_order_book_ids is None:
-            return []",
-     "        if not known_order_book_ids:
-            return []"),
+     "        if known_order_book_ids is None:\n            return []",
+     "        if not known_order_book_ids:\n            return []"),
     ("⑦ 盘中采集退回「每跳都落流水」（一上午 92 条，埋掉真故障）", "cli",
      '                    if res["errors"] and not bridge.broker.has_op_with("minute:gap", fp):',
      '                    if res["errors"]:'),
