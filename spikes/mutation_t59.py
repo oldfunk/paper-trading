@@ -101,6 +101,19 @@ CASES = [
     ("⑪ 当日带退回「拿最近可得的收盘凑」（今早真实状态：raw 只到 10-30）", "store",
      "                     require_prev_close: bool = True):",
      "                     require_prev_close: bool = False):"),
+    ("⑫ 分钟线陈旧度退回按墙钟算（午休每小时假红一次）", "verify",
+     '''        want = latest_expected_ts(today, "5", tn)
+        try:
+            lag = 0.0 if not want else (
+                (datetime.fromisoformat(want)
+                 - datetime.fromisoformat(str(latest)[:16])).total_seconds() / 60.0)
+        except ValueError:
+            lag = (tn - datetime.fromisoformat(str(latest))).total_seconds() / 60.0''',
+     '''        want = None
+        try:
+            lag = (tn - datetime.fromisoformat(str(latest))).total_seconds() / 60.0
+        except ValueError:
+            lag = 0.0'''),
     ("⑦ 盘中采集退回「每跳都落流水」（一上午 92 条，埋掉真故障）", "cli",
      '                    if res["errors"] and not bridge.broker.has_op_with("minute:gap", fp):',
      '                    if res["errors"]:'),

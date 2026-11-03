@@ -248,6 +248,18 @@ def gap_fingerprint(day: str, errors) -> str:
     return f"{day}|" + ",".join(sorted(str(e) for e in (errors or [])))
 
 
+def latest_expected_ts(day: str, period: str = "5",
+                       now: Optional[datetime] = None) -> Optional[str]:
+    """到此刻为止**应该已经有了**的最后一根 bar 时刻（午休/盘前都算得对）。
+
+    11-03 现网 12:09 的误报就是缺这个：A 股 11:30 收午盘，`minute_bars` 的最新
+    一根停在 11:30 是**正确**的，但按"墙钟距今 > 20 分钟"判陈旧就会红——整个午休
+    每小时响一次、午后立刻再响，报警一失真就没人看（纪律 4 的反面）。
+    """
+    done = completed_slots(period, now)
+    return f"{day}T{done[-1]}" if done else None
+
+
 def ensure_today_minutes(db, symbols, *, day: Optional[str] = None,
                          period: str = "5", now: Optional[datetime] = None,
                          fetch=None, gap: float = GAP_SEC,

@@ -264,13 +264,20 @@ def check_minute_feed(data_db, symbols, today: str, now: Optional[datetime] = No
                     f"{detail}——**没有当天分钟线**：日内采集未跑"
                     f"（{'盘中' if in_session else '非盘中'}）", on_red="归因/采集")
     if latest and in_session:
+        from paper_trading.data.minute import latest_expected_ts
+
+        # 陈旧度 = "此刻该有的一根"与"库里最新一根"差多少分钟——不能用墙钟：
+        # 11:30 收午盘后到 13:00 之间没有新 bar 是**正确**的行为。
+        want = latest_expected_ts(today, "5", tn)
         try:
-            lag = (tn - datetime.fromisoformat(str(latest))).total_seconds() / 60.0
+            lag = 0.0 if not want else (
+                (datetime.fromisoformat(want)
+                 - datetime.fromisoformat(str(latest)[:16])).total_seconds() / 60.0)
         except ValueError:
-            lag = 0.0
+            lag = (tn - datetime.fromisoformat(str(latest))).total_seconds() / 60.0
         if lag > max_lag_min:
             return item("minute_feed", "分钟线供给（新线命脉）", "red",
-                        f"{detail}；盘中陈旧 {lag:.0f} 分钟（阈值 {max_lag_min}）",
+                        f"{detail}；比此刻该有的一根滞后 {lag:.0f} 分钟（阈值 {max_lag_min}）",
                         on_red="归因/采集")
     return item("minute_feed", "分钟线供给（新线命脉）", "green", detail,
                 on_red="归因/采集")

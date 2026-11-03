@@ -253,9 +253,54 @@ def test_minute_feed_red_when_no_today_bars_in_session(data_db_with_minutes):
 
 
 def test_minute_feed_red_when_intraday_stale(data_db_with_minutes):
+    """库里最新 14:25、此刻该有 14:50 ⇒ 滞后 25 分钟 > 阈值 20 ⇒ 红。"""
     r = mv.check_minute_feed(data_db_with_minutes, ["002192"], "2026-10-30",
-                             now=datetime(2026, 10, 30, 14, 50), executor="rqalpha")
-    assert r["status"] == "red" and "陈旧" in r["detail"]
+                             now=datetime(2026, 10, 30, 14, 55), executor="rqalpha")
+    assert r["status"] == "red" and "滞后" in r["detail"], r["detail"]
+
+
+def test_minute_feed_lunch_break_is_not_stale(data_db_with_minutes):
+    """11:30 收午盘后库里就停在 11:30 是**对的**——按墙钟判会把午休每小时弄红一次。
+
+    现网 11-03 12:09 的真实误报：960 行 / 40 只、最新 11:30，红字写"陈旧 40 分钟"。
+    """
+    from paper_trading.data.db_manager import DataDBManager
+
+    db = DataDBManager(str(data_db_with_minutes.db_path))
+    with __import__("sqlite3").connect(str(db.db_path)) as c:
+        c.execute("INSERT INTO minute_bars (symbol,ts,open,high,low,close,volume,amount,period)"
+                  " VALUES ('000651','2026-11-03T11:30:00',10,10,10,10,100,1000,'5')")
+        c.commit()
+    r = mv.check_minute_feed(db, ["000651"], "2026-11-03",
+                             now=datetime(2026, 11, 3, 12, 9), executor="rqalpha")
+    assert r["status"] == "green", r["detail"]
+
+
+def test_minute_feed_goes_red_again_after_lunch(tmp_path):
+    """午后恢复交易却一整段没落库 ⇒ 报警必须重新响（午休豁免不是免死金牌）。"""
+    from paper_trading.data.db_manager import DataDBManager
+
+    db = DataDBManager(tmp_path / "d.db")
+    with __import__("sqlite3").connect(str(db.db_path)) as c:
+        c.execute("INSERT INTO minute_bars (symbol,ts,open,high,low,close,volume,amount,period)"
+                  " VALUES ('000651','2026-11-03T11:30:00',10,10,10,10,100,1000,'5')")
+        c.commit()
+    # 13:11 时"该有"的是 13:05 那根（下午首根是 13:05，见 expected_slots 的约定）
+    r = mv.check_minute_feed(db, ["000651"], "2026-11-03",
+                             now=datetime(2026, 11, 3, 13, 11), executor="rqalpha")
+    assert r["status"] == "red" and "滞后" in r["detail"], r["detail"]
+
+
+def test_latest_expected_ts_walks_the_session_clock():
+    from paper_trading.data.minute import latest_expected_ts
+
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 9, 20)) is None
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 9, 36)) == "2026-11-03T09:35"
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 12, 9)) == "2026-11-03T11:30"
+    # 下午首根是 13:05（`expected_slots` 的既有约定），13:05 当时还没收完 ⇒ 仍是 11:30
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 13, 5)) == "2026-11-03T11:30"
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 13, 11)) == "2026-11-03T13:10"
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 15, 30)) == "2026-11-03T15:00"
 
 
 def test_minute_feed_green_and_not_applicable(data_db_with_minutes):
