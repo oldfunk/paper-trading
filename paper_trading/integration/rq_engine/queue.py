@@ -187,6 +187,15 @@ def resolve_outcomes(intents: list[dict], posted: list[dict], orders: list[dict]
                             "result": {"reason": "幂等命中：当日同款已成交"}})
             stats["executed_idempotent"] += 1
             continue
+        if status == "INSTRUMENT_UNAVAILABLE":
+            # bundle 里没这只标的（北交所/未收录新股）：当场 rejected 并给出原因，
+            # 否则它会在队列里一直"等"到次日被 expire_stale 悄悄清掉（丢单且不可归因）
+            updates.append({"biz_id": bid, "status": "rejected",
+                            "result": {"reason": str(o.get("message")
+                                                     or "标的不在 bundle 里"),
+                                       "order_status": status}})
+            stats["rejected"] += 1
+            continue
         if status == "SKIPPED_DUPLICATE":
             # 会话内去重挡下的第二条同款意图：账本里**没有**它的成交，
             # 标 executed 就是"意图数与成交笔数对不上"的那种假账

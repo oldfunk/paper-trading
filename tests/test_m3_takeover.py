@@ -253,9 +253,54 @@ def test_minute_feed_red_when_no_today_bars_in_session(data_db_with_minutes):
 
 
 def test_minute_feed_red_when_intraday_stale(data_db_with_minutes):
+    """库里最新 14:25、此刻该有 14:50 ⇒ 滞后 25 分钟 > 阈值 20 ⇒ 红。"""
     r = mv.check_minute_feed(data_db_with_minutes, ["002192"], "2026-10-30",
-                             now=datetime(2026, 10, 30, 14, 50), executor="rqalpha")
-    assert r["status"] == "red" and "陈旧" in r["detail"]
+                             now=datetime(2026, 10, 30, 14, 55), executor="rqalpha")
+    assert r["status"] == "red" and "滞后" in r["detail"], r["detail"]
+
+
+def test_minute_feed_lunch_break_is_not_stale(data_db_with_minutes):
+    """11:30 收午盘后库里就停在 11:30 是**对的**——按墙钟判会把午休每小时弄红一次。
+
+    现网 11-03 12:09 的真实误报：960 行 / 40 只、最新 11:30，红字写"陈旧 40 分钟"。
+    """
+    from paper_trading.data.db_manager import DataDBManager
+
+    db = DataDBManager(str(data_db_with_minutes.db_path))
+    with __import__("sqlite3").connect(str(db.db_path)) as c:
+        c.execute("INSERT INTO minute_bars (symbol,ts,open,high,low,close,volume,amount,period)"
+                  " VALUES ('000651','2026-11-03T11:30:00',10,10,10,10,100,1000,'5')")
+        c.commit()
+    r = mv.check_minute_feed(db, ["000651"], "2026-11-03",
+                             now=datetime(2026, 11, 3, 12, 9), executor="rqalpha")
+    assert r["status"] == "green", r["detail"]
+
+
+def test_minute_feed_goes_red_again_after_lunch(tmp_path):
+    """午后恢复交易却一整段没落库 ⇒ 报警必须重新响（午休豁免不是免死金牌）。"""
+    from paper_trading.data.db_manager import DataDBManager
+
+    db = DataDBManager(tmp_path / "d.db")
+    with __import__("sqlite3").connect(str(db.db_path)) as c:
+        c.execute("INSERT INTO minute_bars (symbol,ts,open,high,low,close,volume,amount,period)"
+                  " VALUES ('000651','2026-11-03T11:30:00',10,10,10,10,100,1000,'5')")
+        c.commit()
+    # 13:11 时"该有"的是 13:05 那根（下午首根是 13:05，见 expected_slots 的约定）
+    r = mv.check_minute_feed(db, ["000651"], "2026-11-03",
+                             now=datetime(2026, 11, 3, 13, 11), executor="rqalpha")
+    assert r["status"] == "red" and "滞后" in r["detail"], r["detail"]
+
+
+def test_latest_expected_ts_walks_the_session_clock():
+    from paper_trading.data.minute import latest_expected_ts
+
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 9, 20)) is None
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 9, 36)) == "2026-11-03T09:35"
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 12, 9)) == "2026-11-03T11:30"
+    # 下午首根是 13:05（`expected_slots` 的既有约定），13:05 当时还没收完 ⇒ 仍是 11:30
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 13, 5)) == "2026-11-03T11:30"
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 13, 11)) == "2026-11-03T13:10"
+    assert latest_expected_ts("2026-11-03", "5", datetime(2026, 11, 3, 15, 30)) == "2026-11-03T15:00"
 
 
 def test_minute_feed_green_and_not_applicable(data_db_with_minutes):
@@ -567,3 +612,40 @@ def test_rq_tick_threshold_not_in_defaults():
     """没切换的部署不该被 rq_tick 假红 ⇒ 它不进 DEFAULT_THRESHOLDS。"""
     assert "rq_tick" not in hb.DEFAULT_THRESHOLDS
     assert hb.RQ_TICK_THRESHOLD == 900
+
+
+# ============================ ②c bundle 覆盖边界（T59 现网照出的第三条静默路径）
+def test_mark_unavailable_settles_symbols_the_bundle_does_not_have(monkeypatch):
+    """bundle 里没有的标的（北交所 920 段）必须当场定局，不许一直"等"到明天。
+
+    现网 2026-11-03：池里 `920156` 而 bundle 的 28,063 只里 `.BJ` 为 0，
+    `bar_dict[ob]` 抛异常被当成"这分钟没 bar"跳过 ⇒ IdleSpin 闸响过之后，
+    意图仍以 queued 状态挂到次日被 `expire_stale` 清掉——机会丢了且原因不可见。
+    """
+    plan = [intent("b-bj", symbol="920156", decided_at="2026-11-03T11:20:00"),
+            intent("b-ok", symbol="002192", decided_at="2026-11-03T11:20:00")]
+    st = _SessionState(plan, executed_ids=set())
+    settled = st.mark_unavailable({"002192.XSHE"})
+    assert settled == ["b-bj"]
+    rec = [o for o in st.orders if o["biz_id"] == "b-bj"][0]
+    assert rec["status"] == "INSTRUMENT_UNAVAILABLE" and "920156.BJ" in rec["message"]
+    assert not [o for o in st.orders if o["biz_id"] == "b-ok"]   # 在 bundle 里的不受影响
+    out = Q.resolve_outcomes(plan, [], st.orders, st.submits, set(st.unavailable))
+    got = {u["biz_id"]: (u["status"], u["result"].get("reason", "")) for u in out["updates"]}
+    assert got["b-bj"][0] == "rejected" and "920156.BJ" in got["b-bj"][1]
+    assert out["stats"]["kept"] == 1                            # b-ok 仍在正常路径上等 bar
+
+
+def test_mark_unavailable_distinguishes_no_table_from_empty_table():
+    """"问不到表"与"问到了、这些标的都不在表里"是两件事（现网重跑照出来的）。
+
+    上一版把两者混成 `if not known: return []`，于是**整跳标的都不在 bundle**
+    的情况（现网 920156 单独触发时正是这样）一条都不定局；而"问不到表"确实
+    该什么都不做——不许靠猜测判死一条意图。
+    """
+    st = _SessionState([intent("b1", symbol="920156")], executed_ids=set())
+    assert st.mark_unavailable(None) == []          # 问不到表 ⇒ 不判
+    assert st.orders == []
+    st2 = _SessionState([intent("b1", symbol="920156")], executed_ids=set())
+    assert st2.mark_unavailable(set()) == ["b1"]    # 问到了且为空 ⇒ 全部定局
+    assert st2.orders[0]["status"] == "INSTRUMENT_UNAVAILABLE"

@@ -26,11 +26,15 @@ class AkshareFetcher:
 
     @staticmethod
     def _sina_symbol(symbol: str) -> str:
-        if symbol.startswith("6"):
-            return f"sh{symbol}"
-        if symbol.startswith(("8", "4")):
-            return f"bj{symbol}"
-        return f"sz{symbol}"
+        """交易所前缀（口径唯一，见 `utils/markets.py`）。
+
+        旧写法在这里独立判过一次市：`920xxx`（北交所新段）被判成 `sz920xxx`
+        ⇒ 新浪返回空表（`KeyError 'date'`）⇒ 回落东财又连接被断 ⇒
+        `920156` 的 raw 日线**一根都没有**（2026-11-03 现网实据）。
+        """
+        from paper_trading.utils import markets
+
+        return markets.sina_symbol(symbol)
 
     @staticmethod
     def _rows_to_bars(symbol: str, df, adjust: Optional[str] = None) -> list[Bar]:

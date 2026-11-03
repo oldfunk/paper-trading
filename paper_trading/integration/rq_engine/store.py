@@ -13,7 +13,7 @@ numpy 结构化数组，字段至少 `datetime/open/close/high/low/volume/total_
 from __future__ import annotations
 
 import math
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Iterable, Optional
 
 import numpy as np
@@ -45,16 +45,20 @@ class BandMissingError(RuntimeError):
 
 
 def to_order_book_id(symbol: str) -> str:
-    code = str(symbol or "").strip().zfill(6)
-    if code[0] in ("6", "9"):
-        return f"{code}.XSHG"
-    if code[0] in ("4", "8"):
-        return f"{code}.BJ"
-    return f"{code}.XSHE"
+    """6 位码 → rqalpha `order_book_id`（口径唯一，见 `utils/markets.py`）。
+
+    旧写法按首字符判市：`920156`（北交所新段）被判成 `920156.XSHG`——
+    挂错交易所，撮合要么找不到标的、要么拿错 band/日历（T60 现网实据）。
+    """
+    from paper_trading.utils import markets
+
+    return markets.order_book_id(symbol)
 
 
 def to_symbol(order_book_id: str) -> str:
-    return str(order_book_id).split(".")[0]
+    from paper_trading.utils import markets
+
+    return markets.from_order_book_id(order_book_id)
 
 
 def _d2i(d: date) -> int:
@@ -251,15 +255,34 @@ class RawMinuteBarStore:
         self.problems: list[str] = []
 
     @classmethod
-    def from_data_db(cls, db, symbols, *, today=None, require_bands: bool = True):
+    def from_data_db(cls, db, symbols, *, today=None, require_bands: bool = True,
+                     require_prev_close: bool = True):
         """从 `minute_bars`（period=5）读当日及历史分钟线。
 
         prev_close/带：从 `daily_bars_raw` 日线序列取（每分钟 bar 的带 =
         所属交易日的 [前日 close × 档位]）；日线 raw 缺该日则该日分钟拒供。
+
+        `require_prev_close`（T60，默认开）：**当日那根的 prev_close 必须来自
+        "上一个交易日"的 raw close**，不许拿更早的收盘凑。旧写法在 raw 缺 T-1 时
+        退回"最近可得日的 close"——11-03 现网 raw 只到 10-30（15:40 采集早于源
+        发布当日 bar），当天涨跌停带就会用**两个交易日前**的收盘算，band 是撮合
+        判涨跌停的唯一依据（`matcher/base.py:207-218`），错档=错判涨跌停，
+        而且从日志上完全看不出来。缺 T-1 的标的现在记进 `gate_rejected` 并拒供。
         """
+        from paper_trading.utils.trading_calendar import is_trading_day
+
         today_d = _as_date(today) if today is not None else date.today()
+        prev_d = None
+        if require_prev_close and today_d is not None:
+            d = today_d
+            for _ in range(20):
+                d = d - timedelta(days=1)
+                if is_trading_day(d):
+                    prev_d = d
+                    break
         data: dict[str, list] = {}
         day_pc: dict[str, dict] = {}
+        rejected: dict[str, str] = {}
         for s in symbols:
             sym = to_symbol(s) if "." in str(s) else str(s)
             mrows = db.get_minute_bars(sym, period="5", limit=100000)
@@ -267,6 +290,11 @@ class RawMinuteBarStore:
                 continue
             # 日线 raw 序列 → 每日 prev_close（同日分钟共用）
             drows = db.get_raw_bars(sym, limit=400) or []
+            if require_prev_close and prev_d is not None and                     prev_d.isoformat() not in {str(r.timestamp)[:10] for r in drows}:
+                have = max((str(r.timestamp)[:10] for r in drows), default="无")
+                rejected[sym] = (f"prev_close_missing: 当日带需要 {prev_d.isoformat()}"
+                                 f" 的 raw 收盘，表里最新只到 {have}")
+                continue
             pc_by_day: dict[str, tuple] = {}
             closes = [(str(r.timestamp)[:10], float(r.close)) for r in drows]
             closes.sort()
@@ -277,6 +305,10 @@ class RawMinuteBarStore:
             data[str(s)] = mrows
         store = cls(data, today=today_d, require_bands=require_bands,
                     day_prev_close=day_pc)
+        store.gate_rejected = rejected
+        if rejected:
+            logger.warning("T60 当日 prev_close 不齐，拒供：%s",
+                           dict(list(rejected.items())[:8]))
         return store
 
     def _build(self, bars_by_symbol: dict[str, list],

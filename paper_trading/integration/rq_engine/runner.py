@@ -187,7 +187,8 @@ def session_fingerprint(cfg: dict, intraday: bool = False) -> str:
 
 def check_session_gates(evidence: dict, plan: list, *, handler_calls: int,
                         settle_expected: int = 1,
-                        expect_transfer_fee: bool = False) -> dict:
+                        expect_transfer_fee: bool = False,
+                        settled_biz=()) -> dict:
     """会话后置门禁（纯函数，可离线测）。"""
     counts = evidence.get("event_counts") or {}
     trades = evidence.get("trades") or []
@@ -198,7 +199,14 @@ def check_session_gates(evidence: dict, plan: list, *, handler_calls: int,
     provider = evidence.get("provider") or {}
     if provider.get("restore_errors"):
         errors.append(f"PersistState: {provider['restore_errors']}")
-    ordered = [p for p in plan if p.get("action") in ("buy", "sell") and p.get("volume")]
+    # settled_biz：会话自己给出过结论的意图（`INSTRUMENT_UNAVAILABLE`/
+    # `SKIPPED_EXECUTED`/`SKIPPED_DUPLICATE`）。这些单子**没走到框架**，
+    # 但原因是有的——把它们也算成"静默失败"就会在已经解释清楚的事情上喊
+    # "静默失败"（11-03 现网第一跑就是这样：920156 已被判 rejected，
+    # gates 还在报 IdleSpin，报警一旦失真就没人再信它）。
+    settled = {str(b) for b in (settled_biz or ())}
+    ordered = [p for p in plan if p.get("action") in ("buy", "sell") and p.get("volume")
+               and str(p.get("biz_id") or "") not in settled]
     if ordered and not trades and not rejects:
         errors.append("IdleSpin: 计划有下单，但既无成交也无拒单原因（静默失败）")
     # T38 裁决 5：要收过户费却没装上 = 费率口径悄悄回到"框架无过户费"，
@@ -297,9 +305,13 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
         err = describe_error(exc)
     evidence = (json.loads(Path(evidence_path).read_text(encoding="utf-8"))
                 if Path(evidence_path).exists() else {})
+    settled_biz = {str(o.get("biz_id") or "") for o in st.orders
+                   if str(o.get("status", "")).startswith(("INSTRUMENT_UNAVAILABLE",
+                                                            "SKIPPED"))} - {""}
     verdict = check_session_gates(evidence, plan, handler_calls=len(st.handler_dates),
                                   settle_expected=1 if not state_dir else 1,
-                                  expect_transfer_fee=cfg["mod"]["ptpaper"]["transfer_fee_rate"] > 0)
+                                  expect_transfer_fee=cfg["mod"]["ptpaper"]["transfer_fee_rate"] > 0,
+                                  settled_biz=settled_biz)
     done = False
     if gate and err is None and verdict["ok"]:
         gate.mark_done(date.fromisoformat(today), fp,
@@ -311,6 +323,7 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
         "today": today, "plan": plan, "error": err, "fingerprint": fp,
         "handler_dates": st.handler_dates, "orders": st.orders,
         "submits": st.submits, "waiting": st.final_waiting(),
+        "unavailable": st.unavailable,
         "snapshots": st.snapshots, "evidence": evidence, "gates": verdict,
         "session_marked_done": done, "evidence_path": evidence_path,
     }
@@ -338,6 +351,7 @@ class _SessionState:
         #: 一条意图一个会话只定一次局（日内续跑会重放当天全部 bar，不设这道闸
         #: 同一 biz_id 会在早盘记一条、晚盘再记一条，归因表拿"最后一条"当结论）
         self._handled: set = set()
+        self._avail_done = False
         self.handler_dates: list = []
         self.orders: list = []
         self.snapshots: list = []
@@ -346,6 +360,8 @@ class _SessionState:
         self.submits: list = []
         self.waiting: list = []
         self._waiting_seen: set = set()
+        #: bundle 里没这只标的的 biz_id（`mark_unavailable` 填）
+        self.unavailable: list = []
 
     @staticmethod
     def intent_key(symbol, side: str, volume: int) -> str:
@@ -393,14 +409,94 @@ class _SessionState:
                                     "last_price": round(float(p.last_price), 4)}
         return out
 
+    def mark_unavailable(self, known_order_book_ids) -> list:
+        """把"bundle 里根本没有的标的"当场定局（T59 现网实据）。
+
+        2026-11-03 现网：股票池 11-02 进了 `920156`（北交所），而 bundle 的
+        28,063 只标的里 **`.BJ` 有 0 只** ⇒ 这只标的新引擎**天生买不了**：
+        `bar_dict[ob]` 抛异常被当成"这分钟还没 bar"跳过 ⇒ 意图永远 `waiting`、
+        到次日才被 `expire_stale` 悄悄清掉——机会丢了且没人知道是为什么。
+        这里给它一个显式结论：`INSTRUMENT_UNAVAILABLE`（归因侧判 rejected，
+        规则第二天可以重新触发）。
+        """
+        if known_order_book_ids is None:
+            return []            # **问不到表**才什么都不做（IdleSpin 闸在后面兜着）
+        known = {str(k) for k in known_order_book_ids}
+        # 空集合是合法答案——"这一跳的标的**全都不在** bundle 里"正是现网 920156
+        # 那一幕。上一版把 None 与 set() 混成一件事（`if not known`），于是单只
+        # 北交所意图的会话里一条都不定局，照样挂到明天被 expire_stale 悄悄清掉。
+        out = []
+        for act in self.plan:
+            bid = str(act.get("biz_id") or "")
+            ob = to_order_book_id(act["symbol"])
+            if not bid or bid in self._handled or ob in known:
+                continue
+            if str(act.get("action") or "").lower() not in ("buy", "sell"):
+                continue
+            self._handled.add(bid)
+            self.orders.append({"biz_id": bid, "symbol": ob,
+                                "side": str(act.get("action") or "").upper(),
+                                "quantity": int(act.get("volume") or 0),
+                                "status": "INSTRUMENT_UNAVAILABLE", "filled": 0,
+                                "message": f"bundle 里没有 {ob}（北交所/未收录新股？）"
+                                           f"——新引擎买不了，规则可重新触发"})
+            out.append(bid)
+        return out
+
+    def _known_order_book_ids(self, context):
+        """问框架要"这些标的在不在标的表里"；问不动就返回 None（**不猜**）。
+
+        口径按 rqalpha 6.4.2 的实际入口排：`data_proxy.instrument(oid)`
+        （`Environment.get_instrument` 是它的 deprecated 外壳，
+        `environment.py` 里就一行转发），再退到 `context.instruments`。
+        两个口都拿不到 ⇒ 返回 None ⇒ 什么都不判（IdleSpin 闸仍在后面兜）。
+        """
+        from rqalpha.environment import Environment
+
+        env = Environment.get_instance()
+        proxy = getattr(env, "data_proxy", None)
+        getter = getattr(proxy, "instrument", None)
+        if getter is None:
+            getter = getattr(env, "get_instrument", None)
+        if getter is None:
+            getter = getattr(context, "instruments", None)
+        if getter is None:
+            return None
+        known = set()
+        for act in self.plan:
+            ob = to_order_book_id(act["symbol"])
+            try:
+                ok = getter(ob) is not None
+            except Exception:               # noqa: BLE001 - 取不到=不在标的表里
+                ok = False
+            if ok:
+                known.add(ob)
+        return known
+
+    def ensure_availability_checked(self, context) -> None:
+        """一个会话只定一次局：把 bundle 里没有的标的当场判掉（失败不拖垮会话）。"""
+        if self._avail_done:
+            return
+        self._avail_done = True
+        try:
+            known = self._known_order_book_ids(context)
+            if known is not None:
+                self.unavailable = self.mark_unavailable(known)
+        except Exception:                   # noqa: BLE001 - 定局失败不许拖垮会话本身
+            self.unavailable = []
+
     def before_trading(self, context):
         self.snapshots.append(self._snap(context, "before_trading"))
+        self.ensure_availability_checked(context)
 
     def handle_bar(self, context, bar_dict):
         from rqalpha.api import order_shares
 
         now = getattr(context, "now", None)
         self.handler_dates.append(str(now)[:10])
+        # 日内续跑会话**不跳 before_trading**（T13 §4.7），所以这道定局也必须挂在
+        # 第一根 bar 上，否则 resumed 跳里永远不执行。
+        self.ensure_availability_checked(context)
         for act in self.plan:
             if act.get("action") not in ("buy", "sell") or not act.get("volume"):
                 continue
