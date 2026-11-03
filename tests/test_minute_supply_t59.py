@@ -105,7 +105,11 @@ def test_intraday_collect_heartbeat_ok_when_no_errors(sandbox, monkeypatch):
                                       "amount": 1.0} for s in slots], period="5")
     monkeypatch.setattr(mn, "fetch_minute",
                         lambda *a, **k: pytest.fail("库里已齐就不该再打接口"))
-    sys.argv = args + ["minute", "sync", "--intraday", "--symbols", "002192", "--json"]
+    # 时钟必须钉住：这一条原先用真表钟跑，11-03 下午 14:35 之后跑就自己红了
+    # （库里种到 14:35，而"该有的一根"跟着真实时刻走到 15:00 ⇒ 判定为缺料去打接口）。
+    # 这正是 T53 点名的"跑在某个时间点才绿的测试等于没有测试"，这次是我自己写的。
+    sys.argv = args + ["minute", "sync", "--intraday", "--symbols", "002192",
+                       "--now", now.isoformat(), "--json"]
     try:
         hb.main()
     except SystemExit as e:

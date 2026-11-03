@@ -119,47 +119,18 @@ def _as_int(v) -> Optional[int]:
 
 def _ask_llm(cfg, prompt: str, system: str, timeout: float, retries: int,
              max_tokens: int = 8192, thinking: str = "disabled") -> str:
-    """带超时重试的 LLM 调用（只重试超时；Key 不进错误信息由 provider 保证）。
+    """决策路径的 LLM 调用：现在是 `provider.chat_with_retry` 的薄壳（T64）。
 
-    thinking="disabled" 时透传厂商开关，关掉 chain-of-thought：
-    格式受限的 JSON 决策不需要思考过程，开着只会烧掉输出预算
-    （曾实测 3220 thinking tokens 挤掉答案导致空返回）。
-
-    但有些模型**始终思考**（GLM 5.3 系列，HTTP 400 / 1210 "不支持关闭思考"），
-    这时降到 low 档（思考预算最小）再试一次——不能因为一个透传参数把整条链路打死。
+    原来这段自己实现超时重试 + thinking 透传降级，问答路径另写一份且没抄全，
+    于是出现"决策带 timeout、问答用 LLMConfig 默认"的接线断层（30 秒超时那次）。
+    逻辑提到 provider 之后两条路径共用同一份落点，签名保持不变是因为
+    既有测试与调用点都按位置传参。
     """
-    from paper_trading.llm.provider import LLMError
-    from paper_trading.llm.provider import chat as _chat
+    from paper_trading.llm.provider import chat_with_retry
 
-    cfg.timeout = timeout
-    cfg.max_tokens = max_tokens
-
-    def _attempt(extra: dict) -> str:
-        cfg.extra_body = extra
-        last: Exception | None = None
-        for attempt in range(retries + 1):
-            try:
-                return _chat(cfg, [{"role": "user", "content": prompt}],
-                             system=system)
-            except Exception as e:  # noqa: BLE001 - 仅超时重试，其余直接抛
-                last = e
-                if "timed out" not in str(e).lower() \
-                        and "timeout" not in str(e).lower():
-                    raise
-                if attempt >= retries:
-                    raise
-        raise last or RuntimeError("LLM unreachable")
-
-    extra = {"thinking": {"type": "disabled"}} if thinking == "disabled" else {}
-    try:
-        return _attempt(extra)
-    except LLMError as e:
-        if thinking == "disabled" and "1210" in str(e):
-            # 始终思考的模型：思考也占输出预算，给足（至少 4096），
-            # 否则"只剩思考、没有答案"（真机在 2048 上撞过）
-            cfg.max_tokens = max(int(max_tokens or 0), 4096)
-            return _attempt({"thinking": {"type": "enabled", "level": "low"}})
-        raise
+    return chat_with_retry(cfg, [{"role": "user", "content": prompt}], system,
+                           timeout=timeout, retries=retries,
+                           max_tokens=max_tokens, thinking=thinking)
 
 
 def today_str() -> str:

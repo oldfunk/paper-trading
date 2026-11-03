@@ -1107,15 +1107,42 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 ## Batch 14 · AI 问答性能（主 AI 派发 2026-11-03 · 用户报"手动发消息超时"）
 
-- [ ] **T63（Qoder，P1·性能）llm_context 瘦身**：现网 `llm_context()` = **97,285 字符（≈3 万 token）**——账户+持仓+**全池 38 只 × 5 天日线**（190 条 bar）+ 母库附加段。复杂问题模型要消化 97KB 才回话（修复后 timeout 120s 下仍需 **77 秒**）。目标：**问答典型响应 ≤20 秒**。
-  - [ ] 分级压缩设计（沿用 agent.context_budget 的分级思路）：
-    - 账户/持仓/规则/熔断态 = **必带**（小）
-    - 日线 bar：**只带持仓 + 池内 Top N**（或只带最近 1-2 天全池 + 5 天仅持仓）——
-      咨询场景 90% 问题用不到全池历史
-    - 母库附加段（财务/AI 分析/论点）：按问题相关性或条数上限截断
-  - [ ] `llm_ask` 加 `symbols`/精简参数（面板咨询可指定"只看我的持仓"）
-  - [ ] 请求体 token 量进日志（可观测）；`report-t63.md`：压缩前后体积/延迟对照
-  - [ ] 测试锁定（上下文体积上限断言 + 压缩不丢关键字段）
+- [x] **T63（Qoder，P1·性能）llm_context 瘦身**（`report-t63-llm-context.md`）：现网 `llm_context()` = **97,285 字符（≈3 万 token）**——账户+持仓+**全池 38 只 × 5 天日线**（190 条 bar）+ 母库附加段。复杂问题模型要消化 97KB 才回话（修复后 timeout 120s 下仍需 **77 秒**）。目标：**问答典型响应 ≤20 秒**。
+  - [x] 分级压缩设计（沿用 agent.context_budget 的分级思路）——**先测了体积在哪**：
+        原始装配 253,677 字符里 `value_view.stock_cards` 占大头（股息史 26,850 /
+        追踪 11,590 / 财务摘要 7,997 / 基本面 6,591 / AI 分析 4,361），
+        `recent_closes` 14,677、`screening` 12,246、`news` 6,466；
+        而旧压缩阶梯一级都没碰到它们 ⇒ 预算 8000/4000/2000/1000 输出**全是 97,910 字符**
+        （裁到哪与预算无关，超预算 3.5 倍也不报告）。派发里的 97,285 是旧压缩**之后**的数
+    - [x] 账户/持仓/**熔断态**=必带：熔断态此前**根本不在上下文里**（11-02 那次
+          "为什么没交易"模型只能猜）⇒ 新增 `risk_control` 段（`RiskManager.describe()`
+          只读版，不在问答路径锚定日亏基线）；provenance/account/positions/legend
+          压到极限也不裁（测试钉住）
+    - [x] 日线只带持仓 + 池内参考：`_HELD_CLOSES=5 / _POOL_CLOSES=1`，问答口径装配时就取 1 根
+    - [x] 母库附加段截断：池内候选的股息史/追踪/论点**整段丢**、财务摘要收窄到 3 键、
+          AI 分析截 160 字；持仓走 HELD 配额（股息 3 / 追踪 3 / 分析 400）；
+          筛选 8 行 + 理由 100 字 + 去 score_detail；要闻 10 条 + 摘要 80 字；
+          仍超预算再逐级丢 `pool_fundamentals→news→screening→pool_cards`，
+          **压到地板就如实报 `within_budget=False`**（地板现网 5,549 估算 token）
+  - [x] `llm_ask` 加 `symbols`/精简参数：`llm_ask(..., symbols=None, slim=True, max_tokens=None)`
+        + CLI `--symbols/--full/--max-tokens` + 面板 body 同入口
+  - [x] 请求体 token 量进日志：`op_log[llm:ask]` 的 params 加 `req_chars/req_tokens/req_max_tokens/slim/symbols`，
+        result.context 落压缩元信息（前后体积/裁了什么/是否达标）；另加一行 logger.info。
+        `report-t63.md` 体积/延迟对照见其 §4
+  - [x] 测试锁定：`tests/test_context.py` 重写 12 例（"预算不同体积必须不同"、
+        到地板稳定且不谎报、持仓 vs 池内分级、四段永不裁、压缩失败不许静默）；
+        改旧用例的理由写在文件头——旧假数据把体积大头放在会被裁的字段上，与真实分布相反
+  - 🔧 **必须回报的一条与派发假设不同的实测**：**响应时间不由上下文主导**。
+        同一问题、同端点、同 120s 超时：请求体 99,668 字符/`max_tokens=4096` ⇒ **82.4s**；
+        请求体 24,312 字符（3.5× 少）/`max_tokens=8192` ⇒ **74.9s**；
+        同样上下文 `max_tokens=1200` ⇒ **28.3s**（真实输出都约 650 token、答案都 1000+ 字、
+        `finish=stop` 未截断，`reasoning_content` 0 字排除"思考吃预算"）。
+        ⇒ 该端点按 `max_tokens` **上限**预留解码。我把问答预算独立成 `ASK_MAX_TOKENS=1536`
+        （实测 28.3~45.5s），**没为了凑 20 秒把上限压到 ~1000**——那会悄悄截断长答案，
+        而 `finish_reason=length` 目前不告知用户。要真正到 ≤20s：先加截断信号，再谈更小默认值
+        （见 questions.md）
+  - 🔧 顺带（同类别，见 T64）：问答路径此前**不带** `llm_retries/llm_max_tokens/llm_thinking`
+        （只有 timeout 被 475f994 补上），并把它收敛成 `provider.chat_with_retry` 一个原语
 - 背景（主 AI 已修的两层，勿重做）：① `llm/ask` 误列写门禁（已去）
   ② `agent.llm_timeout` 漏传进 LLMConfig（timeout 30→120 已修，77s 验证通过）
 
@@ -1125,15 +1152,36 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 > 背景：本次两个 bug 都是**类别性问题**——① `agent.llm_timeout` 定义了但构造 LLMConfig 时漏传（配置接线断层）② `llm/ask` 只读接口被误列写门禁（门禁清单误伤）。
 > **指令：这两类问题由 Qoder/Hermes 系统性消灭，出工具+测试+报告，不再逐个报主 AI。**
 
-- [ ] **T64（Qoder，P0·接线完整性）配置接线全量审计**：
-  - [ ] 扩展 `tests/wiring_audit.py`（或新脚本）：覆盖**跨对象传递**断层面
+- [x] **T64（Qoder，P0·接线完整性）配置接线全量审计**（`report-t64-wiring-audit.md`）：
+  - [x] 扩展 `tests/wiring_audit.py`（或新脚本）：覆盖**跨对象传递**断层面
     （本次漏传类别：`AgentConfig.llm_timeout` → `LLMConfig.timeout`；同类还有
     哪些配置字段"定义了、默认值对、但消费点拿不到"？）
-  - [ ] 全仓扫描：`AgentConfig`/`LLMConfig`/`TradingConfig` 的字段 → 实际
-    消费点（grep + 反射）；**列出"零消费"与"构造漏传"清单**
-  - [ ] 修复清单里的全部漏项（逐个接线 + 单测锁定）；`report-t64.md`：
-    审计方法 + 漏项清单 + 修复对照
-  - [ ] 门禁化：`wiring_audit` 退出码非 0 = 有断层（并入 CI 口径）
+    - [x] v2 四类尺子：①零消费（搬运层之外读点=0，AST 按节点语义判定：
+          `obj.f`/`obj["f"]`/`.get("f")`/`getattr(o,"f")` 算读，而 `Foo(f=1)` 的 kwarg、
+          `{"f": 1}` 的字面量键、`f: int = 1` 的声明**都不算**——v1 把它们算成"用过了"，
+          所以那一栏永远绿）；②LLM 请求侧**传递矩阵**（行=每个真发请求的调用点，
+          列=4 个 `llm_*`，供给认三路：路径引用／构造点喂目标参数／经 `_ask_llm` 间接层，
+          **调用点给字面量单独判"硬编码覆盖"**）；③yaml⇄归一化⇄字段三面白名单；
+          ④构造点供给（识别 `RiskManager(**risk_kwargs)` 这类整体摊派）
+    - [x] 答案"同类还有哪些"：`llm_ask` 问答路径不带 `llm_retries/llm_max_tokens/llm_thinking`；
+          `design_conditions` 把重试次数**硬编码 1**（`改 config 无效`）
+  - [x] 全仓扫描 → 清单：6 个面（AgentConfig 27／LLMConfig 7／TradingConfig 9／
+        EventConfig 8／RiskManager 6／engine.DEFAULTS 10）。
+        **零消费 0 项、三面白名单断层 0 条**（v0.7.6 补的 news_*/require_* 都在位），
+        矩阵断层 2 处 = 上面那两条；另记 3 条"不算断层但要看一眼"：
+        `LLMConfig.extra_body/max_tokens` 构造点走默认（由调用方按路径覆写，设计如此）、
+        `EventConfig.max_symbols` 无配置面（带理由豁免）、`LLMConfig.temperature` 无面板项
+  - [x] 修复清单里的全部漏项 + 单测锁定 + `report-t64.md`：**修法不是各补各**——
+        把"配置怎么落到请求上"提到 `provider.chat_with_retry`（超时重试 + 1210
+        不支持关思考时降 low 档并重给预算），`_ask_llm` 变薄壳（签名不变），
+        问答与条件单设计共用一个原语；`design_conditions` 改传 `agent.llm_retries`。
+        测试 `tests/test_wiring_t64.py` 15 例：5 例证明**检测器对合成源码真会红**
+        （否则门禁是摆设），8 例是行为级"改配置 ⇒ 请求里真的变"（timeout/thinking/retries/
+        预算覆盖/只重试超时不重试其他错），1 例门禁本体，1 例"豁免必须带理由"
+  - [x] 门禁化：`python tests/wiring_audit.py` 退出码 0=无未豁免断层／1=有断层；
+        并随 pytest 跑（`test_audit_gate_passes_on_the_repo`），无需额外 CI 接线。
+        误报代价我付过一次（中间版本报 5 处、3 处是假的：嵌套闭包与正则截断实参），
+        修完之后矩阵只剩真信号——**门禁哭狼的次数比它漏报的次数更值得防**
 - [ ] **T65（Hermes，P0·门禁语义）端点门禁清单审查**：
   - [ ] 逐个核对 `dashboard.py` 所有 `_admin_ok` 保护端点 vs **真实语义**
     （读/写/资金/配置）——输出"应保护/不应保护"对照表；
@@ -1145,4 +1193,12 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   - [ ] `report-t65.md`
 - [ ] **T66（Hermes，P1·验收）T64/T65 交付审查**：接线修复的变异验证 +
   门禁测试的完备性（有无"该保护的没保护"反向漏洞）
+
+> Qoder 交付状态（2026-11-03 晚）：T63/T64 已交并在 `worker/t63-t64-perf-wiring`
+> （`4340715` 审计 v2 + 压缩分级 + `80250d4` 问答预算），**未合并**；
+> 全量 701 passed / 9 skipped，`tests/wiring_audit.py --quiet` → 断层：无。
+> T66 审查 T64 时请特别看：① 矩阵的检测语义（三路供给 + 硬编码判定）会不会漏掉
+> 别的间接层；② `chat_with_retry` 收敛是否改变决策路径行为（我判定不变，签名与降级分支都保留）；
+> ③ 问答耗时归因（`report-t63.md` §4）是否需要补那一格 2×2（脚本 `/home/nec/tmp/t63_grid.py`，
+> 上次跑到一半 SSH 被重置）。
 '@; git add -A; git commit -m "chore(worker): Batch 15 systematic defenses per user - T64 config wiring full audit (cross-object passing like llm_timeout->LLMConfig), T65 endpoint auth semantic audit + lock-in tests, T66 review; goal: this class of bug stops recurring" 2>&1 | Select-Object -Last 1; git push origin main 2>&1 | Select-Object -Last 1
