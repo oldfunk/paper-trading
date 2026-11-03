@@ -1202,3 +1202,25 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 > ③ 问答耗时归因（`report-t63.md` §4）是否需要补那一格 2×2（脚本 `/home/nec/tmp/t63_grid.py`，
 > 上次跑到一半 SSH 被重置）。
 '@; git add -A; git commit -m "chore(worker): Batch 15 systematic defenses per user - T64 config wiring full audit (cross-object passing like llm_timeout->LLMConfig), T65 endpoint auth semantic audit + lock-in tests, T66 review; goal: this class of bug stops recurring" 2>&1 | Select-Object -Last 1; git push origin main 2>&1 | Select-Object -Last 1
+
+## Batch 16 · 拍板落地（主 AI 派发 2026-11-03 晚 · 批复见 questions.md）
+
+- [ ] **T67（Qoder，P1·问答体验）截断信号 + 配置面 + 真实 token + CI 门禁**：
+  - [ ] "答案被截断"可见信号：`finish_reason=length` 必须在回答里显式标注
+    （面板/CLI 都可见；静默截断=纪律问题）
+  - [ ] `agent.ask_max_tokens` 配置键（config.yaml + 读取链 + wiring 测试；
+    缺省 1536 不变；CLI `--max-tokens`/面板 body 已可达，接线到配置）
+  - [ ] `context_budget` 真实 token：透出 `usage.prompt_tokens`（`chat()` 目前
+    丢弃 usage）→ 预算按真实 token 定；留痕同时记估算值与真实值
+  - [ ] `wiring_audit` 进 `.github/workflows/test.yml` 独立步骤（退出码非 0
+    直接告警）
+  - [ ] `report-t67.md`
+- [ ] **T68（Qoder，P1·T66 三切入点）**：
+  - [ ] 2×2 归因缺格重跑（`/home/nec/tmp/t63_grid.py`：大上下文×小预算格）
+  - [ ] 矩阵三路供给判定复核（静态读点之外的间接层）
+  - [ ] `chat_with_retry` 与旧 `chat` 行为等价性（超时重试/思考透传降级
+    不改变决策路径语义）
+  - [ ] **engine/strategy 行为级断言**（第 5 件拍板）：合成配置 + 跑一轮
+    tick 的行为测试（"接了线但路径不跑"类别，如 legacy 路径在 rqalpha
+    底座下）；`report-t68.md`
+
