@@ -1119,3 +1119,30 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 - 背景（主 AI 已修的两层，勿重做）：① `llm/ask` 误列写门禁（已去）
   ② `agent.llm_timeout` 漏传进 LLMConfig（timeout 30→120 已修，77s 验证通过）
 
+
+## Batch 15 · 接线与门禁的系统性防御（主 AI 派发 2026-11-03 · 用户指令：这类小问题不该再出现，交给员工搞定）
+
+> 背景：本次两个 bug 都是**类别性问题**——① `agent.llm_timeout` 定义了但构造 LLMConfig 时漏传（配置接线断层）② `llm/ask` 只读接口被误列写门禁（门禁清单误伤）。
+> **指令：这两类问题由 Qoder/Hermes 系统性消灭，出工具+测试+报告，不再逐个报主 AI。**
+
+- [ ] **T64（Qoder，P0·接线完整性）配置接线全量审计**：
+  - [ ] 扩展 `tests/wiring_audit.py`（或新脚本）：覆盖**跨对象传递**断层面
+    （本次漏传类别：`AgentConfig.llm_timeout` → `LLMConfig.timeout`；同类还有
+    哪些配置字段"定义了、默认值对、但消费点拿不到"？）
+  - [ ] 全仓扫描：`AgentConfig`/`LLMConfig`/`TradingConfig` 的字段 → 实际
+    消费点（grep + 反射）；**列出"零消费"与"构造漏传"清单**
+  - [ ] 修复清单里的全部漏项（逐个接线 + 单测锁定）；`report-t64.md`：
+    审计方法 + 漏项清单 + 修复对照
+  - [ ] 门禁化：`wiring_audit` 退出码非 0 = 有断层（并入 CI 口径）
+- [ ] **T65（Hermes，P0·门禁语义）端点门禁清单审查**：
+  - [ ] 逐个核对 `dashboard.py` 所有 `_admin_ok` 保护端点 vs **真实语义**
+    （读/写/资金/配置）——输出"应保护/不应保护"对照表；
+    读接口误伤（如本次 llm/ask）= P0 项
+  - [ ] **测试锁定**：每个写端点"无 token 必 403"、每个读端点"无 token 必 通"
+    （防未来再误伤/再放宽）；发现误伤直接修 + 回归
+  - [ ] 顺带审：`_takeover_token` 接管路径的边界（哪些端点允许 Key 接管、
+    哪些必须原生 token）——与 AGENTS「LLM 接入安全」条款逐条对照
+  - [ ] `report-t65.md`
+- [ ] **T66（Hermes，P1·验收）T64/T65 交付审查**：接线修复的变异验证 +
+  门禁测试的完备性（有无"该保护的没保护"反向漏洞）
+'@; git add -A; git commit -m "chore(worker): Batch 15 systematic defenses per user - T64 config wiring full audit (cross-object passing like llm_timeout->LLMConfig), T65 endpoint auth semantic audit + lock-in tests, T66 review; goal: this class of bug stops recurring" 2>&1 | Select-Object -Last 1; git push origin main 2>&1 | Select-Object -Last 1
