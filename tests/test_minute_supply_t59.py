@@ -188,3 +188,62 @@ def test_idle_spin_stops_shouting_when_the_session_already_explained_it():
     ok = check_session_gates(ev, plan, handler_calls=240,
                              settled_biz={"920156_BUY_100@2026-11-03T11:20:00"})
     assert not any("IdleSpin" in e for e in ok["errors"]), ok["errors"]
+
+
+# ==================================== T60：当日带的 prev_close 必须是"上一个交易日"
+class _Row:
+    def __init__(self, ts, close):
+        self.timestamp = ts
+        self.close = close
+
+
+class _FakeDB:
+    """只给 store 用到的两个读口：分钟线与 raw 日线。"""
+
+    def __init__(self, raw_days, minute_days=("2026-11-03",)):
+        self.raw_days, self.minute_days = raw_days, minute_days
+
+    def get_minute_bars(self, sym, period="5", limit=1):
+        return [{"ts": f"{d}T09:35:00", "open": 10.0, "high": 10.1, "low": 9.9,
+                 "close": 10.0, "volume": 100.0, "amount": 1000.0}
+                for d in self.minute_days]
+
+    def get_raw_bars(self, sym, limit=400):
+        return [_Row(f"{d} 00:00:00", 10.0 + i) for i, d in enumerate(self.raw_days)]
+
+
+def test_minute_store_refuses_when_prev_close_would_come_from_an_older_day():
+    """raw 只到 10-30 而会话日是 11-03 ⇒ 必须拒供，而不是拿 10-30 的收盘算 11-03 的带。
+
+    现网 11-03 早上就是这个状态（15:40 采集早于源发布当日 bar ⇒ raw 缺 11-02）。
+    band 是 rqalpha 判涨跌停的唯一依据（`matcher/base.py:207-218`），
+    错档=错判涨跌停，而且旧写法从任何日志里都看不出来。
+    """
+    from paper_trading.integration.rq_engine.store import RawMinuteBarStore
+
+    db = _FakeDB(["2026-10-29", "2026-10-30"])
+    st = RawMinuteBarStore.from_data_db(db, ["002192"], today="2026-11-03")
+    assert st.order_book_ids() == []
+    assert "prev_close_missing" in st.gate_rejected.get("002192", ""), st.gate_rejected
+    assert "2026-11-02" in st.gate_rejected["002192"]          # 说得清缺哪一天
+
+
+def test_minute_store_supplies_when_prev_close_is_the_last_trading_day():
+    from paper_trading.integration.rq_engine.store import RawMinuteBarStore
+
+    db = _FakeDB(["2026-10-30", "2026-11-02"])
+    st = RawMinuteBarStore.from_data_db(db, ["002192"], today="2026-11-03")
+    assert st.gate_rejected == {} and st.order_book_ids() == ["002192.XSHE"]
+    bars = st.get_bars("002192.XSHE")
+    assert bars["limit_up"][-1] > bars["limit_down"][-1] > 0
+    # 当日带 = 11-02 收盘（序列最后一个值 11.0）× 1.1（主板 10%）
+    assert abs(float(bars["limit_up"][-1]) - 12.1) < 0.02
+
+
+def test_minute_store_gate_can_be_disabled_for_troubleshooting():
+    from paper_trading.integration.rq_engine.store import RawMinuteBarStore
+
+    db = _FakeDB(["2026-10-29", "2026-10-30"])
+    st = RawMinuteBarStore.from_data_db(db, ["002192"], today="2026-11-03",
+                                     require_prev_close=False)
+    assert st.order_book_ids() == ["002192.XSHE"] and st.gate_rejected == {}
