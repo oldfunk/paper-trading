@@ -712,8 +712,12 @@ class TradingBridge:
             raise LLMError("LLM 未配置（先在面板或 llm-config 填写接口地址；"
                            "本地接口不用 Key）")
         # 本地/局域网接口允许无 Key：provider 在 Key 为空时不发 Authorization 头
+        # 2026-11-03 修复：timeout 漏传——agent.llm_timeout（默认 120）没进
+        # LLMConfig（默认 30），而 llm_context 快照达 97KB（≈3 万 token），
+        # 复杂问题 30s 必然 read timeout（用户报"手动发消息超时"）。
+        _to = getattr(getattr(self, "agent_cfg", None), "llm_timeout", 120.0)
         return LLMConfig(base_url=p["base_url"], api_key=p.get("api_key", ""),
-                         model=p.get("model", ""))
+                         model=p.get("model", ""), timeout=float(_to or 120.0))
 
     def llm_models(self) -> dict:
         """拉取远端模型列表（Key 不出本机，只返回 id）。
