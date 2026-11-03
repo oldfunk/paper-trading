@@ -1082,25 +1082,70 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 > `peak-reset-backup-20261103.db`），熔断解除、engine 恢复（armed=9、quotes 在）。
 > 新暴露三个数据供给缺口（引擎本身无故障）：
 
-- [ ] **T59（Qoder，P0·分钟供给）盘中采集链闭环**：
+- [x] **T59（Qoder，P0·分钟供给）盘中采集链闭环**（`report-t59-minute-feed.md`）：
   - [x] 主 AI 已装盘中采集 cron（`6,21,36,51 9-15 * * 1-5` 脚本
     `deploy/m3_minute_intraday.sh`，每 15 分钟补当日分钟线）
-  - [ ] 验证：**m3 verify 的 `minute_feed`/`heartbeat(minute)` 两项回绿**；
-    tick 日志出现当日分钟供给自证；若 15 分钟粒度不足 → 评估加密到 5 分钟
-  - [ ] `ensure_today_minutes()` 触发路径复核（tick 消费前自证供给是否覆盖
-    --intraday 采集的 bar 时间戳语义）
-- [ ] **T60（Qoder，P0·raw 日线）raw_gate 未翻转 5 只归因**：
+  - [x] 验证：**两项都回绿**——11-03 12:49 现网 `m3 verify` = 绿 7 / 警 5 / **红 0**，
+        `minute_feed`「今天 960 行 / 40 只；最新 11:30」、`heartbeat` minute=828s（应跳）；
+        tick 日志每 5 分钟一跳且 `--json` 带 `minute_feed` 自证字段。
+        **粒度结论：15 分钟够用，不加密**——钱类路径不依赖那条 cron（`rq tick` 本跳
+        `ensure_today_minutes()` 自采，延迟 ≤ 一根 bar）；改 5 分钟只把新浪请求量翻三倍。
+        但这条链上查出 **5 处缺陷**并全修（北交所分段错、午休假红、陈旧度按墙钟算、
+        缺口留痕重复刷、bar 时间戳把未收完的一根落进库）
+  - [x] `ensure_today_minutes()` 触发路径复核 + `--intraday` 时间戳语义：新增
+        `completed_slots(period, now)`（**严格早于当前分钟**才落库，进行中的那根永不入库），
+        会话侧 `RawMinuteBarStore` 只吃已收完的 bar；逐标返回 `{written, latest, missing, error}`
+- [x] **T60（Qoder，P0·raw 日线）raw_gate 未翻转 5 只归因**（`report-t60-raw-gate.md`）：
   现网 `m3 verify` raw_gate 红：stale/未翻转 = `['000333','000651','000858',
   '600036','600276']`。归因：母库参照滞后？fetch-raw 覆盖缺口？T50 闸语义边界？
   **给结论 + 修复/白名单决策**（母库数据问题→转 stock-dashboard 对话；
   子项目闸语义→修+测试）
+  - [x] **结论：三类都不是"5 只"**——派发里的 5 只是我自己 `stale[:5]` 截断造成的误读。
+        实况是 ① **11-02 全池缺当日 raw**：15:40 采集早于数据源发布 T 日日线（昨天跑
+        时实测 `intraday_no_today_bar=38`，今天 10:40 同源已能取到 11-02）；
+        ② 新入池标的（000426/920156）在当天采集**之后**才进池，且 `added_at` 是 UTC
+        （16:30 本地）；③ 北交所标的被市场前缀判错，分钟/实时/日线/盘口/涨跌停带
+        **同时瞎**。"5 只"里一只 920156 属 ③，其余属 ①
+  - [x] 修复（子项目侧，带测试）：`_market_prefix` 等 5 处市场判定收敛成
+        `paper_trading/utils/markets.py` 单源（纪律 7）；`RawMinuteBarStore` 的当日带
+        prev_close 必须是**上一交易日**，缺了就拒供并点名（旧带 44.50 vs 应 44.97 ⇒
+        limit_up 48.95/49.47，每股 0.47 元错价可成交，现网库副本 A/B 实证）；
+        cron 加 `40 8` 盘前 + `40 20` 盘后两班 fetch-raw；920156 补 126 行、000426 补 744 行
+  - [x] 转母项目（不动母项目代码）：报告 §4 写了三条请求——母库 `tc_encode` 有同一个
+        北交所前缀 bug、`close_raw` 发布时点晚于我们 15:40 的采集窗口、北交所标的在
+        rqalpha bundle 里 **0 只**（28,063 instruments 无 `.BJ`，意图永不成交 ⇒ 现已
+        `INSTRUMENT_UNAVAILABLE` 定局为 rejected 而不是静默挂着）
+  - [x] 白名单决策：**不建白名单**——三类都是可修的供给/口径问题，不是标的本身不该交易；
+        唯一需要决策的是"北交所进不进池"，那要等 bundle 有 `.BJ` 或由主 AI 决定排除
 - [ ] **T61（Hermes，P1·工具语义）m3 verify 红绿语义审查**：今天 3 red 中
   `minute_feed`（盘中 0 行）与 `heartbeat(minute)`（应跳未跳）在**采集 cron
   装上前后**的语义是否合理；`raw_gate` 红时 on_red="回退"的判定在切换期
   是否过严。产出 `report-t61.md`（审查不改码，除非纯工具参数问题）
-- [ ] **T62（Qoder，P1·流程）状态清理工具**：本次峰值遗留的通用防御——
+- [x] **T62（Qoder，P1·流程）状态清理工具**（`report-t62-reset-state.md`）：本次峰值遗留的通用防御——
   账户重置/账本迁移/新开账时必须清理的**状态字段清单**（`risk_state` 的
   peak/daily_baseline、`engine_state` 熔断态等）+ 实现 `cli ledger reset-state`
   （显式命令 + 留痕 op_log[ledger:reset-state]）+ 迁移流程文档补
   "重置后必清" checklist；测试锁定
+  - [x] 清单 **14 项**落成代码单源 `paper_trading/ledger_state.py::TARGETS`
+        （halt/ghost/throttle/report 四类，每项带 why+action）：peak、daily_baseline、
+        未决意图、armed 条件单、`var/rq_state/<日>` 会话目录、fired、budget、cooldown、
+        trigger-once、event 节流 + 4 项**只报不清**（逾期 T+1、意图/账本口径冲突、
+        心跳、清单没见过的新键）。键的分布是现网副本实测出来的，不是猜的
+  - [x] `cli ledger reset-state`：默认 dry-run、`--yes` + `--reason` 必填、
+        `--keep/--only/--today/--state-root/--stamp`；留痕 `op_log[ledger:reset-state]`
+        带**清理前原值**；钱类 7 表（account/positions/orders/fills/nav_history/
+        t1_freeze/op_log）前后快照必须逐字相同，越界即回滚 + 会话目录改名回退；
+        无态可清时不写第二份留痕；有红报时退出码 1
+  - [x] 文档：`migration-m3.md` §10「重置后必清」表格**由清单渲染**，测试比对两边
+        id 序列一致（纪律 7）；`m3-checklist.md` §5 补一条"账本重置不在 verify 射程里"
+  - [x] `ledger archive` 现在报出自己清不掉的部分（会话目录不在库里，重开账本碰不到它，
+        而 `intraday_resume` 会把它接进新账）⇒ 返回 `reset_state_pending` 并进留痕
+  - [x] 测试锁定 26 例（周一孤儿峰值/孤儿基线的复现-解除、钱类越界回滚、幂等无第二份痕、
+        只报项不许被 --only 混清、真 `cli.main()` 接线 4 例）；全量 **704 passed / 9 skipped**
+  - [x] 现网库副本 5 轮试跑：清 59 项、钱类不动、留痕不多写；生产 md5
+        `d3b85438950377dcc8806a0028317a26` 前后同值；**生产工作树未切分支、cron 未动**
+  - [x] 顺手照出我自己两处 CLI 失真（dry-run TypeError、no-op 自称 dry-run），
+        各补接线测试（`9e3ae70`/`147b396`）
+  - [ ] 待主 AI 裁决（工具只报不清的两件）：002192 的 T+1 逾期未解冻（新线上没有
+        解冻入口这件事本身要不要立项）、切换日 3 条意图与订单 #13 的口径冲突谁真谁假
 
