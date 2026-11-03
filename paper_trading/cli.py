@@ -1412,7 +1412,8 @@ def main() -> None:
 
     # ledger（T47-G3/G4：执行底座可见性 + 切换前的冷备归档/新开账）
     ledger_parser = subparsers.add_parser(
-        "ledger", help="账本底座工具（executor 只读查看；archive 冷备旧账后新开）")
+        "ledger", help="账本底座工具（executor 只读查看；archive 冷备旧账后新开；"
+                       "reset-state 清旧账运行态留痕）")
     ledger_sub = ledger_parser.add_subparsers(dest="ledger_command")
     ledger_ex = ledger_sub.add_parser(
         "executor", help="只读：当前执行底座 + 最近的切换/回退留痕")
@@ -1428,7 +1429,31 @@ def main() -> None:
                              help="目标账本已有持仓/成交时仍允许原地重开（默认拒绝）")
     ledger_arch.add_argument("--yes", action="store_true",
                              help="二次确认：这个命令会删掉当前账本文件（已先归档）")
+    ledger_arch.add_argument("--state-root", default="var/rq_state",
+                             help="会话状态根目录：归档后只**报**它还留着多少旧状态"
+                                  "（清它用 ledger reset-state）")
     ledger_arch.add_argument("--json", action="store_true")
+    # T62：账本重置后的运行态清理（默认 dry-run，只报计划）
+    ledger_rs = ledger_sub.add_parser(
+        "reset-state",
+        help="T62：清掉旧账留下的运行态（风控峰值/日亏基线/熔断态/未决意图/"
+             "已挂条件单/会话目录）；默认只体检，--yes 才写")
+    ledger_rs.add_argument("--yes", action="store_true",
+                           help="二次确认：真的清并写 op_log[ledger:reset-state]")
+    ledger_rs.add_argument("--reason", default=None,
+                           help="为什么重置（--yes 时必填，会进留痕）")
+    ledger_rs.add_argument("--today", default=None, help="业务日 YYYY-MM-DD（默认今天）")
+    ledger_rs.add_argument("--state-root", default="var/rq_state",
+                           help="会话状态根目录（当日子目录会被挪开，不删）")
+    ledger_rs.add_argument("--heartbeat", default=None,
+                           help="心跳文件路径（只报不清；不给则找 var/heartbeat.json）")
+    ledger_rs.add_argument("--keep", nargs="*", default=[],
+                           help="清单里显式不清的项 id（会写进留痕）")
+    ledger_rs.add_argument("--only", nargs="*", default=[],
+                           help="只处理这些项（默认=清单里全部必清项）")
+    ledger_rs.add_argument("--stamp", default=None,
+                           help="会话目录改名的时间戳后缀（默认当前时刻）")
+    ledger_rs.add_argument("--json", action="store_true")
 
     # rq（T32：rqalpha 底座的一天一会话 / 双轨影子对照 / 状态体检）
     rq_parser = subparsers.add_parser(
@@ -2180,12 +2205,76 @@ def main() -> None:
                 try:
                     out = _ld.archive_and_reopen(
                         bridge.broker.db_path, args.archive_dir,
-                        stamp=args.stamp, allow_existing=args.allow_existing)
+                        stamp=args.stamp, allow_existing=args.allow_existing,
+                        state_root=args.state_root)
                 except (FileNotFoundError, RuntimeError) as exc:
                     emit(None, ok=False, error=str(exc))
                     sys.exit(1)
                 out["account_db"] = str(bridge.broker.db_path)
+                if out.get("reset_state_pending"):
+                    # 账本重开了，库外的旧状态还在——不报出来就是让下一次
+                    # intraday_resume 接旧账跑（T62 清单第 6 条）
+                    print(f"🔴 新账已就位，但旧状态仍在外头：{out['reset_state_pending']}"
+                          f"（清它：ledger reset-state --yes --reason …）",
+                          file=sys.stderr)
                 emit(out)
+            elif lc == "reset-state":
+                import sqlite3 as _sq3
+
+                from paper_trading import ledger_state as _lst
+
+                kw = {"today": args.today, "state_root": args.state_root,
+                      "heartbeat": args.heartbeat, "keep": tuple(args.keep or ()),
+                      "only": tuple(args.only or ()), "stamp": args.stamp}
+                try:
+                    if getattr(args, "yes", False):
+                        out = _lst.apply_reset(bridge.broker.db_path, bridge.broker,
+                                               reason=args.reason, **kw)
+                    else:
+                        out = _lst.plan(bridge.broker.db_path, **kw)
+                        out["dry_run"] = True
+                        out["applied"] = False
+                except (ValueError, RuntimeError, FileNotFoundError) as exc:
+                    emit(None, ok=False, error=str(exc))
+                    sys.exit(1)
+                if getattr(args, "json", False):
+                    emit(out)
+                else:
+                    mode = ("已清并留痕" if out.get("applied")
+                            else "dry-run（没写任何东西；--yes 才动手）")
+                    print(f"账本：{bridge.broker.db_path}｜{mode}")
+                    items = (out.get("items") or [])
+                    for it in items:
+                        if it["count"] == 0 and not it.get("will_clear"):
+                            continue
+                        mark = "🧹" if it.get("will_clear") else "🔴"
+                        print(f"  {mark} {it['id']}（{it['label']}｜{it['kind']}）"
+                              f" {it['count']} 项：{it['why']}")
+                        for s in it.get("samples") or []:
+                            print(f"       {s}")
+                    for d in out.get("state_dirs_moved") or []:
+                        print(f"  ↪ 会话目录挪开：{d[0]} → {d[1]}")
+                    cl = out.get("cleared_by_target") or {}
+                    if cl:
+                        print(f"  合计清掉 {out.get('cleared')} 项："
+                              + "，".join(f"{k}={v}" for k, v in cl.items() if v))
+                    if out.get("no_op"):
+                        print("  " + out["note"])
+                    reds = out.get("red_reports") or [
+                        k for k, v in (out.get("reports") or {}).items()
+                        if v.get("count")]
+                    if reds:
+                        print(f"  🔴 只报不清（要人裁决）：{'、'.join(reds)}")
+                    m = out.get("money_before") or out.get("money") or {}
+                    print(f"  钱类对照（本命令不碰）：cash={m.get('cash')}"
+                          f" 持仓股数={m.get('position_volume')}"
+                          f" 行数={m.get('tables')}")
+                # 只报不清的项红了就是"别声称清干净了"——退出码跟着报，
+                # 免得脚本把 reset-state 的 0 当成"状态已一致"的凭据
+                reds = out.get("red_reports") or [
+                    k for k, v in (out.get("reports") or {}).items() if v.get("count")]
+                if reds:
+                    sys.exit(1)
             else:
                 parser.print_help()
                 sys.exit(2)

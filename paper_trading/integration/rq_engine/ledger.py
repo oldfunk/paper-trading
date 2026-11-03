@@ -207,10 +207,11 @@ def _table_rows(conn, table: str) -> int:
 
 
 def archive_and_reopen(account_db, archive_dir, *, stamp: Optional[str] = None,
-                       allow_existing: bool = False) -> dict:
+                       allow_existing: bool = False,
+                       state_root: str = "var/rq_state") -> dict:
     """冷备旧账 → 只读归档 → 原地新开一本并把起点对齐（T47-G4）。
 
-    五条不能含糊的规矩：
+    六条不能含糊的规矩：
     1. **先备份再动**目标文件：用 sqlite backup API（不是 `cp`）——`cp` 可能拷到
        事务中途，产出一份打不开的"归档"；备份按 `chmod 444` 只读落盘；
     2. **有人在写就拒绝**：`<db>-journal`/`-wal` 存在说明事务正进行中，这时删文件
@@ -224,8 +225,13 @@ def archive_and_reopen(account_db, archive_dir, *, stamp: Optional[str] = None,
        ——切换日刚买的票会永久卖不掉；
     5. **幂等可重入**：归档已存在不重复备份（同一 `--stamp` 重跑复用同份归档）；
        目标账本已有持仓/成交且没给 `allow_existing` 就直接拒绝。
+    6. **重开不等于状态干净**：KV 运行态随文件一起没了，但 `var/rq_state/<日>`
+       会话目录不在库里，删账本碰不到它——`rq tick` 的 intraday_resume 会把旧账的
+       portfolio 快照接进新账（钱类残留）。所以本命令只把它**报出来**
+       （`reset_state_pending`），清理交给显式的 `ledger reset-state`（T62）。
 
-    返回 `{archive, archive_rows, reopened, cash, positions, frozen, total_value, note}`。
+    返回 `{archive, archive_rows, reopened, cash, positions, frozen, total_value,
+    reset_state_pending, reset_state_reports, note}`。
     """
     src = Path(str(account_db))
     if not src.exists():
@@ -309,6 +315,12 @@ def archive_and_reopen(account_db, archive_dir, *, stamp: Optional[str] = None,
                  str(f["unfreeze_date"])))
     mv = sum(float(p["total_volume"]) * float(p["avg_cost"]) for p in positions)
     total = float(last_nav.get("total_value") or (float(cash) + mv))
+    # T62：重开账本抹不掉的东西只有会话状态目录（KV 态随文件一起没了）。
+    # 这里只**报**，不代 operator 决定——`rq tick` 的 intraday_resume 会把旧账的
+    # portfolio 快照接进新账，那是钱类残留，必须让下一步（reset-state）显式发生。
+    from paper_trading import ledger_state as _state
+
+    residue = _state.plan(src, state_root=state_root)
     broker.log_operation("ledger:archive",
                          {"archive": str(archive), "stamp": stamp,
                           "readonly": True, "reopen": True,
@@ -317,11 +329,15 @@ def archive_and_reopen(account_db, archive_dir, *, stamp: Optional[str] = None,
                          {"cash": float(cash), "positions": len(positions),
                           "frozen_rows": len(frozen), "total_value": round(total, 4),
                           "nav_anchor": str(last_nav.get("timestamp")),
-                          "archive_rows": archive_rows},
+                          "archive_rows": archive_rows,
+                          "reset_state_pending": residue["pending"],
+                          "reset_state_reports": residue["red_reports"]},
                          float(cash), total)
     return {"archive": str(archive), "archive_reused": archived["reused"],
             "archive_rows": archive_rows, "reopened": True, "cash": float(cash),
             "positions": len(positions), "frozen": len(frozen),
             "total_value": round(total, 4),
+            "reset_state_pending": residue["pending"],
+            "reset_state_reports": residue["red_reports"],
             "note": "旧账只读归档；新账起点=归档 cash + 持仓 + 未解冻的 T+1；"
                     "NAV 序列不搬，第一行由切换日收盘正常生成"}

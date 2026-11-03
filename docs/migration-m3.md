@@ -244,3 +244,65 @@ M3 行写的"cron 切 rqalpha 常驻（一天一进程）"**不一致**，请显
 - 结论：**新引擎（rqalpha 分钟会话）工作正常**，当日无成交是风控行为而非故障；
   状态清理工具（T62）防止同类"重置遗留"再发生。
 
+## 10. 重置后必清（T62 状态清理工具，2026-11-03）
+
+账户重置 / 账本迁移 / 新开账之后，**只重开账本不够**：库外的运行态不会跟着开。
+2026-11-02 周一就是这么炸的——`ledger archive` 式重开把 cash 改成新起点，
+而 `risk_state.peak_total_value` 还是旧账的 156,005.23，新账净值 100,189.96
+⇒ 回撤 35.7% > 20% ⇒ 全天零成交，次日被读成“迁移失败”（见 §9 之后的 11-03 补充）。
+
+清单本体在代码里（`paper_trading/ledger_state.py::TARGETS`，纪律 7）；
+下面这张表由它渲染，`tests/test_reset_state_t62.py` 逐条比对，文档与代码不许各说各话。
+
+| id | 名称 | 位置 | 类别 | 默认 | 留着会怎样 | 动作 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `risk_peak` | 风控峰值净值 | risk_state.peak_total_value | halt | 必清 | 峰值是旧账挣出来的，新账第一小时就被回撤熔断挡在门外（周一事故本体） | 删除该键，让峰值从新账的第一次观测重新锚定 |
+| `risk_daily_baseline` | 当日亏损基线 | risk_state.daily_baseline:<日> | halt | 必清 | 基线是旧账的总资产，日亏比例按旧尺子算 ⇒ 每轮都判熔断；现网 10-27 那行至今写着 156,005.23 | 删除全部 daily_baseline:* 键 |
+| `rq_intent_pending` | 未决意图队列 | rq_intents(status=pending/queued) | ghost | 必清 | 意图是旧账在某分钟做出的决定，重置后照样被 `rq tick` 消费 ⇒ 新账执行了它没做过的决定 | 逐条标 rejected（写原因、保留行——删掉就没法解释那天为什么没成交） |
+| `cond_armed` | 已挂条件单 | conditional_orders(status=armed) | ghost | 必清 | 条件单的价位与金额是按旧账的仓位/现金设的，重置后触发就是拿旧决定下单 | 逐条标 cancelled（想留的价挂单请在重置后重挂） |
+| `rq_session_state` | 引擎会话状态目录 | var/rq_state/<日> | ghost | 必清 | 同日续跑会恢复旧账的 portfolio/universe/挂单，新账直接接上旧持仓继续撮合 | 整目录改名 <日>.pre-reset-<时刻> 挪开（不删：钱类件的可恢复性优先） |
+| `engine_fired` | 规则当日已触发标记 | engine_state.fired:<日> | throttle | 必清 | 规则被记成「今天已经动过」，新账同一分钟再触发会被静默吞掉 | 删除 fired:* 键 |
+| `engine_budget` | 日内下单预算 | engine_state.budget:<日> | throttle | 必清 | 当日订单数/成交额预算已被旧账用掉 ⇒ 新账被判「超出预算」而不下单 | 删除 budget:* 键 |
+| `engine_cooldown` | 每标的冷却 | engine_state.cooldown:<标的> | throttle | 必清 | 冷却时间戳来自旧账的成交，新账白白等一段冷却（漏机会，不伤钱） | 删除 cooldown:* 键 |
+| `engine_trigger_once` | 拦截意图的单日一条留痕 | engine_state.trigger-once:* | throttle | 必清 | 开关拦截的流水标记留着 ⇒ 重置后同类拦截不再上面板，看着像「没发生」 | 删除 trigger-once:* 键（engine_triggers 流水表本身是历史，不动） |
+| `engine_event_throttle` | AI 事件评审节流 | engine_state.event:* | throttle | 必清 | event:last / event:sym:<标的> / event:budget:<日> 是上一本账的评审配额，留着会让新账少评审一轮（代价：重置后可能多花一次 LLM 调用） | 删除 event:* 键 |
+| `t1_unfreeze_overdue` | 逾期未解冻的 T+1 | t1_freeze | report | 只报不清 | 解冻只发生在 `run` / `agent tick` 的结算段；结算路径整日没跑，冻结股就一直 available=0（卖不掉）。重置工具无权替结算路径写持仓 | 报出来，跑一次结算路径或人工裁决 |
+| `intent_ledger_conflict` | 意图与账本口径冲突 | rq_intents × orders | report | 只报不清 | 标 rejected/expired 的意图在同源同日仍有成交，而原因又不是幂等/去重 ⇒ 队列与账本讲的是两个故事，先裁决哪边是真的，再谈清理 | 报出来（现网 10-30 切换日那三行就是这个形状） |
+| `heartbeat_file` | 心跳文件 | var/heartbeat.json | report | 只报不清 | 心跳记的是数据供给，不是账本状态；删掉反而让「装过才追问」的分钟采集项假绿 | 保留（只报当前键与最后时刻） |
+| `unknown_state_keys` | 清单没见过的状态键 | risk_state / engine_state | report | 只报不清 | 新代码往里写了新键而清单没跟上 ⇒ 旧账的运行态被静默留下，正是这次事故的形状；未知键必须冒出来，不许默默算「清干净了」 | 报出来，按纪律 7 把键补进本清单 |
+
+用法（默认 dry-run，看不见的不写）：
+
+```bash
+# 1) 先看计划：什么都不写，把每一项现状 + 钱类对照打出来
+python -m paper_trading.cli ledger reset-state
+
+# 2) 确认后动手：--reason 必填，会连同清理前的原值一起进留痕
+python -m paper_trading.cli ledger reset-state --yes \
+  --reason “11-03 账户重置：旧账峰值/基线是孤儿尺子”
+
+# 3) 想留一项就显式点名（会写进 op_log，事后可审计“谁决定留的”）
+python -m paper_trading.cli ledger reset-state --yes --reason … --keep cond_armed
+```
+
+三条硬规矩（细节在模块 docstring）：
+
+1. **只清运行态，绝不动钱类**：`account/positions/orders/fills/nav_history/t1_freeze/op_log` 一行不碰，前后快照必须逐字相同，越界即回滚并报错（`test_money_guard_rolls_back_when_a_target_oversteps` 钉着）；
+2. **清之前抄现场**：`op_log[ledger:reset-state]` 的 `result.cleared[*].before`
+   存清理前的键与值——切换日那次无留痕的改判已经吃过教训，不留痕的清理等于毁证；
+3. **只报不清的四项**（`t1_unfreeze_overdue` / `intent_ledger_conflict` /
+   `heartbeat_file` / `unknown_state_keys`）要人裁决：逾期 T+1 的解冻要写持仓，
+   是结算路径的活；意图与账本口径冲突要先定“哪边是真的”；心跳删了会让
+   “装过才追问”的分钟采集项假绿；清单没见过的键必须冒出来，不许默默算“清干净了”。
+   有红报时命令退出码 1，脚本不许把 0 当成“状态已一致”的凭据。
+
+`ledger archive`（G4 重开账本）现在也会报同一份清单里**它自己清不掉**的部分：
+库内 KV 态随文件一起没了，但 `var/rq_state/<日>` 会话目录不在库里——旧账的
+portfolio 快照留着，下一次 `rq tick` 的 `intraday_resume` 就会把它接进新账
+（钱类残留）。archive 的返回与留痕里多了 `reset_state_pending`，看到它就跑上面第 2 步。
+
+现网首次体检（2026-11-03，`/home/nec/paper-trading`，只读）真实照出两类红报：
+`t1_unfreeze_overdue` 1 条（002192 100 股，应于 11-02 解冻，结算路径没跑到 ⇒
+available 仍是 0），`intent_ledger_conflict` 2 条（10-30 切换日的两条 002192
+BUY_100 意图标 rejected 写着“no ledger fill”，而订单 #13 / 成交 #12 就躺在账里）。
+这两类都是“先裁决、后清理”的形状，`reset-state` 不会替人按下删除键。
