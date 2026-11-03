@@ -133,17 +133,27 @@ def bridge_with_llm(tmp_path, monkeypatch):
     return b, captured
 
 
-def test_qa_path_carries_agent_llm_knobs(bridge_with_llm):
-    """问答路径必须吃 `agent.llm_*`（11-03 那次只有 timeout 被补上，另外三个还是默认）。"""
+def test_qa_path_carries_timeout_and_thinking(bridge_with_llm):
+    """问答路径必须吃 `agent.llm_timeout/llm_thinking`（11-03 那次只有 timeout 被补上，
+    thinking 与 retries 还是 LLMConfig 自己的默认——等于面板问答从来不受配置控制）。"""
     b, cap = bridge_with_llm
     b.agent_cfg.llm_timeout = 77.0
-    b.agent_cfg.llm_max_tokens = 6000
     b.agent_cfg.llm_thinking = "disabled"
     out = b.llm_ask("现在仓位多少")
     assert out["ok"] is True, out
     assert cap["cfg_timeout"] == 77.0
-    assert cap["payload"]["max_tokens"] == 6000
     assert cap["payload"]["thinking"] == {"type": "disabled"}
+
+
+def test_qa_output_budget_is_ask_specific_and_overridable(bridge_with_llm):
+    """问答不继承决策的 8192：实测耗时跟着 max_tokens 上限走（11-03：8192→74.9s，
+    1200→28.3s，而两次真实输出都约 650 token）。默认走 ASK_MAX_TOKENS，可按次覆盖。"""
+    b, cap = bridge_with_llm
+    b.agent_cfg.llm_max_tokens = 8192
+    b.llm_ask("默认预算")
+    assert cap["payload"]["max_tokens"] == hb.ASK_MAX_TOKENS
+    b.llm_ask("这次要长一点", max_tokens=4000)
+    assert cap["payload"]["max_tokens"] == 4000
 
 
 def test_qa_path_honours_retries_only_on_timeout(bridge_with_llm, monkeypatch):

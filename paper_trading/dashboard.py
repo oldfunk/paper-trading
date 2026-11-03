@@ -1482,7 +1482,8 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("prompt", ""), body.get("system", ""),
                     symbols=syms or None,
                     # 默认精简（T63：咨询不需要全池历史）；面板显式传 slim=false 才带全量
-                    slim=bool(body.get("slim", True)))
+                    slim=bool(body.get("slim", True)),
+                    max_tokens=body.get("max_tokens") or None)
                 self._json(r, code=200 if r.get("ok") else 502)
             elif u.path == "/api/agent/schedule":
                 # 旧的手动队列已由代码运行时接管：不再允许面板改写。

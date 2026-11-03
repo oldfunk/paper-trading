@@ -90,6 +90,16 @@ def _ask_user_prompt(prompt: str, ctx: dict) -> str:
             "以上之外的持仓/成交/数字一律按「数据未提供」处理。）")
 
 
+#: 问答路径的输出预算（与决策路径的 `agent.llm_max_tokens=8192` 刻意不同）。
+#: 依据是 2026-11-03 现网实测（同一问题、同一上下文、thinking 都关）：
+#: max_tokens=8192 → 74.9s / 1200 → 28.3s，而两次实际输出都约 650 token、
+#: 答案都 1000+ 字且 finish_reason=stop——**耗时跟着上限走，不跟着真实输出走**。
+#: 所以问答直接继承决策那套 8192 就是白白让云端多留一倍的解码预算。
+#: 1536 是"够写完一段分析（实测 1200 时答案 1022 字未截断）+ 明显更快"的折中；
+#: 想更短可以按次传 `--max-tokens`，想彻底解决 20 秒目标要动的是端点/模型，不是上下文。
+ASK_MAX_TOKENS = 1536
+
+
 class TradingBridge:
     """
     交易编排层（应用总线）。
@@ -1002,7 +1012,8 @@ class TradingBridge:
         return out
 
     def llm_ask(self, prompt: str, system: str = "", *,
-                symbols: list[str] | None = None, slim: bool = True) -> dict:
+                symbols: list[str] | None = None, slim: bool = True,
+                max_tokens: Optional[int] = None) -> dict:
         """问 AI 一次（自动附带项目快照，结果记流水；Key 永不入库）。
 
         `symbols` 指定关注标的（面板"只看我的持仓"就传持仓代码）；不传=股票池+持仓。
@@ -1039,7 +1050,7 @@ class TradingBridge:
                           sys_prompt,
                           timeout=float(getattr(ag, "llm_timeout", 120.0) or 120.0),
                           retries=int(getattr(ag, "llm_retries", 1) or 0),
-                          max_tokens=int(getattr(ag, "llm_max_tokens", 8192) or 8192),
+                          max_tokens=int(max_tokens or ASK_MAX_TOKENS),
                           thinking=str(getattr(ag, "llm_thinking", "disabled")
                                        or "disabled"))
         except LLMError as e:
@@ -1051,7 +1062,8 @@ class TradingBridge:
             "llm:ask", {"model": cfg.model, "prompt": prompt[:500],
                         "with_context": True, "slim": bool(slim),
                         "symbols": list(symbols or [])[:20],
-                        "req_chars": chars, "req_tokens": tokens}, True,
+                        "req_chars": chars, "req_tokens": tokens,
+                        "req_max_tokens": int(max_tokens or ASK_MAX_TOKENS)}, True,
             {"answer": answer[:2000], "context": meta},
             st["cash"], st["total_value"])
         # 体积进日志：压缩有没有效、问答变没变快，必须能从日志里直接看出来（T63 可观测）
@@ -1360,6 +1372,9 @@ def main() -> None:
                          help="只看这些标的（如只传持仓代码）；不传=股票池+持仓")
     llm_ask.add_argument("--full", action="store_true",
                          help="按旧口径带全池历史（默认精简：1 根收盘 + 3 条流水）")
+    llm_ask.add_argument("--max-tokens", type=int, default=None,
+                         help=f"本次问答的输出预算，默认 {ASK_MAX_TOKENS}"
+                              "（实测：上限越大响应越慢，与答案长度无关）")
     llm_ask.add_argument("--json", action="store_true")
 
     # calendar（交易日历：akshare 同步 + 本地缓存）
@@ -1961,7 +1976,8 @@ def main() -> None:
             elif args.llm_command == "ask":
                 r = bridge.llm_ask(args.prompt, args.system,
                                    symbols=(args.symbols or None),
-                                   slim=not getattr(args, "full", False))
+                                   slim=not getattr(args, "full", False),
+                                   max_tokens=args.max_tokens)
                 emit(r, ok=r.get("ok", False), error=r.get("error"))
                 if not r.get("ok"):
                     sys.exit(3)
