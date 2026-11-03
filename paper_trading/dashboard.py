@@ -1477,7 +1477,12 @@ class Handler(BaseHTTPRequestHandler):
                 # 换浏览器/无 admin_token 时（模型设置完全正确）也报
                 # "口令错误或未设置"。内网面板 + 无 Key 时 llm_ask 自然失败，
                 # 保留审计留痕即可，不再要写口令。
-                r = self._bridge().llm_ask(body.get("prompt", ""), body.get("system", ""))
+                syms = [str(s) for s in (body.get("symbols") or []) if str(s).strip()]
+                r = self._bridge().llm_ask(
+                    body.get("prompt", ""), body.get("system", ""),
+                    symbols=syms or None,
+                    # 默认精简（T63：咨询不需要全池历史）；面板显式传 slim=false 才带全量
+                    slim=bool(body.get("slim", True)))
                 self._json(r, code=200 if r.get("ok") else 502)
             elif u.path == "/api/agent/schedule":
                 # 旧的手动队列已由代码运行时接管：不再允许面板改写。

@@ -98,7 +98,12 @@ class TradingBridge:
     - 封装交易框架的启动、运行、查询操作
     - 提供 CLI 接口供系统 cron / 外部 agent 调用
     - 提供 JSON 输出供机器解析
+
+    `last_context_meta`：最近一次 `llm_context()` 的压缩元信息（体积前后/丢了什么/
+    有没有压进预算）。只在内存里，不进请求体也不进账本，由 `llm_ask` 写进 op_log 留痕。
     """
+
+    last_context_meta: dict | None = None
 
     def __init__(
         self,
@@ -809,6 +814,10 @@ class TradingBridge:
                  "price": p["current_price"], "market_value": p["market_value"]}
                 for p in st["positions"]],
             "recent_closes": closes,
+            # 熔断态必带（T63 派发点：账户/持仓/规则/熔断态=必带）：11-02 那次账户被
+            # 孤儿峰值回撤熔断、全天零成交，而上下文里没有这件事——用户问"为什么没交易"，
+            # 模型只能猜。只读 describe()，不在问答路径里锚定日亏基线。
+            "risk_control": self.risk.describe(st["total_value"]),
             "recent_nav": [
                 {"time": r["timestamp"], "total": r["total_value"], "pnl": r["pnl"]}
                 for r in nav_hist],
@@ -822,6 +831,9 @@ class TradingBridge:
                 "positions": "真实持仓（唯一权威口径）；其他 key 里的股票都不是持仓。",
                 "recent_closes": "行情收盘价参考（覆盖股票池全部标的），仅供分析，不代表持仓。",
                 "recent_nav": "净值历史。",
+                "risk_control": "风控熔断态（peak=落库峰值、drawdown_pct 为自峰值回撤；"
+                                "*_halt=true 表示当前被该条规则拦住不下单）。"
+                                "零成交往往是这里拦的，不是行情或引擎故障。",
                 "recent_ops": "操作流水（含同步/问答/决策记录，不等于成交）。",
                 "value_view": "Stock Dashboard 只读富化（基本面/财务摘要/股息/论点/筛选/大盘/追踪），仅供参照。",
                 "data_provenance": "每个富化接口的数据来源与新鲜度（source/asof/stale）。"
@@ -970,36 +982,66 @@ class TradingBridge:
         except Exception:
             pass
         try:
-            # 上下文压缩：超预算才分级截断（provenance 永不被截断）
-            from paper_trading.agent.context import compress_context
+            # 上下文压缩：分级压到预算内（provenance 与持仓细节刻意保留）
+            from paper_trading.agent.context import shrink_to_budget
 
             budget = int(getattr(getattr(self, "agent_cfg", None),
                                  "context_budget", 8000) or 8000)
-            out = compress_context(out, budget)
-        except Exception:                       # noqa: BLE001
-            pass
+            out, meta = shrink_to_budget(out, budget)
+            self.last_context_meta = meta
+        except Exception as e:                # noqa: BLE001 - 压缩坏了不能静默当成"已压好"
+            # 纪律 4：旧写法是 `except Exception: pass`，于是"上下文根本没压"这件事
+            # 在现网没人看得见——97KB 照发，用户只看到"问答很慢/超时"。压缩是尽力而为的
+            # 优化，坏了不该拦问答，但必须把坏说清楚（留一行 warn 供日志与排查看）。
+            logger.warning(f"llm_context 压缩失败，按未压缩体积继续："
+                           f"{type(e).__name__}: {e}")
+            self.last_context_meta = {"reason": f"压缩失败：{type(e).__name__}: {e}",
+                                      "within_budget": None,
+                                      "before_chars": len(json.dumps(
+                                          out, ensure_ascii=False, default=str))}
         return out
 
-    def llm_ask(self, prompt: str, system: str = "") -> dict:
-        """问 AI 一次（自动附带项目快照，结果记流水；Key 永不入库）。"""
-        import json as _json
+    def llm_ask(self, prompt: str, system: str = "", *,
+                symbols: list[str] | None = None, slim: bool = True) -> dict:
+        """问 AI 一次（自动附带项目快照，结果记流水；Key 永不入库）。
 
+        `symbols` 指定关注标的（面板"只看我的持仓"就传持仓代码）；不传=股票池+持仓。
+        `slim=True` 时只带 1 根收盘与 3 条流水——咨询场景要的是"当前状态 + 持仓细节"，
+        不是全池历史（11-03 实测：97KB 里约 90% 是没人问的候选股股息史与筛选理由）。
+
+        请求侧参数一律走 `agent.*` 配置（T64 的修复点）：以前问答直接调 `chat()`，
+        拿的是 `LLMConfig` 自己的默认 max_tokens=4096 / thinking 不关 / 不重试，
+        与决策路径各写一份——`llm_timeout` 那次事故的另一半就在这里。
+        """
+        from paper_trading.agent.context import estimate_tokens, size_of
         from paper_trading.llm import LLMError
 
         prompt = (prompt or "").strip()
         if not prompt:
             return {"ok": False, "error": "问题不能为空"}
+        ag = getattr(self, "agent_cfg", None)
         try:
             cfg = self._llm_config()
-            ctx = self.llm_context()
+            ctx = self.llm_context(max_ops=3 if slim else 10,
+                                   max_nav=3 if slim else 5,
+                                   closes_n=1 if slim else 5,
+                                   symbols=symbols)
             base = system.strip() or ""   # 硬规则与持仓锚点始终追加，不接受覆盖
             sys_prompt = _ask_system_prompt(base, ctx)
+            user_prompt = _ask_user_prompt(prompt, ctx)
+            chars = size_of(sys_prompt) + size_of(user_prompt)
+            tokens = estimate_tokens(sys_prompt) + estimate_tokens(user_prompt)
+            meta = dict(getattr(self, "last_context_meta", None) or {})
             # 从定义模块导入（非包 re-export），便于单测替换
-            from paper_trading.llm.provider import chat as _chat
+            from paper_trading.llm.provider import chat_with_retry as _ask
 
-            answer = _chat(cfg, [{"role": "user",
-                                  "content": _ask_user_prompt(prompt, ctx)}],
-                           system=sys_prompt)
+            answer = _ask(cfg, [{"role": "user", "content": user_prompt}],
+                          sys_prompt,
+                          timeout=float(getattr(ag, "llm_timeout", 120.0) or 120.0),
+                          retries=int(getattr(ag, "llm_retries", 1) or 0),
+                          max_tokens=int(getattr(ag, "llm_max_tokens", 8192) or 8192),
+                          thinking=str(getattr(ag, "llm_thinking", "disabled")
+                                       or "disabled"))
         except LLMError as e:
             self.broker.log_operation("llm:ask", {"model": "", "prompt": prompt[:200]},
                                       False, {"error": str(e)}, None, None)
@@ -1007,9 +1049,16 @@ class TradingBridge:
         st = self.get_status()
         self.broker.log_operation(
             "llm:ask", {"model": cfg.model, "prompt": prompt[:500],
-                        "with_context": True}, True,
-            {"answer": answer[:2000]}, st["cash"], st["total_value"])
-        return {"ok": True, "model": cfg.model, "answer": answer}
+                        "with_context": True, "slim": bool(slim),
+                        "symbols": list(symbols or [])[:20],
+                        "req_chars": chars, "req_tokens": tokens}, True,
+            {"answer": answer[:2000], "context": meta},
+            st["cash"], st["total_value"])
+        # 体积进日志：压缩有没有效、问答变没变快，必须能从日志里直接看出来（T63 可观测）
+        logger.info("llm:ask 请求体 %s 字符 ≈ %s token（压缩：%s）",
+                    chars, tokens, meta.get("reason") or "未知")
+        return {"ok": True, "model": cfg.model, "answer": answer,
+                "context": {"chars": chars, "tokens": tokens, **meta}}
 
 
 def engine_min_ticket(config_path: str = "config.yaml") -> float:
@@ -1056,7 +1105,8 @@ def design_conditions(bridge, orders, *, pool_from: str = "auto",
                                  min_ticket=min_ticket, max_value=max_value)
     try:
         raw = _ask_llm(bridge._llm_config(), user_p, sys_p,
-                       bridge.agent_cfg.llm_timeout, 1,
+                       bridge.agent_cfg.llm_timeout,
+                       int(bridge.agent_cfg.llm_retries or 0),
                        bridge.agent_cfg.llm_max_tokens,
                        bridge.agent_cfg.llm_thinking)
     except Exception as e:                 # noqa: BLE001
@@ -1306,6 +1356,10 @@ def main() -> None:
     llm_ask = llm_sub.add_parser("ask", help="问 AI 一次（记流水）")
     llm_ask.add_argument("--prompt", required=True)
     llm_ask.add_argument("--system", default="")
+    llm_ask.add_argument("--symbols", nargs="*", default=None,
+                         help="只看这些标的（如只传持仓代码）；不传=股票池+持仓")
+    llm_ask.add_argument("--full", action="store_true",
+                         help="按旧口径带全池历史（默认精简：1 根收盘 + 3 条流水）")
     llm_ask.add_argument("--json", action="store_true")
 
     # calendar（交易日历：akshare 同步 + 本地缓存）
@@ -1613,6 +1667,9 @@ def main() -> None:
                              help="保留最近 N 个已入库交易日，更早的删除（0=不删）")
     minute_sync.add_argument("--intraday", action="store_true",
                              help="盘中模式：只补「已收完」的 bar（新线撮合的命脉采集）")
+    minute_sync.add_argument("--now", default=None,
+                             help="盘中模式的\"此刻\"（ISO，默认真实时钟）。"
+                                  "补跑某一时刻与单测钉死时间用（T53：跑在盘后就红的测试等于没有）")
     minute_sync.add_argument("--json", action="store_true")
 
     engine_opt = engine_sub.add_parser("optimize", help="参数网格搜索（按超额收益排序）")
@@ -1902,7 +1959,9 @@ def main() -> None:
                 if not r.get("ok"):
                     sys.exit(3)
             elif args.llm_command == "ask":
-                r = bridge.llm_ask(args.prompt, args.system)
+                r = bridge.llm_ask(args.prompt, args.system,
+                                   symbols=(args.symbols or None),
+                                   slim=not getattr(args, "full", False))
                 emit(r, ok=r.get("ok", False), error=r.get("error"))
                 if not r.get("ok"):
                     sys.exit(3)
@@ -2684,9 +2743,9 @@ def main() -> None:
 
                     from paper_trading.utils import heartbeat as _hb
 
-                    res = _min.ensure_today_minutes(bridge.data_db, syms,
-                                                    period=args.period,
-                                                    now=_dt.now())
+                    res = _min.ensure_today_minutes(
+                        bridge.data_db, syms, period=args.period,
+                        now=(_dt.fromisoformat(args.now) if args.now else _dt.now()))
                     _hb.touch("minute", ok=not res["errors"],
                               detail=f"written={res['written']} "
                                      f"errors={','.join(res['errors'])[:60]}")

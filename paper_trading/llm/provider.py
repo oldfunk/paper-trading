@@ -108,3 +108,52 @@ def chat(cfg: LLMConfig, messages: list[dict], system: str = "") -> str:
                 f"（本地模型可在请求里传 thinking=disabled）")
         raise LLMError(f"模型返回空答案（finish_reason={finish or '未知'}）")
     return str(content)
+
+
+#: 始终思考的厂商错误指纹（GLM 5.3 系列 HTTP 400 / 1210「不支持关闭思考」）
+THINKING_UNSUPPORTED_HINT = "1210"
+
+
+def chat_with_retry(cfg: LLMConfig, messages: list[dict], system: str = "", *,
+                    timeout: Optional[float] = None, retries: int = 1,
+                    max_tokens: Optional[int] = None,
+                    thinking: str = "disabled") -> str:
+    """带超时重试与「思考透传降级」的一轮对话——**所有** LLM 调用路径共用的原语。
+
+    为什么这段从 `agent/loop._ask_llm` 提到 provider（T64）：决策路径与问答路径必须共用
+    同一份"配置怎么落到请求上"的逻辑。两条路径各抄一遍正是 `llm_timeout` 那类断层的温床——
+    问答路径当初没抄 timeout/max_tokens/thinking，于是要么 30 秒超时，要么输出预算被
+    思考吃光、返回空答案（`chat()` 里那条报错就是同一件事的用户可见面）。
+
+    只重试超时：其他错误（HTTP 4xx、格式异常）重试只会掩盖问题。
+    `thinking="disabled"` 时透传厂商开关；遇到"这模型始终思考"就降到 low 档重试一次，
+    并把输出预算抬到至少 4096——不能因为一个透传参数把整条链路打死。
+    """
+    if timeout is not None:
+        cfg.timeout = float(timeout)
+    if max_tokens is not None:
+        cfg.max_tokens = int(max_tokens)
+
+    def _attempt(extra: dict) -> str:
+        cfg.extra_body = extra
+        last: Optional[Exception] = None
+        for attempt in range(max(0, int(retries)) + 1):
+            try:
+                return chat(cfg, messages, system=system)
+            except Exception as e:  # noqa: BLE001 - 仅超时重试，其余直接抛
+                last = e
+                low = str(e).lower()
+                if "timed out" not in low and "timeout" not in low:
+                    raise
+                if attempt >= max(0, int(retries)):
+                    raise
+        raise last or LLMError("LLM unreachable")
+
+    extra = {"thinking": {"type": "disabled"}} if thinking == "disabled" else {}
+    try:
+        return _attempt(extra)
+    except LLMError as e:
+        if thinking == "disabled" and THINKING_UNSUPPORTED_HINT in str(e):
+            cfg.max_tokens = max(int(max_tokens or 0), 4096)
+            return _attempt({"thinking": {"type": "enabled", "level": "low"}})
+        raise
