@@ -230,3 +230,17 @@ M3 行写的"cron 切 rqalpha 常驻（一天一进程）"**不一致**，请显
 `venv/bin/python -m pytest -q tests/` 647 passed；`paper_account.db` 未被动过（md5 不变）。
 回退：`git checkout 56ae3b1` + `crontab /home/nec/crontab.pre-m3-takeover-20261030-183811.bak`。
 
+
+### 切换后第一日核验补充（2026-11-03，主 AI）
+
+- **周一 11-02 零成交 = 熔断正确拦截**（回撤 35.23% > 20%）；根因：
+  `peak_total_value=156,005` 为 10-27 旧账户遗留（账户重置后成孤儿峰值，
+  永久锁死熔断——这正是"自研时代账户重置没清状态"的残留）。
+- **用户拍板重置**：`peak_total_value → 100,189.96`（2026-11-03，冷备份
+  `peak-reset-backup-20261103.db`）→ 熔断解除，engine 恢复（armed=9/quotes 在）。
+- 数据供给缺口：① 分钟线**盘中**采集缺失（已装 15 分钟 cron +
+  `deploy/m3_minute_intraday.sh`）② raw_gate 5 只未翻转（T60 归因）
+  ③ heartbeat 语义（T61 审查）。
+- 结论：**新引擎（rqalpha 分钟会话）工作正常**，当日无成交是风控行为而非故障；
+  状态清理工具（T62）防止同类"重置遗留"再发生。
+

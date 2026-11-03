@@ -1071,3 +1071,36 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   - [x] 文档：`report-t57-m3-takeover.md` + `migration-m3.md §9`（更正"切换完成"三条
         不实说法）+ ROADMAP 新增更正行 + `questions.md` 剩余 5 件待拍板
   - [ ] 待主 AI：review 并合 main（现网正跑未合并分支）；切换日 3 条假账如何处置
+
+---
+
+## Batch 13 · 切换后第一日核验与数据供给（主 AI 派发 2026-11-03 · 用户授权分配）
+
+> 周一（11-02）实况：新引擎 tick 每 5 分钟正常 idle，**零成交 = 账户熔断正确拦截**
+> （回撤 35.23%）。核验发现 `peak_total_value=156,005`（10-27 旧账户遗留，
+> 账户重置后成孤儿）→ **用户拍板：已重置为当前 100,189.96**（冷备份
+> `peak-reset-backup-20261103.db`），熔断解除、engine 恢复（armed=9、quotes 在）。
+> 新暴露三个数据供给缺口（引擎本身无故障）：
+
+- [ ] **T59（Qoder，P0·分钟供给）盘中采集链闭环**：
+  - [x] 主 AI 已装盘中采集 cron（`6,21,36,51 9-15 * * 1-5` 脚本
+    `deploy/m3_minute_intraday.sh`，每 15 分钟补当日分钟线）
+  - [ ] 验证：**m3 verify 的 `minute_feed`/`heartbeat(minute)` 两项回绿**；
+    tick 日志出现当日分钟供给自证；若 15 分钟粒度不足 → 评估加密到 5 分钟
+  - [ ] `ensure_today_minutes()` 触发路径复核（tick 消费前自证供给是否覆盖
+    --intraday 采集的 bar 时间戳语义）
+- [ ] **T60（Qoder，P0·raw 日线）raw_gate 未翻转 5 只归因**：
+  现网 `m3 verify` raw_gate 红：stale/未翻转 = `['000333','000651','000858',
+  '600036','600276']`。归因：母库参照滞后？fetch-raw 覆盖缺口？T50 闸语义边界？
+  **给结论 + 修复/白名单决策**（母库数据问题→转 stock-dashboard 对话；
+  子项目闸语义→修+测试）
+- [ ] **T61（Hermes，P1·工具语义）m3 verify 红绿语义审查**：今天 3 red 中
+  `minute_feed`（盘中 0 行）与 `heartbeat(minute)`（应跳未跳）在**采集 cron
+  装上前后**的语义是否合理；`raw_gate` 红时 on_red="回退"的判定在切换期
+  是否过严。产出 `report-t61.md`（审查不改码，除非纯工具参数问题）
+- [ ] **T62（Qoder，P1·流程）状态清理工具**：本次峰值遗留的通用防御——
+  账户重置/账本迁移/新开账时必须清理的**状态字段清单**（`risk_state` 的
+  peak/daily_baseline、`engine_state` 熔断态等）+ 实现 `cli ledger reset-state`
+  （显式命令 + 留痕 op_log[ledger:reset-state]）+ 迁移流程文档补
+  "重置后必清" checklist；测试锁定
+
