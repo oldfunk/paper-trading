@@ -2012,6 +2012,8 @@ def main() -> None:
                     "executed": st.get("executed", 0) + st.get("executed_idempotent", 0),
                     "rejected": st.get("rejected", 0), "kept_queued": st.get("kept", 0),
                     "waiting_decision": len(waiting),
+                    # bundle 里没这只标的（北交所/未收录新股）：当场 rejected 的数量与清单
+                    "instrument_unavailable": (res.get("unavailable") or [])[:8],
                     "posted_unclaimed": len(verdict["unclaimed"]),
                     "unclaimed": verdict["unclaimed"][:5],
                     "posting_ok": posting_ok,

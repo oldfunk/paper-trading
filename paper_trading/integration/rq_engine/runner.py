@@ -311,6 +311,7 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
         "today": today, "plan": plan, "error": err, "fingerprint": fp,
         "handler_dates": st.handler_dates, "orders": st.orders,
         "submits": st.submits, "waiting": st.final_waiting(),
+        "unavailable": st.unavailable,
         "snapshots": st.snapshots, "evidence": evidence, "gates": verdict,
         "session_marked_done": done, "evidence_path": evidence_path,
     }
@@ -346,6 +347,8 @@ class _SessionState:
         self.submits: list = []
         self.waiting: list = []
         self._waiting_seen: set = set()
+        #: bundle 里没这只标的的 biz_id（`mark_unavailable` 填）
+        self.unavailable: list = []
 
     @staticmethod
     def intent_key(symbol, side: str, volume: int) -> str:
@@ -393,8 +396,61 @@ class _SessionState:
                                     "last_price": round(float(p.last_price), 4)}
         return out
 
+    def mark_unavailable(self, known_order_book_ids) -> list:
+        """把"bundle 里根本没有的标的"当场定局（T59 现网实据）。
+
+        2026-11-03 现网：股票池 11-02 进了 `920156`（北交所），而 bundle 的
+        28,063 只标的里 **`.BJ` 有 0 只** ⇒ 这只标的新引擎**天生买不了**：
+        `bar_dict[ob]` 抛异常被当成"这分钟还没 bar"跳过 ⇒ 意图永远 `waiting`、
+        到次日才被 `expire_stale` 悄悄清掉——机会丢了且没人知道是为什么。
+        这里给它一个显式结论：`INSTRUMENT_UNAVAILABLE`（归因侧判 rejected，
+        规则第二天可以重新触发）。
+        """
+        known = {str(k) for k in (known_order_book_ids or [])}
+        if not known:
+            return []                      # 拿不到标的表就什么都不做（IdleSpin 闸仍在）
+        out = []
+        for act in self.plan:
+            bid = str(act.get("biz_id") or "")
+            ob = to_order_book_id(act["symbol"])
+            if not bid or bid in self._handled or ob in known:
+                continue
+            if str(act.get("action") or "").lower() not in ("buy", "sell"):
+                continue
+            self._handled.add(bid)
+            self.orders.append({"biz_id": bid, "symbol": ob,
+                                "side": str(act.get("action") or "").upper(),
+                                "quantity": int(act.get("volume") or 0),
+                                "status": "INSTRUMENT_UNAVAILABLE", "filled": 0,
+                                "message": f"bundle 里没有 {ob}（北交所/未收录新股？）"
+                                           f"——新引擎买不了，规则可重新触发"})
+            out.append(bid)
+        return out
+
+    def _known_order_book_ids(self, context):
+        """问 rqalpha 的标的表要"这些标的在不在"；问不动就返回 None（不猜）。"""
+        store = getattr(context, "instruments", None)
+        if store is None:
+            return None
+        known = set()
+        for act in self.plan:
+            ob = to_order_book_id(act["symbol"])
+            try:
+                ok = store(ob) is not None
+            except Exception:               # noqa: BLE001 - 取不到=不在标的表里
+                ok = False
+            if ok:
+                known.add(ob)
+        return known
+
     def before_trading(self, context):
         self.snapshots.append(self._snap(context, "before_trading"))
+        try:
+            known = self._known_order_book_ids(context)
+            if known is not None:
+                self.unavailable = self.mark_unavailable(known)
+        except Exception:                   # noqa: BLE001 - 定局失败不许拖垮会话本身
+            self.unavailable = []
 
     def handle_bar(self, context, bar_dict):
         from rqalpha.api import order_shares

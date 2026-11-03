@@ -13,7 +13,8 @@ import pathlib
 import subprocess
 import sys
 
-TARGETS = ["tests/test_market_caliber_t59.py", "tests/test_minute_supply_t59.py",
+TARGETS = ["tests/test_m3_takeover.py", "tests/test_market_caliber_t59.py",
+           "tests/test_minute_supply_t59.py",
            "tests/test_realtime.py", "tests/test_minute_source.py",
            "tests/test_rqalpha_adapter.py", "tests/test_m3_verify_t46.py",
            "tests/test_m3_verify_t54.py", "tests/test_m3_takeover.py"]
@@ -25,6 +26,7 @@ FILES = {
     "bands": pathlib.Path("paper_trading/integration/rq_engine/bands.py"),
     "verify": pathlib.Path("paper_trading/utils/m3_verify.py"),
     "cli": pathlib.Path("paper_trading/cli.py"),
+    "runner": pathlib.Path("paper_trading/integration/rq_engine/runner.py"),
 }
 ORIG = {k: p.read_text(encoding="utf-8") for k, p in FILES.items()}
 py = sys.executable
@@ -87,6 +89,9 @@ CASES = [
                     f"stale={stale[:5]} 未翻转={flip['violations'][:5]} "
                     f"unflipped_days={flip['unflipped_days']}",
                     on_red="回退（价都不对，账不可能对）")'''),
+    ("⑧ bundle 没这只标的时退回「什么都不做」（挂到明天悄悄过期）", "runner",
+     "            if not bid or bid in self._handled or ob in known:",
+     "            if True:\n                continue"),
     ("⑦ 盘中采集退回「每跳都落流水」（一上午 92 条，埋掉真故障）", "cli",
      '                    if res["errors"] and not bridge.broker.has_op_with("minute:gap", fp):',
      '                    if res["errors"]:'),

@@ -567,3 +567,32 @@ def test_rq_tick_threshold_not_in_defaults():
     """没切换的部署不该被 rq_tick 假红 ⇒ 它不进 DEFAULT_THRESHOLDS。"""
     assert "rq_tick" not in hb.DEFAULT_THRESHOLDS
     assert hb.RQ_TICK_THRESHOLD == 900
+
+
+# ============================ ②c bundle 覆盖边界（T59 现网照出的第三条静默路径）
+def test_mark_unavailable_settles_symbols_the_bundle_does_not_have(monkeypatch):
+    """bundle 里没有的标的（北交所 920 段）必须当场定局，不许一直"等"到明天。
+
+    现网 2026-11-03：池里 `920156` 而 bundle 的 28,063 只里 `.BJ` 为 0，
+    `bar_dict[ob]` 抛异常被当成"这分钟没 bar"跳过 ⇒ IdleSpin 闸响过之后，
+    意图仍以 queued 状态挂到次日被 `expire_stale` 清掉——机会丢了且原因不可见。
+    """
+    plan = [intent("b-bj", symbol="920156", decided_at="2026-11-03T11:20:00"),
+            intent("b-ok", symbol="002192", decided_at="2026-11-03T11:20:00")]
+    st = _SessionState(plan, executed_ids=set())
+    settled = st.mark_unavailable({"002192.XSHE"})
+    assert settled == ["b-bj"]
+    rec = [o for o in st.orders if o["biz_id"] == "b-bj"][0]
+    assert rec["status"] == "INSTRUMENT_UNAVAILABLE" and "920156.BJ" in rec["message"]
+    assert not [o for o in st.orders if o["biz_id"] == "b-ok"]   # 在 bundle 里的不受影响
+    out = Q.resolve_outcomes(plan, [], st.orders, st.submits, set(st.unavailable))
+    got = {u["biz_id"]: (u["status"], u["result"].get("reason", "")) for u in out["updates"]}
+    assert got["b-bj"][0] == "rejected" and "920156.BJ" in got["b-bj"][1]
+    assert out["stats"]["kept"] == 1                            # b-ok 仍在正常路径上等 bar
+
+
+def test_mark_unavailable_is_noop_without_an_instrument_table():
+    """拿不到标的表时**什么都不做**——不许靠猜测把意图判死（判错比不判更糟）。"""
+    st = _SessionState([intent("b1", symbol="920156")], executed_ids=set())
+    assert st.mark_unavailable(None) == [] and st.mark_unavailable([]) == []
+    assert st.orders == []
