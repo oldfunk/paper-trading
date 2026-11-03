@@ -42,16 +42,9 @@ def _f(x, default: float = 0.0) -> float:
 
 def _market_prefix(symbol: str) -> str:
     """6 位代码 → 交易所前缀（sh/sz/bj）。"""
-    c = str(symbol or "").strip()
-    if len(c) != 6 or not c.isdigit():
-        return "sh"
-    if c[0] == "6":
-        return "sh"
-    if c[0] in "03":
-        return "sz"
-    if c[0] in "48":
-        return "bj"
-    return "sh"
+    from paper_trading.utils import markets
+
+    return markets.exchange_of(symbol)
 
 
 def _http_get(url: str, timeout: int = 20,
@@ -243,6 +236,16 @@ def completed_slots(period: str = "5",
         if int(s[:2]) * 60 + int(s[3:5]) < limit:
             out.append(s)
     return out
+
+
+def gap_fingerprint(day: str, errors) -> str:
+    """一次采集的"症状指纹"（同日同指纹只落一条 `op_log[minute:gap]`）。
+
+    盘中采集每 15 分钟一跳，11-03 现网一天刷出 92 条 `minute:gap`：
+    刷屏的告警会把真故障埋掉（T22 看门狗"只在状态翻转时落流水"同一精神）。
+    症状**集合变化**（新标的坏了 / 修好了又坏）仍然立刻留痕。
+    """
+    return f"{day}|" + ",".join(sorted(str(e) for e in (errors or [])))
 
 
 def ensure_today_minutes(db, symbols, *, day: Optional[str] = None,

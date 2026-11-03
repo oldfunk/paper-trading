@@ -64,13 +64,16 @@ def quote_fresh(quote: dict, now: datetime | None = None) -> bool:
 
 
 def tc_symbol(code: str) -> str:
-    """6→sh，8/4开头→bj，其余sz（与 Stock Dashboard tc_encode 口径一致）。"""
-    c = str(code).strip()
-    if c.startswith("6"):
-        return "sh" + c
-    if c.startswith("8") or c.startswith("4"):
-        return "bj" + c
-    return "sz" + c
+    """6 位代码 → 腾讯行情码（`sh600519`/`sz000858`/`bj920156`）。
+
+    口径唯一来源是 `utils/markets.py`（T60）。旧写法"只 8/4 开头判 bj、其余 sz"
+    沿用的是母库 `tc_encode`，但 2026-11-03 现网实测：`sz920156` 腾讯回 1 个字段
+    （空），`bj920156` 回 87 个字段（海昌智能 36.10）⇒ 920 段必须判北交所，
+    否则该标的**永远没有报价**。**母库那一版同样需要改**（转 stock-dashboard）。
+    """
+    from paper_trading.utils import markets
+
+    return markets.sina_symbol(code)
 
 
 def _f(x, default: float = 0.0) -> float:

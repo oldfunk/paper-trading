@@ -45,16 +45,20 @@ class BandMissingError(RuntimeError):
 
 
 def to_order_book_id(symbol: str) -> str:
-    code = str(symbol or "").strip().zfill(6)
-    if code[0] in ("6", "9"):
-        return f"{code}.XSHG"
-    if code[0] in ("4", "8"):
-        return f"{code}.BJ"
-    return f"{code}.XSHE"
+    """6 位码 → rqalpha `order_book_id`（口径唯一，见 `utils/markets.py`）。
+
+    旧写法按首字符判市：`920156`（北交所新段）被判成 `920156.XSHG`——
+    挂错交易所，撮合要么找不到标的、要么拿错 band/日历（T60 现网实据）。
+    """
+    from paper_trading.utils import markets
+
+    return markets.order_book_id(symbol)
 
 
 def to_symbol(order_book_id: str) -> str:
-    return str(order_book_id).split(".")[0]
+    from paper_trading.utils import markets
+
+    return markets.from_order_book_id(order_book_id)
 
 
 def _d2i(d: date) -> int:
