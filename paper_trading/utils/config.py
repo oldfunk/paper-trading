@@ -104,6 +104,7 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "llm_timeout": float(agent.get("llm_timeout", 120.0)),
             "llm_retries": int(agent.get("llm_retries", 1)),
             "llm_max_tokens": int(agent.get("llm_max_tokens", 8192)),
+            "ask_max_tokens": int(agent.get("ask_max_tokens", 1536)),
             "llm_thinking": str(agent.get("llm_thinking", "disabled")),
             "picks_enabled": bool(agent.get("picks_enabled", True)),
             "picks_max": int(agent.get("picks_max", 5)),

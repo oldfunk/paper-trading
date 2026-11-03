@@ -56,13 +56,44 @@ _NAV = 3
 _DROP_ORDER = ("pool_fundamentals", "news", "screening", "pool_cards")
 
 
+#: 估算→真实 tokenizer 的校准系数（T67 批复 3）。1.0 = 未校准。
+#: 为什么放在模块里而不是配置：它不是人定的口径，是**厂商 usage 反出来的观测值**；
+#: `agent.context_budget` 的单位因此是"真实 token"，首次问答拿到 usage 后自动收敛。
+_TOKEN_CALIBRATION = 1.0
+#: 校准的合理区间：超出就说明 prompt 文本与 usage 对不上（缓存命中、system 未计入等），
+#: 宁可不校，也不让一个异常比值把预算越拉越歪。
+_CALIB_MIN, _CALIB_MAX = 0.6, 2.5
+
+
+def set_token_calibration(ratio: float) -> bool:
+    """用 `真实 prompt_tokens / 估算 token` 校准估算器；返回是否采纳。"""
+    global _TOKEN_CALIBRATION
+    try:
+        r = float(ratio)
+    except (TypeError, ValueError):
+        return False
+    if not (_CALIB_MIN <= r <= _CALIB_MAX):
+        return False
+    _TOKEN_CALIBRATION = r
+    return True
+
+
+def token_calibration() -> float:
+    return _TOKEN_CALIBRATION
+
+
 def estimate_tokens(text: str) -> int:
-    """粗略 token 估算：CJK 约 1 token/字，其余约 4 字符/token。"""
+    """粗略 token 估算：CJK 约 1 token/字，其余约 4 字符/token，再乘厂商校准系数。
+
+    系数默认 1.0（单测与首次调用就是这个口径）；11-03 现网对照 GLM 的
+    `usage.prompt_tokens`，未校准的估算**低约 1.4 倍**——按它当预算会让上下文
+    实际超出 `context_budget` 的字面含义，所以问答拿到 usage 后自动校准。
+    """
     if not text:
         return 0
     cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
     other = len(text) - cjk
-    return cjk + (other + 3) // 4
+    return int(round((cjk + (other + 3) // 4) * _TOKEN_CALIBRATION))
 
 
 def context_tokens(ctx) -> int:
