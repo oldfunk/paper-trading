@@ -313,6 +313,69 @@ def test_state_keys_the_checklist_does_not_know_must_surface(broker, tmp_path):
     assert out["reports"]["unknown_state_keys"]["count"] == 2   # 清完还在报
 
 
+# ==================================================== CLI 接线（参数拼装也在射程里）
+
+def _run_cli(monkeypatch, argv):
+    """跑真的 `cli.main()`：模块级测试测不到 argparse 与 handler 之间的接线。"""
+    from paper_trading import cli
+
+    monkeypatch.setattr("sys.argv", ["paper_trading"] + argv)
+    try:
+        cli.main()
+        return None                      # 正常结束不显式 exit
+    except SystemExit as exc:
+        return exc.code
+
+
+def test_cli_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "paper_account.db"
+    PaperBroker(db_path=str(db), config=TradingConfig(initial_cash=NEW_NAV))
+    RiskState(db).set("peak_total_value", f"{OLD_PEAK:.4f}")
+    code = _run_cli(monkeypatch, ["--account-db", str(db), "--data-db",
+                                  str(tmp_path / "data.db"),
+                                  "ledger", "reset-state"])
+    out = capsys.readouterr().out
+    assert code is None                             # 没有红报 ⇒ 不该拿退出码吓人
+    assert "risk_peak" in out and "dry-run" in out
+    assert RiskState(db).get("peak_total_value")    # 没被清
+    assert rows(db, "SELECT COUNT(*) n FROM op_log WHERE action=?",
+                (ls.ACTION,))[0]["n"] == 0
+
+
+def test_cli_yes_requires_a_reason_and_records_the_trail(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "paper_account.db"
+    PaperBroker(db_path=str(db), config=TradingConfig(initial_cash=NEW_NAV))
+    RiskState(db).set("peak_total_value", f"{OLD_PEAK:.4f}")
+    base = ["--account-db", str(db), "--data-db", str(tmp_path / "data.db"),
+            "ledger", "reset-state", "--yes"]
+    assert _run_cli(monkeypatch, base) == 1         # 缺 --reason
+    assert "reason" in capsys.readouterr().out      # 要说出来，不是静默退
+
+    assert _run_cli(monkeypatch, base + ["--reason", "现网孤儿峰值",
+                                         "--today", TODAY]) is None
+    assert RiskState(db).get("peak_total_value") is None
+    trail = rows(db, "SELECT params, result FROM op_log WHERE action=?", (ls.ACTION,))
+    assert len(trail) == 1
+    assert "现网孤儿峰值" in trail[0]["params"]
+    assert json.loads(trail[0]["result"])["cleared"]["risk_peak"]["before"]
+
+
+def test_cli_exit_one_when_only_report_items_are_red(tmp_path, monkeypatch, capsys):
+    """红报必须影响退出码：脚本不许把 0 当成"状态已一致"的凭据。"""
+    db = tmp_path / "paper_account.db"
+    PaperBroker(db_path=str(db), config=TradingConfig(initial_cash=NEW_NAV))
+    with sqlite3.connect(str(db)) as c:
+        c.execute("INSERT INTO t1_freeze (symbol, volume, freeze_date,"
+                  " unfreeze_date, is_unfrozen) VALUES ('002192', 100,"
+                  " '2026-10-30', '2026-11-02', 0)")
+        c.commit()
+    code = _run_cli(monkeypatch, ["--account-db", str(db), "--data-db",
+                                  str(tmp_path / "data.db"),
+                                  "ledger", "reset-state", "--today", TODAY])
+    out = capsys.readouterr().out
+    assert code == 1 and "t1_unfreeze_overdue" in out
+
+
 # ==================================================== 幂等 / 选项 / 清单本身
 
 def test_second_run_is_a_no_op_and_writes_no_second_trail(broker, tmp_path):

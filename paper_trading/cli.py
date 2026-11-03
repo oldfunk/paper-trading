@@ -2225,11 +2225,12 @@ def main() -> None:
 
                 kw = {"today": args.today, "state_root": args.state_root,
                       "heartbeat": args.heartbeat, "keep": tuple(args.keep or ()),
-                      "only": tuple(args.only or ()), "stamp": args.stamp}
+                      "only": tuple(args.only or ())}
                 try:
                     if getattr(args, "yes", False):
                         out = _lst.apply_reset(bridge.broker.db_path, bridge.broker,
-                                               reason=args.reason, **kw)
+                                               reason=args.reason, stamp=args.stamp,
+                                               **kw)
                     else:
                         out = _lst.plan(bridge.broker.db_path, **kw)
                         out["dry_run"] = True
