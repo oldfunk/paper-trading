@@ -339,6 +339,7 @@ class _SessionState:
         #: 一条意图一个会话只定一次局（日内续跑会重放当天全部 bar，不设这道闸
         #: 同一 biz_id 会在早盘记一条、晚盘再记一条，归因表拿"最后一条"当结论）
         self._handled: set = set()
+        self._avail_done = False
         self.handler_dates: list = []
         self.orders: list = []
         self.snapshots: list = []
@@ -428,23 +429,40 @@ class _SessionState:
         return out
 
     def _known_order_book_ids(self, context):
-        """问 rqalpha 的标的表要"这些标的在不在"；问不动就返回 None（不猜）。"""
-        store = getattr(context, "instruments", None)
-        if store is None:
+        """问框架要"这些标的在不在标的表里"；问不动就返回 None（**不猜**）。
+
+        口径按 rqalpha 6.4.2 的实际入口排：`data_proxy.instrument(oid)`
+        （`Environment.get_instrument` 是它的 deprecated 外壳，
+        `environment.py` 里就一行转发），再退到 `context.instruments`。
+        两个口都拿不到 ⇒ 返回 None ⇒ 什么都不判（IdleSpin 闸仍在后面兜）。
+        """
+        from rqalpha.environment import Environment
+
+        env = Environment.get_instance()
+        proxy = getattr(env, "data_proxy", None)
+        getter = getattr(proxy, "instrument", None)
+        if getter is None:
+            getter = getattr(env, "get_instrument", None)
+        if getter is None:
+            getter = getattr(context, "instruments", None)
+        if getter is None:
             return None
         known = set()
         for act in self.plan:
             ob = to_order_book_id(act["symbol"])
             try:
-                ok = store(ob) is not None
+                ok = getter(ob) is not None
             except Exception:               # noqa: BLE001 - 取不到=不在标的表里
                 ok = False
             if ok:
                 known.add(ob)
         return known
 
-    def before_trading(self, context):
-        self.snapshots.append(self._snap(context, "before_trading"))
+    def ensure_availability_checked(self, context) -> None:
+        """一个会话只定一次局：把 bundle 里没有的标的当场判掉（失败不拖垮会话）。"""
+        if self._avail_done:
+            return
+        self._avail_done = True
         try:
             known = self._known_order_book_ids(context)
             if known is not None:
@@ -452,11 +470,18 @@ class _SessionState:
         except Exception:                   # noqa: BLE001 - 定局失败不许拖垮会话本身
             self.unavailable = []
 
+    def before_trading(self, context):
+        self.snapshots.append(self._snap(context, "before_trading"))
+        self.ensure_availability_checked(context)
+
     def handle_bar(self, context, bar_dict):
         from rqalpha.api import order_shares
 
         now = getattr(context, "now", None)
         self.handler_dates.append(str(now)[:10])
+        # 日内续跑会话**不跳 before_trading**（T13 §4.7），所以这道定局也必须挂在
+        # 第一根 bar 上，否则 resumed 跳里永远不执行。
+        self.ensure_availability_checked(context)
         for act in self.plan:
             if act.get("action") not in ("buy", "sell") or not act.get("volume"):
                 continue
