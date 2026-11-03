@@ -1205,22 +1205,43 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 ## Batch 16 · 拍板落地（主 AI 派发 2026-11-03 晚 · 批复见 questions.md）
 
-- [ ] **T67（Qoder，P1·问答体验）截断信号 + 配置面 + 真实 token + CI 门禁**：
-  - [ ] "答案被截断"可见信号：`finish_reason=length` 必须在回答里显式标注
-    （面板/CLI 都可见；静默截断=纪律问题）
-  - [ ] `agent.ask_max_tokens` 配置键（config.yaml + 读取链 + wiring 测试；
-    缺省 1536 不变；CLI `--max-tokens`/面板 body 已可达，接线到配置）
-  - [ ] `context_budget` 真实 token：透出 `usage.prompt_tokens`（`chat()` 目前
-    丢弃 usage）→ 预算按真实 token 定；留痕同时记估算值与真实值
-  - [ ] `wiring_audit` 进 `.github/workflows/test.yml` 独立步骤（退出码非 0
-    直接告警）
-  - [ ] `report-t67.md`
-- [ ] **T68（Qoder，P1·T66 三切入点）**：
-  - [ ] 2×2 归因缺格重跑（`/home/nec/tmp/t63_grid.py`：大上下文×小预算格）
-  - [ ] 矩阵三路供给判定复核（静态读点之外的间接层）
-  - [ ] `chat_with_retry` 与旧 `chat` 行为等价性（超时重试/思考透传降级
-    不改变决策路径语义）
-  - [ ] **engine/strategy 行为级断言**（第 5 件拍板）：合成配置 + 跑一轮
-    tick 的行为测试（"接了线但路径不跑"类别，如 legacy 路径在 rqalpha
-    底座下）；`report-t68.md`
+- [x] **T67（Qoder，P1·问答体验）截断信号 + 配置面 + 真实 token + CI 门禁**（`report-t67-ask-polish.md`）：
+  - [x] "答案被截断"可见信号：`provider.LLMReply` 是 **str 子类**（带
+        `finish_reason/truncated/usage`）——决策路径拿它做 JSON 抽取、7 个测试文件
+        patch 的是 `chat` 的字符串返回，改成返回 dict 会把 T64 刚收敛的路径再拆散。
+        `llm_ask` 把 ⚠️ 标记**追加进答案文本本身**（面板只渲染 answer）＋结构化字段
+        ＋`op_log[llm:ask].result`
+  - [x] `agent.ask_max_tokens` 配置键：三件套同步（dataclass 字段 + `load_config` 白名单 +
+        cli 构造点 + `config.yaml` 键），缺省 1536 不变；按次覆盖（CLI `--max-tokens`、
+        面板 body `max_tokens`）优先于配置；测试用真 config 走真读取链断"改了请求里就变"
+  - [x] `context_budget` 真实 token：`usage.prompt_tokens` 不再被丢弃，留痕
+        `prompt_tokens_est` 与 `prompt_tokens_real` 并列；观测比值（11-03 实测估 8,318 /
+        真实 11,440 ⇒ 低 1.37×）喂给 `estimate_tokens` 的校准系数，只接受 [0.6, 2.5]
+        （缓存命中一类异常观测宁可不校）
+  - [x] `wiring_audit` 进 CI：`.github/workflows/test.yml` 独立一步，跑在 pytest **之前**，
+        退出码非 0 直接告警，不再混在测试红里
+  - [x] `report-t67.md`：含一条延迟实话——**≤20 秒不是靠上下文达成的**
+        （4096→82.4s / 1536→45.5s / 1200→28.3s，真实输出都约 650 token）
+- [x] **T68（Qoder，P1·T66 三切入点）**（`report-t68-audit-behavior.md`）：
+  - [ ] ⏸ 2×2 归因缺格重跑（`/home/nec/tmp/t63_grid.py`：大上下文×小预算格）
+        ——要 2 次云端请求，按"花额度先报备"停在门口，脚本就绪等一句"跑"；
+        现有三点已足以分离两个变量，结论不依赖这一格
+  - [x] 矩阵三路供给判定复核：**改成 AST 推导而不是人工名单**（`detect_helpers`）——
+        名单过期时新层内部调用被报成漏传、它外面的调用点整条跳过，断层反被洗白。
+        第 1 层=写 `cfg.timeout/max_tokens/extra_body` 且调 chat；第 2 层起=转传**自己形参**的薄壳
+        （第一版我把"任何调用者"都算成层 ⇒ `run/tick/main` 全变层、供给点零检查；已修 + 加牙齿）
+        复核还照出我自己三个缺陷：`_ask(` 命中 `llm_ask(` 尾巴的子串碰撞、
+        函数表按裸名建键导致同名 `run` 遮蔽（**矩阵静默少一行**）、`fpath` 作用域泄漏标错文件
+  - [x] `chat_with_retry` 行为等价性 6 例：只重试超时（次数=retries+1）、非超时错一次即抛、
+        1210 降 `level:low` 并把预算抬到 ≥4096、`_ask_llm` 位置参数语义与返回物可 JSON 解析、
+        重试期间预算只升不降
+  - [x] **engine/strategy 行为级断言 21 例**（真跑 tick 看结果与账本，不是 grep 引用）：
+        `enabled=false` 在 cron 的 `--once` 路径下确实不下单**且仍落 blocked_disabled 留痕**、
+        `max_orders_per_day/per_symbol_cooldown_sec/min_ticket_cny/max_turnover_per_day/
+        rule.enabled/rule.once/universe+universe_max` 各自"改一个键结果就不同"、
+        `interval_sec` 明确断它在 `--once` 上不生效、strategy 两窗两手数验到信号
+  - [x] 报告如实记下一次**假发现**：我以为 `enabled` 在 `--once` 路径是洞并已在 `run_loop`
+        加了守卫，读到 `_execute` 才发现早已有守卫（注释写着同一条洞）；我的冗余守卫还会
+        连 `quote_log`、峰值刷新、心跳轮次和"被拦意图"留痕一起吞掉 ⇒ 已回滚，
+        并把这条假设改写成**证明它不成立**的测试
 
