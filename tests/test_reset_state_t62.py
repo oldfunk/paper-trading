@@ -376,6 +376,21 @@ def test_cli_exit_one_when_only_report_items_are_red(tmp_path, monkeypatch, caps
     assert code == 1 and "t1_unfreeze_overdue" in out
 
 
+def test_cli_second_yes_run_does_not_claim_dry_run(tmp_path, monkeypatch, capsys):
+    """现网试跑照出来的失真：no-op 那次印了"dry-run（--yes 才动手）"，
+    而 --yes 明明给了——操作者会以为自己漏了参数。标签必须跟着事实走。"""
+    db = tmp_path / "paper_account.db"
+    PaperBroker(db_path=str(db), config=TradingConfig(initial_cash=NEW_NAV))
+    RiskState(db).set("peak_total_value", f"{OLD_PEAK:.4f}")
+    argv = ["--account-db", str(db), "--data-db", str(tmp_path / "data.db"),
+            "ledger", "reset-state", "--yes", "--today", TODAY, "--reason", "试跑"]
+    _run_cli(monkeypatch, argv)
+    capsys.readouterr().out
+    _run_cli(monkeypatch, argv)
+    out = capsys.readouterr().out
+    assert "dry-run" not in out and "无可清的运行态" in out
+
+
 # ==================================================== 幂等 / 选项 / 清单本身
 
 def test_second_run_is_a_no_op_and_writes_no_second_trail(broker, tmp_path):

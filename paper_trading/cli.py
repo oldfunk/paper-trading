@@ -2242,6 +2242,8 @@ def main() -> None:
                     emit(out)
                 else:
                     mode = ("已清并留痕" if out.get("applied")
+                            else "已执行（无可清的运行态，未写留痕）"
+                            if out.get("no_op")
                             else "dry-run（没写任何东西；--yes 才动手）")
                     print(f"账本：{bridge.broker.db_path}｜{mode}")
                     items = (out.get("items") or [])
