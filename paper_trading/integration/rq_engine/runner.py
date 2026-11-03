@@ -187,7 +187,8 @@ def session_fingerprint(cfg: dict, intraday: bool = False) -> str:
 
 def check_session_gates(evidence: dict, plan: list, *, handler_calls: int,
                         settle_expected: int = 1,
-                        expect_transfer_fee: bool = False) -> dict:
+                        expect_transfer_fee: bool = False,
+                        settled_biz=()) -> dict:
     """会话后置门禁（纯函数，可离线测）。"""
     counts = evidence.get("event_counts") or {}
     trades = evidence.get("trades") or []
@@ -198,7 +199,14 @@ def check_session_gates(evidence: dict, plan: list, *, handler_calls: int,
     provider = evidence.get("provider") or {}
     if provider.get("restore_errors"):
         errors.append(f"PersistState: {provider['restore_errors']}")
-    ordered = [p for p in plan if p.get("action") in ("buy", "sell") and p.get("volume")]
+    # settled_biz：会话自己给出过结论的意图（`INSTRUMENT_UNAVAILABLE`/
+    # `SKIPPED_EXECUTED`/`SKIPPED_DUPLICATE`）。这些单子**没走到框架**，
+    # 但原因是有的——把它们也算成"静默失败"就会在已经解释清楚的事情上喊
+    # "静默失败"（11-03 现网第一跑就是这样：920156 已被判 rejected，
+    # gates 还在报 IdleSpin，报警一旦失真就没人再信它）。
+    settled = {str(b) for b in (settled_biz or ())}
+    ordered = [p for p in plan if p.get("action") in ("buy", "sell") and p.get("volume")
+               and str(p.get("biz_id") or "") not in settled]
     if ordered and not trades and not rejects:
         errors.append("IdleSpin: 计划有下单，但既无成交也无拒单原因（静默失败）")
     # T38 裁决 5：要收过户费却没装上 = 费率口径悄悄回到"框架无过户费"，
@@ -297,9 +305,13 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
         err = describe_error(exc)
     evidence = (json.loads(Path(evidence_path).read_text(encoding="utf-8"))
                 if Path(evidence_path).exists() else {})
+    settled_biz = {str(o.get("biz_id") or "") for o in st.orders
+                   if str(o.get("status", "")).startswith(("INSTRUMENT_UNAVAILABLE",
+                                                            "SKIPPED"))} - {""}
     verdict = check_session_gates(evidence, plan, handler_calls=len(st.handler_dates),
                                   settle_expected=1 if not state_dir else 1,
-                                  expect_transfer_fee=cfg["mod"]["ptpaper"]["transfer_fee_rate"] > 0)
+                                  expect_transfer_fee=cfg["mod"]["ptpaper"]["transfer_fee_rate"] > 0,
+                                  settled_biz=settled_biz)
     done = False
     if gate and err is None and verdict["ok"]:
         gate.mark_done(date.fromisoformat(today), fp,

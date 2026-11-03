@@ -169,3 +169,22 @@ def test_raw_gate_detail_separates_never_collected_from_lagged():
         rf.raw_freshness, rf.flip_watch_with_mother = keep
     d = r["detail"]
     assert "落后 2/4 只" in d and "从未采集 2 只" in d and "台账未翻转 1 只" in d, d
+
+
+def test_idle_spin_stops_shouting_when_the_session_already_explained_it():
+    """已定局的意图不许再被算成"静默失败"——报警失真比不报更糟。
+
+    现网 11-03：`920156` 已被判 `INSTRUMENT_UNAVAILABLE`（rejected 带原因），
+    但 gates 仍报 `IdleSpin: 计划有下单，但既无成交也无拒单原因（静默失败）`
+    ——因为框架那侧确实一条单子都没提交过。
+    """
+    from paper_trading.integration.rq_engine.runner import check_session_gates
+
+    ev = {"event_counts": {"BAR": 240, "SETTLEMENT": 1}, "trades": [], "rejects": []}
+    plan = [{"action": "buy", "symbol": "920156", "volume": 100,
+             "biz_id": "920156_BUY_100@2026-11-03T11:20:00"}]
+    noisy = check_session_gates(ev, plan, handler_calls=240)
+    assert any("IdleSpin" in e for e in noisy["errors"])          # 没给结论时仍要响
+    ok = check_session_gates(ev, plan, handler_calls=240,
+                             settled_biz={"920156_BUY_100@2026-11-03T11:20:00"})
+    assert not any("IdleSpin" in e for e in ok["errors"]), ok["errors"]
