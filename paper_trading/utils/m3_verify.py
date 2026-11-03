@@ -192,13 +192,28 @@ def check_raw_gate(db, symbols, today, days: int = 60) -> dict:
     if not symbols:
         return item("raw_gate", "行情口径与新鲜度闸", "skip", "股票池为空")
     fresh = raw_feed.raw_freshness(db, symbols, today=date.fromisoformat(today))
+    never = sorted(s for s, v in fresh.items() if v.get("reason") == "no_raw_data")
     stale = sorted(s for s, v in fresh.items() if v.get("stale"))
+    lagged = [s for s in stale if s not in never]
+    lags = sorted({fresh[s].get("lag") for s in lagged})
     flip = raw_feed.flip_watch_with_mother(db, symbols,
                                           today=date.fromisoformat(today), days=days)
     if stale or flip["violations"]:
+        # 数量在前、样例在后：11-03 现网把这条读成"5 只未翻转"，真实情况是
+        # **全池 38 只都缺 11-02 那根**——截断的名单直接把归因带偏（T60）。
+        bits = []
+        if lagged:
+            bits.append(f"落后 {len(lagged)}/{len(symbols)} 只"
+                        f"（落后 {lags[0]}~{lags[-1]} 个交易日，示例 {lagged[:3]}）")
+        if never:
+            bits.append(f"从未采集 {len(never)} 只"
+                        f"（入池后没跑过全窗采集？示例 {never[:3]}）")
+        if flip["violations"]:
+            bits.append(f"台账未翻转 {len(flip['violations'])} 只"
+                        f"（unflipped_days={flip['unflipped_days']}，"
+                        f"示例 {flip['violations'][:3]}）")
         return item("raw_gate", "行情口径与新鲜度闸", "red",
-                    f"stale={stale[:5]} 未翻转={flip['violations'][:5]} "
-                    f"unflipped_days={flip['unflipped_days']}",
+                    "；".join(bits) + "——引擎会对这些标的 fail-closed 拒单",
                     on_red="回退（价都不对，账不可能对）")
     if not flip["audit_complete"] or flip["waiting_days"]:
         return item("raw_gate", "行情口径与新鲜度闸", "warn",

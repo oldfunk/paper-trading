@@ -19,6 +19,18 @@ TODAY = date.today().isoformat()
 PAST = "2026-05-08"
 
 
+def at(hhmm: str) -> datetime:
+    """把"今天几点几分"钉在 `TODAY` 上（T53 的日期敏感性教训）。
+
+    这三条用例原来写死 `datetime(2026, 10, 30, …)`，而 `today` 取的是运行当天：
+    跨过 10-30 以后 `check_nav/check_parity` 的"未到点"分支再也不成立，
+    11-03 一跑就是三条红（现网与本地同时复现）。时刻属于"今天"，
+    日期就必须与 `today` 同源——否则测的是"历史某天下午两点半"，不是这条闸。
+    """
+    hh, mm = hhmm.split(":")
+    return datetime.fromisoformat(TODAY).replace(hour=int(hh), minute=int(mm))
+
+
 @pytest.fixture()
 def broker(tmp_path):
     return PaperBroker(db_path=str(tmp_path / "acct.db"),
@@ -54,7 +66,7 @@ def add_op(c, action="parity:diff", day=PAST, ok=1, result=None):
 # ---------------------------------------------------------------- ① 收盘 NAV 未到点
 def test_nav_before_close_window_is_warn_not_money_red(conn):
     add_nav(conn, PAST)                              # 有历史 NAV，只缺"今天"
-    r = mv.check_nav(conn, TODAY, now=datetime(2026, 10, 30, 14, 35))
+    r = mv.check_nav(conn, TODAY, now=at("14:35"))
     assert r["status"] == "warn", r
     assert "尚未到点" in r["detail"] or "收盘窗口未过" in r["detail"], r["detail"]
     assert r["money"] is True                        # 仍标钱类，但状态不是红
@@ -63,7 +75,7 @@ def test_nav_before_close_window_is_warn_not_money_red(conn):
 def test_nav_after_close_window_missing_is_red(conn):
     """过了收盘窗口还没有 ⇒ 真断供，必须红（这条不许被上面的放宽吞掉）。"""
     add_nav(conn, PAST)
-    r = mv.check_nav(conn, TODAY, now=datetime(2026, 10, 30, 18, 30))
+    r = mv.check_nav(conn, TODAY, now=at("18:30"))
     assert r["status"] == "red" and r["money"] is True
 
 
@@ -78,21 +90,21 @@ def test_verify_all_no_rollback_from_intraday_nav(broker, conn):
     """整体结论层面：盘中缺 NAV 不该把 `rollback_required` 点亮（否则指挥人回退）。"""
     add_nav(conn, PAST)
     out = mv.verify_all(broker=broker, data_db=None, symbols=[], today=TODAY,
-                        cfg=TradingConfig(), now=datetime(2026, 10, 30, 14, 35))
+                        cfg=TradingConfig(), now=at("14:35"))
     assert "nav" not in out["money_reds"], out["money_reds"]
     assert [i["id"] for i in out["items"] if i["id"] == "nav" and i["status"] == "red"] == []
 
 
 # ---------------------------------------------------------------- ② 影子留痕未到点
 def test_parity_before_shadow_time_does_not_accuse_the_cron(conn):
-    r = mv.check_parity_trace(conn, TODAY, now=datetime(2026, 10, 30, 14, 35))
+    r = mv.check_parity_trace(conn, TODAY, now=at("14:35"))
     assert r["status"] == "warn"
     assert "时点未到" in r["detail"], r["detail"]
     assert "没跑" not in r["detail"], "未到点时不许指控 cron"
 
 
 def test_parity_after_shadow_time_uses_the_old_wording(conn):
-    r = mv.check_parity_trace(conn, TODAY, now=datetime(2026, 10, 30, 16, 10))
+    r = mv.check_parity_trace(conn, TODAY, now=at("16:10"))
     assert r["status"] == "warn" and "cron 没跑" in r["detail"]
     r2 = mv.check_parity_trace(conn, PAST)           # 历史日：直接旧文案
     assert "cron 没跑" in r2["detail"]
@@ -147,7 +159,7 @@ def test_verify_all_is_read_only(broker, conn):
     add_nav(conn, PAST)
     before = broker.db_path.read_bytes()
     mv.verify_all(broker=broker, data_db=None, symbols=[], today=TODAY,
-                  cfg=TradingConfig(), now=datetime(2026, 10, 30, 14, 35))
+                  cfg=TradingConfig(), now=at("14:35"))
     assert broker.db_path.read_bytes() == before
 
 

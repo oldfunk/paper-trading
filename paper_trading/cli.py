@@ -2684,9 +2684,13 @@ def main() -> None:
                     _hb.touch("minute", ok=not res["errors"],
                               detail=f"written={res['written']} "
                                      f"errors={','.join(res['errors'])[:60]}")
-                    if res["errors"]:
+                    fp = _min.gap_fingerprint(res["day"], res["errors"])
+                    # 同日同症状只落一条流水（盘中每 15 分钟一跳，11-03 一天 92 条）；
+                    # 症状集合一变就立刻再落——告警不静默，也不刷屏。
+                    if res["errors"] and not bridge.broker.has_op_with("minute:gap", fp):
                         bridge.broker.log_operation(
                             "minute:gap", {"day": res["day"], "period": res["period"],
+                                           "fingerprint": fp,
                                            "errors": res["errors"],
                                            "per_symbol": {s: v for s, v in
                                                           res["per_symbol"].items()
