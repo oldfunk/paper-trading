@@ -419,6 +419,11 @@ class EngineRunner:
             # 每分钟重复入队同 key 意图（2026-11-04 现网实测：300390 一天
             # 重复 19 条，18 条被标 executed 却无成交，m3 verify 钱类红）
             self.state.mark_order(sym, now.isoformat())
+            # 预算也要在入队时累加：`max_orders_per_day` 的口径是"报单笔数"（见
+            # config 注释），入队即报单。条件单分支早就在 ok 后 bump_budget，
+            # 这条分支漏了 ⇒ 两条路径共用一个计数器却只有一家在加，
+            # 限额在 rqalpha 底座下形同虚设（2026-11-04 复核 d1a487d 时照出）。
+            self.state.bump_budget(day, 1, amount)
             return {"ok": True, "queued": True,
                     "why": "已交 rq 引擎队列（下一跳 ≤5 分钟执行）"}
         res = self.b.broker.submit_order(order)

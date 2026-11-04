@@ -1245,3 +1245,23 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
         连 `quote_log`、峰值刷新、心跳轮次和"被拦意图"留痕一起吞掉 ⇒ 已回滚，
         并把这条假设改写成**证明它不成立**的测试
 
+---
+
+## Batch 16 跟进 · day-1 P0 复核（Qoder 自主迭代 2026-11-04，无新批次下发）
+
+主 AI 修的两个 P0（`d1a487d`）没有回归测试，且同一条分支上还有第三处同类漏项：
+
+- [x] 补 `tests/test_m3_day1_p0s.py` 7 例：入队即 `mark_order`（防重灌）、
+      rq 分支不碰账本、`rq-nav` 让位要看 `nav_history`（RunDaily 不留 op_log 的形状）、
+      让位检查 fail-open 且必须只读
+- [x] **复核照出第三处并修**：rq 分支只 `mark_order` 不 `bump_budget` ⇒
+      `max_orders_per_day/max_turnover_per_day` 在 rqalpha 底座下形同虚设
+      （条件单分支一直在加，两路径共用同一个计数器）；补一行 + 两条"限额真的挡单"测试
+- [x] T60 可证伪判据验证**成立**：`daily_bars_raw` 11-03 全池 40/40、连续 7 日无逐标的滞后；
+      现网 `m3 verify` 绿 9 / 警 3 / 红 0，三个 warn 逐个核对均非失真
+- [x] T62 工具第一次真用就点名 11-04 的 18 条重复意图（`intent_ledger_conflict`），
+      与 `d1a487d` 成因互相印证；顺便确认 11-03 上报的 `t1_unfreeze_overdue` 已自行解除
+- [ ] 待拍板 3 件（questions.md 2026-11-04）：同轮内预算不重读（两路径共有，收紧会改行为）、
+      T62 分支要不要合、18+2 条冲突意图留还是清
+- 全量 **745 passed / 9 skipped**；门禁 断层：无；生产只读、账本 md5 与 crontab 未变
+
