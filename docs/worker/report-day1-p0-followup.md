@@ -96,3 +96,21 @@
 - 全量 **745 passed / 9 skipped**；`tests/wiring_audit.py --quiet` → 断层：无。
 - 生产侧：本轮只做了只读查询（`m3 verify`、raw 覆盖、账本副本 dry-run）；
   `paper_account.db` md5 与 crontab 未变，未部署、未合并。
+
+---
+
+## 7. T69（Hermes 审查）回执
+
+Hermes 独立审 `d1a487d`，两条建议与我这轮重合（budget 记账、补"同日只入队一次"断言），
+另外两条我按它的口径补了：
+
+| T69 建议 | 处置 |
+| --- | --- |
+| `_nav_history_has_today` fail-open「money-class 略松，建议至少 warn」 | ✅ 改为 warn 后再回 `False`（行为不变：宁可多记不可断供；但让位失败从此有声音）。测试 `test_nav_history_helper_is_fail_open_and_uses_a_read_only_uri` 同时钉住"只读连接"与"必须 warn" |
+| LIKE 前缀匹配 `timestamp` 的格式一致性 | ✅ 复核过：写入侧统一是 `datetime.isoformat()`，`{today}%` 前缀可命中；不改成 `substr` 是为了少一处口径分叉 |
+| 同形问题顺手排查 | 冷却时间戳解析失败原先是 `except: pass` —— 那正是 11-04 P0（同规则每分钟重灌）**唯一那道闸**的输入。坏时间戳会让闸门静默打开，已改成 warn + 放行（宁可放行也不误拦，但必须留声音），配 `test_corrupt_cooldown_timestamp_warns_instead_of_silently_opening_the_gate` |
+
+本轮之后：`m3 verify`/`reset-state` 之外，钱类路径上**再没有"读失败=当没这回事且不留声"**
+的两处（其余 40 个静默 handler 集中在行情回退、心跳、日志与 UI 侧，逐个看过不改是对的）。
+全量 **746 passed / 9 skipped**，门禁 断层：无。
+
