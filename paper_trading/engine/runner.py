@@ -414,6 +414,11 @@ class EngineRunner:
             _hb.touch("engine", ok=True, detail=f"rq-enqueue {rid}:{sym}:{side}")
             self.state.log_trigger(now.isoformat(), day, rid, sym, side,
                                    "queued_rq", {**detail, "volume": volume})
+            # 防重与旧路径同语义（mark_order = 本规则对本标的今日已触发）：
+            # rq 执行是异步的（入队 ≠ 成交），必须**入队即 mark**——否则
+            # 每分钟重复入队同 key 意图（2026-11-04 现网实测：300390 一天
+            # 重复 19 条，18 条被标 executed 却无成交，m3 verify 钱类红）
+            self.state.mark_order(sym, now.isoformat())
             return {"ok": True, "queued": True,
                     "why": "已交 rq 引擎队列（下一跳 ≤5 分钟执行）"}
         res = self.b.broker.submit_order(order)

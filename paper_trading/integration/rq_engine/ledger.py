@@ -110,6 +110,24 @@ def post_session(broker, evidence: dict, *, today: str, fp: str = "",
             "ok": not errors, "today": today}
 
 
+def _nav_history_has_today(broker, today: str) -> bool:
+    """nav_history 当天是否已有行（RunDaily 等无 op_log 的写入路径的让位依据）。"""
+    try:
+        import sqlite3
+        db = getattr(broker, "db_path", None)
+        if not db:
+            return False
+        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            n = c.execute("SELECT COUNT(*) FROM nav_history WHERE timestamp LIKE ?",
+                          (f"{today}%",)).fetchone()[0]
+            return n > 0
+        finally:
+            c.close()
+    except Exception:                 # noqa: BLE001 - 查不到按"没有"处理（宁可多记不可断供）
+        return False
+
+
 def record_close_nav(broker, prices: dict, *, today: str, fp: str = "") -> dict:
     """收盘 NAV（G2）：业务日判重、**当天没有成交也要记**，面板净值不断供。
 
@@ -126,8 +144,12 @@ def record_close_nav(broker, prices: dict, *, today: str, fp: str = "") -> dict:
     if missing:
         return {"recorded": False, "reason": "price_missing",
                 "symbols": sorted(missing)[:10]}
+    # 让位检查三条：op_log 的 rq-nav / 旧线 nav:close / **nav_history 当天已有行**
+    # （2026-11-04 现网双写事故：RunDaily 每日首笔直接写 nav_history 且不留
+    # op_log ⇒ 前两条看不见它，rq-nav 让位失败，同日 2 行 NAV 触发 m3 verify 红）
     if broker.has_operation(NAV_BIZ_PREFIX, today) or \
-            broker.has_operation("nav:close", today):
+            broker.has_operation("nav:close", today) or \
+            _nav_history_has_today(broker, today):
         return {"recorded": False, "reason": "already_recorded", "today": today}
     snap = broker.get_nav(prices)
     broker.record_nav(snap)
