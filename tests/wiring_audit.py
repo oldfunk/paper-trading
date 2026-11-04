@@ -87,9 +87,17 @@ LLM_FIELD_TARGET = {
     "llm_thinking": "extra_body",    # thinking 开关是透传体，不是独立字段
 }
 
-#: 间接层：`_ask_llm` 把参数写进 cfg 后再调 `chat`。它内部那次 `chat` 调用不该算"漏传"，
-#: 真正要看的是**它的调用点**传的是配置还是硬编码数字。
-LLM_HELPERS = {"_ask_llm", "chat_with_retry", "_ask"}
+#: 间接层的判定特征：函数体内把参数写进请求对象（`cfg.timeout = …`）并最终调 `chat`。
+#: 这一层内部那次 `chat` 调用不该算"漏传"——真正要看的是它的**调用点**传的是配置还是字面量。
+#: 旧版本这里是个人工名单（`{"_ask_llm", "chat_with_retry", "_ask"}`），而名单会过期：
+#: 新增一层转传却没人登记，矩阵就把那层的内部调用当成"漏传"、把它外面的调用点整个跳过，
+#: 断层反而被洗白。T68 改成 AST 自动识别（`detect_helpers`），下面的集合只当**期望值**用：
+#: 推导结果与期望不一致就红（要么名单过期，要么冒出了没人复核过的新层）。
+HELPER_WRITE_RE = re.compile(r"\bcfg\.(timeout|max_tokens|extra_body|temperature)\s*=")
+LLM_HELPER_EXPECT = {"chat_with_retry", "_ask_llm"}
+#: 请求函数在 provider 里的原名；`from … import chat as _chat` 这类别名靠
+#: `Scan.aliases` 还原，否则换了个调用名就漏检（`_ask` 已经踩过一次）。
+CHAT_NAMES = ("chat", "_chat")
 HELPER_PARAM_POS = {"llm_timeout": 3, "llm_retries": 4,
                     "llm_max_tokens": 5, "llm_thinking": 6}
 #: 目标参数名：`timeout=xxx` 这种具名传参也是供给（值来自上一层的形参，不是硬编码）
@@ -146,12 +154,24 @@ class Site:
     text: str = ""
 
 
+def fk(path: str, fname: str) -> str:
+    """函数按 `文件::名` 索引——同名函数在两个文件里都存在（`run`/`emit`/`main` 都是），
+    只按名字建表会让后出现的那份 body 永远查不到，矩阵就**静默少一行**。"""
+    return f"{path}::{fname}"
+
+
 @dataclass
 class Scan:
     reads: dict[str, list[Site]] = dc_field(default_factory=dict)
     declares: dict[str, list[Site]] = dc_field(default_factory=dict)
     functions: dict[str, tuple[str, int, int]] = dc_field(default_factory=dict)
     calls: dict[str, list[tuple[str, str, int]]] = dc_field(default_factory=dict)
+    #: 文件内 `from x import name as alias` 的还原表（alias → 原名）
+    aliases: dict[str, dict[str, str]] = dc_field(default_factory=dict)
+    #: 函数形参名（判断"薄壳是否原样转传自己的形参"要用）
+    params: dict[str, set[str]] = dc_field(default_factory=dict)
+    #: 函数体源码（间接层判定要用；顺带让整把尺子能喂合成源码，不必读磁盘）
+    bodies: dict[str, str] = dc_field(default_factory=dict)
 
     def sites(self, name: str) -> list[Site]:
         return self.reads.get(name, [])
@@ -173,6 +193,13 @@ def scan_sources(files: dict[str, str]) -> Scan:
         except Exception:                       # noqa: BLE001 - 语法不过的文件由单测自己管
             continue
         lines = text.splitlines()
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom):
+                for al in n.names:
+                    s.aliases.setdefault(rel, {})[al.asname or al.name] = al.name
+            elif isinstance(n, ast.Import):
+                for al in n.names:
+                    s.aliases.setdefault(rel, {})[(al.asname or al.name).split(".")[0]] = al.name
 
         def note(bucket, name, node, kind):
             lineno = getattr(node, "lineno", 0)
@@ -184,8 +211,13 @@ def scan_sources(files: dict[str, str]) -> Scan:
             for n in ast.iter_child_nodes(nodes):
                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     fname = f"{enclosing}.{n.name}" if enclosing else n.name
-                    s.functions.setdefault(fname, (rel, n.lineno,
-                                                   n.end_lineno or n.lineno))
+                    key = fk(rel, fname)
+                    s.functions[key] = (rel, n.lineno, n.end_lineno or n.lineno)
+                    s.params[key] = {a.arg for a in
+                                     list(n.args.args) + list(n.args.posonlyargs)
+                                     + list(n.args.kwonlyargs)}
+                    s.bodies[key] = "\n".join(
+                        lines[n.lineno - 1:(n.end_lineno or n.lineno)])
                     walk(n, fname)
                     continue
                 if isinstance(n, ast.ClassDef):
@@ -377,70 +409,163 @@ HELPER_FORWARD = {
 }
 
 
-def llm_hop_matrix(scan: Scan, ctor_kwargs: Optional[set[str]] = None) -> list[dict]:
+def resolve_name(scan: Scan, path: str, name: str) -> str:
+    """把调用名还原成它在定义模块里的原名（`import chat as _chat` 那种类名）。"""
+    return scan.aliases.get(path, {}).get(name, name)
+
+
+def iter_calls(scan: Scan, names) -> list[tuple[str, str, int, str]]:
+    """遍历"解析后命中 names 的调用点"，返回 (文件, 外层函数, 行号, 原名)。"""
+    out = []
+    wanted = set(names)
+    for (callee, sites) in scan.calls.items():
+        for (path, enclosing, line) in sites:
+            if resolve_name(scan, path, callee) in wanted:
+                out.append((path, (enclosing or "").split(".")[0], line, callee))
+    return sorted(out)
+
+
+def _find_call(body: str, callee: str) -> int:
+    """找函数调用的位置，避开**子串碰撞**：`def llm_ask(...)` 里就含 `_ask(`。
+
+    真出过这个假阳：`llm_ask` 被报成"四个字段都没传"，因为提取到的是它自己的
+    形参列表。要求调用名前不是单词字符也不是 `.`（排除 `mod._ask(` 与方法名尾巴）。
+    """
+    m = re.search(r"(?<![\w.])" + re.escape(callee) + r"\(", body)
+    return m.start() if m else -1
+
+
+def detect_helpers(scan: Scan) -> dict[str, dict]:
+    """自动识别"把配置写进请求对象再转传"的间接层，含**多层链**（T68 切入点①）。
+
+    第 1 层（直接层）：函数体内有 `cfg.<目标参数> =` 的写入，且它（含内部闭包）最终调 `chat`。
+    第 2 层起（传递层）：函数调用已知间接层，且四个 LLM 字段都以**非字面量**转传下去
+    （`_ask_llm` 就是这么把 timeout/retries/max_tokens/thinking 交给 `chat_with_retry` 的）。
+    只认第 1 层会漏掉真正的风险面：调用点藏在第 2 层后面，`retries=1` 那种硬编码就没人看了。
+    人工名单会过期——新加一层没登记，矩阵把那层的内部调用报成漏传、又把它外面的调用点
+    整条跳过，**断层反而被洗白**，所以改成推导，登记集合只当期望值用（漂移即红）。
+    """
+    derived: dict[str, dict] = {}
+    chat_sites = iter_calls(scan, CHAT_NAMES)
+    for (path, outer, line, callee) in chat_sites:
+        if not outer or fk(path, outer) not in scan.functions:
+            continue
+        fpath, start, end = scan.functions[fk(path, outer)]
+        if fpath != path:
+            continue
+        body = scan.bodies.get(fk(path, outer), "")
+        writes = sorted(set(HELPER_WRITE_RE.findall(body)))
+        if writes:
+            got = derived.setdefault(outer, {"file": fpath, "writes": [], "line": line,
+                                             "level": 1})
+            got["writes"] = sorted(set(got["writes"]) | set(writes))
+
+    # 传递层：**只认真正的薄壳**——它把自己形参原样交给下一层（`_ask_llm` 的
+    # `timeout/retries/max_tokens/thinking` 就是形参）。业务函数调 `_ask_llm` 时传的是
+    # `self.cfg.llm_*`，那是**供给点**（要看它有没有把配置带上），不是壳；
+    # 把业务函数也算成层会雪崩——`run/tick/main` 全都变"层"，矩阵就没人被检查了。
+    while True:
+        added = False
+        for name in sorted(derived):
+            for (path, outer, line, callee) in iter_calls(scan, [name]):
+                key = fk(path, outer)
+                if outer in derived or not outer or key not in scan.functions:
+                    continue          # 已经在层里/或不是函数内的调用
+                params = scan.params.get(key, set())
+                if not params:
+                    continue
+                fpath = scan.functions[key][0]
+                body = scan.bodies.get(key, "")
+                idx = _find_call(body, callee)
+                if idx < 0:
+                    continue
+                args = _extract_call_args(body, idx)
+                # 形参名用 TARGET_BY_FIELD（`thinking`），不是 LLM_FIELD_TARGET
+                # （`extra_body`，那是请求侧属性名）——两张表含义不同，混用会把
+                # 薄壳判成"没转传"，链条就断在这里。
+                forwarded = all(
+                    f in args or (
+                        re.search(rf"\b{TARGET_BY_FIELD[f]}\s*=\s*"
+                                  rf"{TARGET_BY_FIELD[f]}\b", args)   # 具名原样转传
+                        or TARGET_BY_FIELD[f] in params)
+                    for f in LLM_FIELDS)
+                if forwarded and set(TARGET_BY_FIELD.values()) <= params:
+                    derived[outer] = {"file": fpath, "writes": [], "line": line,
+                                      "level": derived[name].get("level", 1) + 1,
+                                      "forwards_to": name}
+                    added = True
+                    break
+        if not added:
+            break
+    return derived
+
+
+def llm_hop_matrix(scan: Scan, ctor_kwargs: Optional[set[str]] = None,
+                   helpers: Optional[dict] = None) -> list[dict]:
     """每个真正发 LLM 请求的调用点，逐字段看 agent.llm_* 有没有落到请求上。
 
-    三类行，各自有各自的"接上"定义：
+    三类行，各自的"接上"定义不同：
     * `path`（直连 `chat`）：本函数引用了配置，或构造点把值喂给了目标参数
       （`LLMConfig(timeout=…)` 主 AI 11-03 就是这么修的）；
-    * `helper_site`（经 `_ask_llm`）：实参文本里出现配置字段名才算传；字段没出现而那个
-      位置给了字面量 ⇒ **硬编码覆盖**（今天恰好等于默认，改 config 无效）；
-    * `helper`（`_ask_llm` 自身，只一行）：值要真写进 `cfg.timeout/cfg.max_tokens/
-      cfg.extra_body` 与重试循环，否则调用点传了也白传。
+    * `helper`（间接层自身）：值必须真写进 `cfg.timeout/cfg.max_tokens/cfg.extra_body`
+      与重试循环，否则调用点传了也白传；
+    * `helper_site`（间接层的调用点）：实参里出现配置字段名，或目标参数以非字面量具名
+      转传才算供给；那个位置给字面量 ⇒ **硬编码覆盖**（今天恰好等于默认，改 config 无效）。
     只算一路会两头出假：只算路径会把已修的 timeout 报成漏传，只算构造点会把
     "问答路径没带 max_tokens"这种真漏传洗白。
     """
     ctor_kwargs = ctor_kwargs or set()
+    helpers = helpers if helpers is not None else detect_helpers(scan)
     rows: list[dict] = []
 
     def body_of(path: str, outer: str) -> str:
-        _f, start, end = scan.functions[outer]
-        return "\n".join((ROOT / path).read_text(encoding="utf-8")
-                         .splitlines()[start - 1:end])
+        return scan.bodies.get(fk(path, outer), "")   # 扫描时已带源码
 
-    for caller in LLM_CALLERS:
-        for (path, enclosing, line) in scan.calls.get(caller, []):
-            outer = (enclosing or "").split(".")[0]     # 嵌套闭包算进外层函数体
-            if not outer or outer not in scan.functions:
-                continue
-            if outer in LLM_HELPERS:                    # 间接层内部那次由 helper 行统一判
-                continue
-            body = body_of(path, outer)
-            cells = {}
-            for f in LLM_FIELDS:
-                tgt = LLM_FIELD_TARGET.get(f, "")
-                in_path = bool(re.search(rf"\b{f}\b", body))
-                by_ctor = tgt in ctor_kwargs
-                cells[f] = {"path": in_path, "ctor": by_ctor, "target": tgt,
-                            "ok": in_path or by_ctor}
-            rows.append({"call": f"{caller}()", "file": path, "function": outer,
-                         "line": line, "role": "path", "cells": cells})
+    for (path, outer, line, callee) in iter_calls(scan, CHAT_NAMES):
+        if not outer or fk(path, outer) not in scan.functions:
+            continue
+        if outer in helpers:                       # 间接层内部那次由 helper 行统一判
+            continue
+        body = body_of(path, outer)
+        cells = {}
+        for f in LLM_FIELDS:
+            tgt = LLM_FIELD_TARGET.get(f, "")
+            in_path = bool(re.search(rf"\b{f}\b", body))
+            by_ctor = tgt in ctor_kwargs
+            cells[f] = {"path": in_path, "ctor": by_ctor, "target": tgt,
+                        "ok": in_path or by_ctor}
+        rows.append({"call": f"{callee}()", "file": path, "function": outer,
+                     "line": line, "role": "path", "cells": cells})
 
-    for name in sorted(LLM_HELPERS):
-        for (path, enclosing, line) in scan.calls.get(name, []):
-            lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
-            blob = "\n".join(lines[line - 1:min(len(lines), line + 8)])
-            needle = f"{name}("
-            if needle not in blob:
+    for name in sorted(helpers):
+        info = helpers[name]
+        if info.get("level", 1) > 1:
+            # 传递层（如 `_ask_llm`）自己不写 cfg，只把参数交给下一层——这点在推导时
+            # 已经逐字段核过"非字面量转传"，这里如实标注，不再套 `cfg.x =` 的判据。
+            cells = {f: {"path": True, "ctor": False, "target": f, "ok": True,
+                         "via": info.get("forwards_to", "")} for f in LLM_FIELDS}
+            rows.append({"call": f"{name} 转传层", "file": info["file"],
+                         "function": name, "line": info["line"], "role": "helper",
+                         "cells": cells})
+        else:
+            body = body_of(info["file"], name)
+            cells = {f: {"path": bool(re.search(pat, body)), "ctor": False,
+                         "target": f, "ok": bool(re.search(pat, body))}
+                     for f, pat in HELPER_FORWARD.items()}
+            rows.append({"call": f"{name} 自身", "file": info["file"], "function": name,
+                         "line": info["line"], "role": "helper", "cells": cells})
+        for (path, outer, line, callee) in iter_calls(scan, [name]):
+            if path == info["file"] and outer == name:
+                continue                            # 层内部的自调用不是供给点
+            body = scan.bodies.get(fk(path, outer), "")
+            idx = _find_call(body, callee)
+            if not body or idx < 0:
                 continue
-            args = _extract_call_args(blob, blob.index(needle))
-            outer = (enclosing or "").split(".")[0]
+            args = _extract_call_args(body, idx)
             rows.append({"call": f"{name} 调用点", "file": path, "function": outer,
                          "line": line, "role": "helper_site",
                          "cells": {f: _site_cell(f, args) for f in LLM_FIELDS},
                          "hardcoded": _hardcoded_helper_args(args), "args": args})
-
-    for (path, _enc, line) in scan.calls.get("_chat", []) + scan.calls.get("chat", []):
-        outer = (_enc or "").split(".")[0]
-        if outer not in LLM_HELPERS or any(
-                r["role"] == "helper" and r["file"] == path for r in rows):
-            continue
-        body = body_of(path, outer)
-        cells = {f: {"path": bool(re.search(p, body)), "ctor": False, "target": f,
-                     "ok": bool(re.search(p, body))}
-                 for f, p in HELPER_FORWARD.items()}
-        rows.append({"call": "_ask_llm 自身", "file": path, "function": outer,
-                     "line": line, "role": "helper", "cells": cells})
 
     return sorted(rows, key=lambda x: (x["role"], x["file"], x["line"]))
 
@@ -492,7 +617,8 @@ def audit() -> dict:
     surfaces = {name: surface_fields(name) for name in SURFACE_SPECS}
     llm_ctor, _n, _s = _ctor_kwargs_for(scan, "LLMConfig", "cli.py")
     dead = dead_knobs(scan, surfaces)
-    hops = llm_hop_matrix(scan, llm_ctor)
+    helpers = detect_helpers(scan)
+    hops = llm_hop_matrix(scan, llm_ctor, helpers)
     yaml_issues = yaml_vs_surfaces(scan, surfaces)
     supply = hop_supply(scan, surfaces)
 
@@ -505,10 +631,16 @@ def audit() -> dict:
     defaulted_bad = [{"target": s["target"], "fields": s["defaulted"]}
                      for s in supply if s["defaulted"]]
     bad_exempt = [f"{s}/{f}" for (s, f), reason in EXEMPT.items() if not str(reason).strip()]
+    # 间接层漂移：推导出来的人没登记（新转传层没人复核过判定），或登记了但代码里已经没有
+    # 那一层（判定还按间接层走，等于给不存在的层开后门）。两种都要红。
+    helper_drift = {"unregistered": sorted(set(helpers) - LLM_HELPER_EXPECT),
+                    "obsolete": sorted(LLM_HELPER_EXPECT - set(helpers))}
 
     return {
         "surfaces": {k: len(v) for k, v in surfaces.items()},
         "llm_config_ctor": sorted(llm_ctor & surfaces["LLMConfig"]),
+        "helpers_derived": helpers,
+        "helper_drift": helper_drift,
         "dead_knobs": dead,
         "dead_knobs_unexempted": dead_bad,
         "llm_hop_matrix": hops,
@@ -517,7 +649,8 @@ def audit() -> dict:
         "ctor_supply": supply,
         "ctor_defaulted": defaulted_bad,
         "exempt_missing_reason": bad_exempt,
-        "ok": not (dead_bad or hop_bad or yaml_issues or bad_exempt),
+        "ok": not (dead_bad or hop_bad or yaml_issues or bad_exempt
+                   or helper_drift["unregistered"] or helper_drift["obsolete"]),
     }
 
 
@@ -554,6 +687,12 @@ def render(r: dict) -> str:
                        f"（{ROLE_LABEL[h['role']]}）没带进请求：{h['missing']}")
         for note_text in h["hardcoded"]:
             out.append(f"   🔴 {h['file']}:{h['line']} {h['function']} {note_text}")
+    drift = r["helper_drift"]
+    out.append(f"   间接层（AST 推导，含多层链）：{sorted(r['helpers_derived'])}——"
+               f"第 1 层把配置写进 cfg 再调 chat，第 2 层起是把自己形参原样转传的薄壳；"
+               f"登记外/过期：{drift['unregistered'] or '无'} / {drift['obsolete'] or '无'}")
+    if drift["unregistered"] or drift["obsolete"]:
+        out.append("   🔴 间接层与登记不一致：新转传层没人复核过判定，或名单里留着已不存在的层")
     out.append("")
     out.append(f"③ 三面白名单（yaml ⇄ 归一化 ⇄ 字段）：断层 {len(r['yaml_mismatches'])} 条")
     for i in r["yaml_mismatches"]:

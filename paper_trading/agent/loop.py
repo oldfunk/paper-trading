@@ -36,6 +36,11 @@ class AgentConfig:
     llm_timeout: float = 120.0  # 决策上下文大，放宽单次超时
     llm_retries: int = 1  # 仅超时重试一次，其他错误直接失败
     llm_max_tokens: int = 8192  # 答案区预算（实测推理 3000+ thinking 会挤掉答案）
+    #: 问答（面板/CLI）的输出预算。与决策用的 8192 刻意不同：实测该端点的响应时间
+    #: 跟着 max_tokens **上限**走（11-03：4096→82.4s、1536→45.5s、1200→28.3s，而真实
+    #: 输出都约 650 token），决策要 JSON 预算、问答要快，两个数不该是同一个。
+    #: 答案被这个上限掐断时 `llm_ask` 会显式标注（T67），不再静默。
+    ask_max_tokens: int = 1536
     llm_thinking: str = "disabled"  # 格式受限决策默认关 thinking，又快又省又稳
     picks_enabled: bool = True   # AI 自主提名池外标的（候选之外也允许它选股）
     picks_max: int = 5           # 单轮最多提名多少只（1-10）

@@ -76,8 +76,40 @@ def list_models(cfg: LLMConfig) -> list[str]:
     return out
 
 
-def chat(cfg: LLMConfig, messages: list[dict], system: str = "") -> str:
-    """一轮对话，返回助手文本。"""
+class LLMReply(str):
+    """助手文本 + 这一轮响应的事实（`finish_reason` / `usage`）。
+
+    为什么是 `str` 的子类而不是换成返回 dict：`chat()` 的返回物在 7 个测试文件里
+    被 `monkeypatch` 成假函数、在生产里被决策路径当字符串解析（JSON 抽取）。
+    换成别的形状会把 T64 刚收敛好的那条路径又拆散。子类既是一个 str（所有旧用法
+    一字不改地有效），又能带元信息；假桩返回普通 str 时，读元信息的一方必须按
+    "没有就当作未知"处理（`llm_ask` 就是这么写的）。
+
+    `truncated` 是 T67 的第一优先事项：`finish_reason="length"` 意味着答案被
+    `max_tokens` 掐断，此前**对用户完全静默**——问答看起来正常，其实少了一截。
+    """
+
+    finish_reason: str = ""
+    usage: dict = None        # type: ignore[assignment]  # 厂商原样回传（prompt/completion/total）
+    truncated: bool = False
+
+    @property
+    def prompt_tokens(self) -> Optional[int]:
+        try:
+            return int((self.usage or {}).get("prompt_tokens"))
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def completion_tokens(self) -> Optional[int]:
+        try:
+            return int((self.usage or {}).get("completion_tokens"))
+        except (TypeError, ValueError):
+            return None
+
+
+def chat(cfg: LLMConfig, messages: list[dict], system: str = "") -> LLMReply:
+    """一轮对话，返回助手文本（带 finish_reason/usage 元信息，见 `LLMReply`）。"""
     if not cfg.model:
         raise LLMError("未指定模型（先选模型或手填模型名）")
     msgs = ([{"role": "system", "content": system}] if system else []) + list(messages)
@@ -96,10 +128,11 @@ def chat(cfg: LLMConfig, messages: list[dict], system: str = "") -> str:
         content = msg.get("content")
     except (KeyError, IndexError, TypeError):
         raise LLMError("对话返回格式异常（缺 choices/message/content）") from None
+    finish = str(choice.get("finish_reason") or "")
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     if not content:
         # 推理模型把输出预算全花在 thinking 上时，content 是空串、finish_reason=length。
         # 直接返回空会让面板看起来像"API 坏了"，这里给出能照着做的原因。
-        finish = str(choice.get("finish_reason") or "")
         thinking = str(msg.get("reasoning_content") or "")
         if thinking:
             raise LLMError(
@@ -107,7 +140,11 @@ def chat(cfg: LLMConfig, messages: list[dict], system: str = "") -> str:
                 f"思考 {len(thinking)} 字）。把最大输出调大，或在模型设置里关闭思考"
                 f"（本地模型可在请求里传 thinking=disabled）")
         raise LLMError(f"模型返回空答案（finish_reason={finish or '未知'}）")
-    return str(content)
+    reply = LLMReply(str(content))
+    reply.finish_reason = finish
+    reply.usage = usage
+    reply.truncated = finish == "length"        # 被 max_tokens 掐断（T67：不许再静默）
+    return reply
 
 
 #: 始终思考的厂商错误指纹（GLM 5.3 系列 HTTP 400 / 1210「不支持关闭思考」）

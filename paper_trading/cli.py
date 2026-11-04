@@ -90,7 +90,8 @@ def _ask_user_prompt(prompt: str, ctx: dict) -> str:
             "以上之外的持仓/成交/数字一律按「数据未提供」处理。）")
 
 
-#: 问答路径的输出预算（与决策路径的 `agent.llm_max_tokens=8192` 刻意不同）。
+#: 问答输出预算的**兜底值**：正常口径走 `agent.ask_max_tokens`（配置面，T67 批复 2）。
+#: 留这个常量是因为 bridge 可能在没装 agent_cfg 的路径上被调用（单测/早期启动）。
 #: 依据是 2026-11-03 现网实测（同一问题、同一上下文、thinking 都关）：
 #: max_tokens=8192 → 74.9s / 1200 → 28.3s，而两次实际输出都约 650 token、
 #: 答案都 1000+ 字且 finish_reason=stop——**耗时跟着上限走，不跟着真实输出走**。
@@ -211,6 +212,7 @@ class TradingBridge:
             llm_timeout=float(agent_kwargs.get("llm_timeout", 120.0)),
             llm_retries=int(agent_kwargs.get("llm_retries", 1)),
             llm_max_tokens=int(agent_kwargs.get("llm_max_tokens", 8192)),
+            ask_max_tokens=max(128, int(agent_kwargs.get("ask_max_tokens", 1536))),
             llm_thinking=str(agent_kwargs.get("llm_thinking", "disabled")),
             picks_enabled=bool(agent_kwargs.get("picks_enabled", True)),
             picks_max=max(1, min(10, int(agent_kwargs.get("picks_max", 5)))),
@@ -1024,7 +1026,8 @@ class TradingBridge:
         拿的是 `LLMConfig` 自己的默认 max_tokens=4096 / thinking 不关 / 不重试，
         与决策路径各写一份——`llm_timeout` 那次事故的另一半就在这里。
         """
-        from paper_trading.agent.context import estimate_tokens, size_of
+        from paper_trading.agent.context import (estimate_tokens, set_token_calibration,
+                                           size_of)
         from paper_trading.llm import LLMError
 
         prompt = (prompt or "").strip()
@@ -1050,27 +1053,59 @@ class TradingBridge:
                           sys_prompt,
                           timeout=float(getattr(ag, "llm_timeout", 120.0) or 120.0),
                           retries=int(getattr(ag, "llm_retries", 1) or 0),
-                          max_tokens=int(max_tokens or ASK_MAX_TOKENS),
+                          max_tokens=int(max_tokens
+                                         or getattr(ag, "ask_max_tokens", 0)
+                                         or ASK_MAX_TOKENS),
                           thinking=str(getattr(ag, "llm_thinking", "disabled")
                                        or "disabled"))
         except LLMError as e:
             self.broker.log_operation("llm:ask", {"model": "", "prompt": prompt[:200]},
                                       False, {"error": str(e)}, None, None)
             return {"ok": False, "error": str(e)}
+        # 真实 token 校准（T67 批复 3）：厂商 usage 是唯一能证明"预算单位"的东西。
+        # 估算比 GLM 的 tokenizer 低约 1.4×（11-03 实测），校准后同一进程内的后续
+        # 压缩按真实口径走；留痕同时记估算值与真实值，谁也不许冒充谁。
+        real_prompt = getattr(answer, "prompt_tokens", None)
+        real_completion = getattr(answer, "completion_tokens", None)
+        finish = str(getattr(answer, "finish_reason", "") or "")
+        truncated = bool(getattr(answer, "truncated", False))
+        calibrated = False
+        if real_prompt and tokens > 0:
+            calibrated = set_token_calibration(real_prompt / tokens)
         st = self.get_status()
+        notice = ""
+        if truncated:
+            # 静默截断=纪律问题（批复 1）：标记进答案文本本身，面板/CLI/留痕都能看到
+            notice = (f"\n\n⚠️ 答案已达输出上限被截断（finish_reason=length，"
+                      f"max_tokens={int(max_tokens or getattr(ag, 'ask_max_tokens', 0) or ASK_MAX_TOKENS)}，"
+                      f"已输出 {real_completion or '?'} token）。"
+                      f"要更完整的回答请让我用 --max-tokens 提高上限，或在配置里调 agent.ask_max_tokens。")
+            answer = answer + notice            # LLMReply 是 str 子类，拼接后仍是 str
         self.broker.log_operation(
             "llm:ask", {"model": cfg.model, "prompt": prompt[:500],
                         "with_context": True, "slim": bool(slim),
                         "symbols": list(symbols or [])[:20],
                         "req_chars": chars, "req_tokens": tokens,
-                        "req_max_tokens": int(max_tokens or ASK_MAX_TOKENS)}, True,
-            {"answer": answer[:2000], "context": meta},
+                        "req_max_tokens": int(max_tokens
+                                                or getattr(ag, "ask_max_tokens", 0)
+                                                or ASK_MAX_TOKENS)}, True,
+            {"answer": answer[:2000], "context": meta,
+             "truncated": truncated, "finish_reason": finish,
+             "usage": {"prompt_tokens_est": tokens,
+                       "prompt_tokens_real": real_prompt,
+                       "completion_tokens": real_completion},
+             "calibrated": calibrated},
             st["cash"], st["total_value"])
         # 体积进日志：压缩有没有效、问答变没变快，必须能从日志里直接看出来（T63 可观测）
-        logger.info("llm:ask 请求体 %s 字符 ≈ %s token（压缩：%s）",
-                    chars, tokens, meta.get("reason") or "未知")
+        logger.info("llm:ask 请求体 %s 字符 ≈ %s token（真实 prompt=%s，压缩：%s%s）",
+                    chars, tokens, real_prompt if real_prompt is not None else "?",
+                    meta.get("reason") or "未知", "，答案被截断" if truncated else "")
         return {"ok": True, "model": cfg.model, "answer": answer,
-                "context": {"chars": chars, "tokens": tokens, **meta}}
+                "truncated": truncated, "notice": notice,
+                "context": {"chars": chars, "tokens": tokens,
+                            "prompt_tokens_real": real_prompt,
+                            "completion_tokens": real_completion,
+                            "calibrated": calibrated, **meta}}
 
 
 def engine_min_ticket(config_path: str = "config.yaml") -> float:
