@@ -827,3 +827,30 @@ incomplete=0`，但 **19 只标的各挂着 11-02、11-03 两天 `waiting_refere
 生产验证 2 个交易日、钱类对账全绿——达发版线；观察期剩余天数作为上线后
 观察（发版本身不改变生产行为）。母项目按 tag 取用（沿用 v0.6.0 方式）。
 
+## Batch 13（T59/T60/T62）交付后请拍板 5 件（2026-11-03，Qoder）
+
+核销表在 `docs/WORKER.md` Batch 13；证据在 `report-t59-minute-feed.md` /
+`report-t60-raw-gate.md` / `report-t62-reset-state.md`。
+**没自行处理的 5 件**（都要写现网账本、改结算路径语义，或越出本子项目边界）：
+
+1. **新线上没有 T+1 解冻入口**（钱类，建议立项）：解冻只写在 `run`（`cli.py:392`）与
+   `agent tick`（`agent/loop.py:794`，`dry_run` 跳过）里；M3b 的执行路径是 `rq tick`，
+   它不碰这段。现网实况：`t1_freeze` id=9（002192 100 股，应于 11-02 解冻）仍
+   `is_unfrozen=0`、`positions.002192.available_volume=0` ⇒ **这 100 股今天卖不掉**。
+   下一次 `agent tick` 进结算段会自动解开（11-02 那次没跑成：cron 里 16-18 那条被
+   `--symbols \` 拼坏，11-03 11:26 已清），但"靠收盘窗口的 agent 顺带解"不是设计。
+   可选：`rq tick` 首跳解冻 / `m3 verify` 加一项逾期红 / 保持现状。我都没动。
+2. **切换日 3 条意图与订单 #13 的口径冲突**：两条 `002192_BUY_100` 标 `rejected`
+   写着 "no ledger fill"，而订单 #13 / 成交 #12（@44.94，10-30 16:49:26）就在账里，
+   一笔成交对两条被拒意图 ⇒ 必有一条是假的。T62 已把探测固化成 `reset-state` 的
+   `intent_ledger_conflict`（只报不清），**但改判历史=写账本，请主 AI 定**：
+   要更正就给它一条带留痕的 `ledger correct`，别再用无痕迹的手工 UPDATE
+   （11-03 那次改判把账本 md5 改了三次，`op_log` 里零行，审计只能反推）。
+3. **北交所标的进不进池**：rqalpha bundle 实测 28,063 instruments 里 `.BJ` **0 只** ⇒
+   920xxx/8xxxxx 的意图永远不会成交（现已 `INSTRUMENT_UNAVAILABLE` 定局为 rejected，
+   不再静默挂着）。要么补 bundle，要么在入池侧排除北交所——这是产品口径，不由我定。
+4. **`reset-state` 的 4 项红报要不要并进 `m3 verify`**：同一把尺子、切换日少读一个命令；
+   代价是 verify 的语义从"钱对不对"扩到"状态齐不齐"。我倾向并，等您裁决。
+5. **`cond_armed` 默认全取消**是否合意：条件单价位是按旧账现金/仓位设的，
+   我按 ghost 类处理（重置即取消，留 trace）。若认为价挂单属研究资产该保留，
+   把它挪成 `required=False` 即可——清单一改，文档表格与测试会同时红一次提醒同步。
