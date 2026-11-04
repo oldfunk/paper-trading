@@ -111,7 +111,12 @@ def post_session(broker, evidence: dict, *, today: str, fp: str = "",
 
 
 def _nav_history_has_today(broker, today: str) -> bool:
-    """nav_history 当天是否已有行（RunDaily 等无 op_log 的写入路径的让位依据）。"""
+    """nav_history 当天是否已有行（RunDaily 等无 op_log 的写入路径的让位依据）。
+
+    查不到按"没有"处理（宁可多记一行，也不让面板当天断供），但**必须吭一声**：
+    这处 fail-open 直接决定同日会不会写进行 NAV，静默就等于让位失败没人知道
+    （T69 审查点名的一条）。
+    """
     try:
         import sqlite3
         db = getattr(broker, "db_path", None)
@@ -124,7 +129,9 @@ def _nav_history_has_today(broker, today: str) -> bool:
             return n > 0
         finally:
             c.close()
-    except Exception:                 # noqa: BLE001 - 查不到按"没有"处理（宁可多记不可断供）
+    except Exception as exc:            # noqa: BLE001 - 查不到按"没有"处理（宁可多记不可断供）
+        logger.warning("nav_history 当日行检查失败（按\"没有\"处理，可能多记一行 NAV）："
+                       "%s: %s", type(exc).__name__, exc)
         return False
 
 

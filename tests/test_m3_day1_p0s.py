@@ -165,16 +165,32 @@ def test_rq_nav_still_records_when_history_is_empty(broker):
     assert out["recorded"] is True and out["today"] == DAY
 
 
-def test_nav_history_helper_is_fail_open_and_uses_a_read_only_uri(broker, tmp_path):
-    """查不到就按"没有"处理（宁可多记也不许当天净值断供）；且必须是只读连接。
+def test_nav_history_helper_is_fail_open_and_uses_a_read_only_uri(broker, tmp_path,
+                                                                  caplog):
+    """查不到按"没有"处理（宁可多记也不许当天净值断供）；且必须只读 + **要 warn**。
 
-    这两条都是"顺手"的细节，但都长在钱类路径上：fail-closed 会让面板当天少一行 NAV，
-    而忘了 `mode=ro` 会让一个纯检查函数有机会改账。
+    这处 fail-open 直接决定同日会不会写进行 NAV（T69 审查点名的就是它）：
+    静默的话，让位失败只会表现为"面板上那天两行净值"，事后没人知道为什么。
     """
     import inspect
+    import logging
 
     src = inspect.getsource(ld._nav_history_has_today)
     assert "mode=ro" in src and "uri=True" in src
-    # 账本文件被换成不存在的库 ⇒ 不抛、回 False
     broker.db_path = tmp_path / "gone.db"
-    assert ld._nav_history_has_today(broker, DAY) is False
+    with caplog.at_level(logging.WARNING):
+        assert ld._nav_history_has_today(broker, DAY) is False
+    assert "nav_history 当日行检查失败" in caplog.text
+
+
+def test_corrupt_cooldown_timestamp_warns_instead_of_silently_opening_the_gate(
+        bridge, caplog):
+    """冷却时间戳坏掉 = P0-1 那道防线静默消失；不吭声就等于把重灌的口子留在那儿。"""
+    import logging
+
+    from paper_trading.engine.state import EngineState
+    EngineState(bridge.account_db_path).set("cooldown:600036", "昨天下午三点")
+    with caplog.at_level(logging.WARNING):
+        out = EngineRunner(bridge, cfg=_cfg(per_symbol_cooldown_sec=900)).tick()
+    assert len(out["fired"]) == 1, out          # 行为：不拦单（宁可放行）
+    assert "冷却时间戳读不出" in caplog.text     # 但必须留下声音

@@ -337,8 +337,13 @@ class EngineRunner:
                 gap = (now - datetime.fromisoformat(last)).total_seconds()
                 if gap < cooldown:
                     return {"ok": False, "why": f"冷却中（剩 {cooldown - gap:.0f}s）"}
-            except Exception:
-                pass
+            except Exception as exc:                # noqa: BLE001 - 坏时间戳不拦单，但必须吭声
+                # 冷却是 11-04 那个 P0（同规则每分钟重灌）的唯一防线：时间戳读不出来
+                # 就等于这道闸**静默失效**——不 warn 的话，下一次重灌只会以"队列里
+                # 又多 19 条"的形式回来，而那时没人知道今天这里坏过。
+                logger.warning("冷却时间戳读不出（该标的的冷却本轮不生效）："
+                               "cooldown(%s)=%r → %s: %s", sym, last,
+                               type(exc).__name__, exc)
         # 日内预算
         if int(budget.get("orders", 0)) >= max_orders > 0:
             return {"ok": False, "why": "日内笔数上限"}
