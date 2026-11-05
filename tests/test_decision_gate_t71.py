@@ -6,14 +6,11 @@
 * **永不执行**：门写反/写死，`decided_at` 之后明明有 bar 却一直在 WAITING，
   意图挂到次日被 `expire_stale` 悄悄清掉——机会丢了且没人知道为什么。
 
-现网口径的一个**冲突**（已写进 questions.md Q6，等主 AI 裁决）：
-`queue.expire_stale` 按 `created_at` 的**日期**过期（"决策只在当日内有效"），
-而 Batch 17/18 的话是"盘后入队 → 当日全 WAITING → **次日** bar 提交"。
-11-05 现网那条 `002192_SELL_100@2026-11-05T15:09:20`（created_at=decided_at=15:09）
-按现状会在 11-06 09:02 那一跳被 expired，等不到"明天开盘验证"。
-本文件把**两端都钉住**：当日绝不强交、当日内有 bar 就必须交、跨日按现状过期；
-裁决若改成"转次日"，只需要翻 `test_cross_day_post_close_intent_current_caliber`
-一条，其余三条不动。
+Q6 已裁决（11-05 主 AI："盘后做出的决定转次日执行"）：`expire_stale` 按**决策时刻**
+分档——盘中（≤15:00）做出的决定当日过期，盘后做出的决定顺延**一个**交易日
+（`queue.is_carried`）。旧口径按日期一刀切，等于把"收盘后做出的决定"写成一条
+永远不可能执行的死分支。本文件把四向都钉住：当日不强交、当日内有 bar 就必须交、
+盘后顺延一天、盘中/超一天的照旧过期。
 """
 import sys
 import types
@@ -58,6 +55,12 @@ def fake_order_shares(monkeypatch):
     monkeypatch.setitem(sys.modules, "rqalpha", root)
     monkeypatch.setitem(sys.modules, "rqalpha.api", api)
     return calls, api
+
+
+def _set_created(db, ts: str) -> None:
+    """把刚入队的意图搬到指定时刻（`pending()` 的 decided_at 就是 created_at）。"""
+    with q._conn(db) as c:                       # noqa: SLF001 - 只动测试造的副本
+        c.execute("UPDATE rq_intents SET created_at=?", (ts,))
 
 
 def _plan(biz, symbol, action, volume, decided_at):
@@ -131,22 +134,58 @@ def test_no_bar_after_decision_means_waiting_not_silent_drop(monkeypatch):
     assert st.final_waiting()[0]["biz_id"] == "t71-c"
 
 
-def test_cross_day_post_close_intent_current_caliber(tmp_path):
-    """跨日现状口径：`expire_stale` 按 `created_at` 的日期过期，不看是否盘后。
+def test_post_close_intent_carries_to_next_trading_day(tmp_path):
+    """Q6 批复（11-05）：盘后（>15:00）做出的决定**顺延一个交易日**执行。
 
-    这条就是 Q6 的靶子。裁决若为"盘后的决定转次日开盘"，被翻的应是这条
-    （以及 `rq tick` 里 expire 的调用时机），上面四条**一条都不用动**。
+    旧口径按日期一刀切 ⇒ "收盘后做出的决定"是一条永远不可能执行的死分支：
+    当天 cron 只剩 15:00 前的 bar（决策时点门全 wait），次日一早就被过期。
     """
     db = str(tmp_path / "acct.db")
     q.enqueue(db, "002192", "sell", 100, rule_ref="t71")
-    with q._conn(db) as c:                       # noqa: SLF001 - 把入队时刻搬到盘后
-        c.execute("UPDATE rq_intents SET created_at=? WHERE symbol='002192'",
-                  (f"{DAY}T15:09:20",))
-    pending = q.pending(db)
-    assert [i["decided_at"] for i in pending] == [f"{DAY}T15:09:20"]
-    expired = q.expire_stale(db, "2026-11-06")
-    assert len(expired) == 1
-    assert q.pending(db) == []            # 次日会话再也拿不到它（不会 phantom 成交）
+    _set_created(db, f"{DAY}T15:09:20")
+    assert q.carried_ids(db, "2026-11-06") == [i["biz_id"] for i in q.pending(db)]
+    assert q.expire_stale(db, "2026-11-06") == []          # 不顺延就没了，这里必须留着
+    pend = q.pending(db)
+    assert len(pend) == 1 and pend[0]["decided_at"] == f"{DAY}T15:09:20"
+    # 明天的第一根 bar（09:31）已经晚于决策时刻 ⇒ 门放行，成交仍归属决策之后
+    from paper_trading.integration.rq_engine.runner import _SessionState
+    assert _SessionState.decide({"decided_at": f"{DAY}T15:09:20"},
+                                datetime(2026, 11, 6, 9, 31)) == "go"
+
+
+def test_intraday_intent_still_expires_next_day(tmp_path):
+    """盘中做出的决定（≤15:00）维持原口径：当日有效，隔日过期，不许多活一天。"""
+    db = str(tmp_path / "acct.db")
+    q.enqueue(db, "002192", "sell", 100, rule_ref="t71")
+    _set_created(db, f"{DAY}T14:00:00")
+    assert q.carried_ids(db, "2026-11-06") == []
+    assert len(q.expire_stale(db, "2026-11-06")) == 1
+    assert q.pending(db) == []
+
+
+def test_carry_is_only_one_day(tmp_path):
+    """顺延只顺**一个**交易日：11-05 盘后的决定到 11-09（周一是第二个交易日）就到底。"""
+    db = str(tmp_path / "acct.db")
+    q.enqueue(db, "002192", "sell", 100, rule_ref="t71")
+    _set_created(db, f"{DAY}T15:09:20")
+    assert q.carried_ids(db, "2026-11-09") == []          # 下一个交易日是 11-06，不是 11-09
+    assert len(q.expire_stale(db, "2026-11-09")) == 1
+
+
+def test_carry_refuses_when_calendar_untrusted(tmp_path, monkeypatch):
+    """日历答不出就不顺延（保守）：多过期一次只是漏机会，多执行一天是不可归因。"""
+    from paper_trading.utils import trading_calendar as tc
+
+    db = str(tmp_path / "acct.db")
+    q.enqueue(db, "002192", "sell", 100, rule_ref="t71")
+    _set_created(db, f"{DAY}T15:09:20")
+
+    def boom(*a, **k):
+        raise RuntimeError("日历没覆盖")
+
+    monkeypatch.setattr(tc, "next_trading_day", boom)
+    assert q.carried_ids(db, "2026-11-06") == []
+    assert len(q.expire_stale(db, "2026-11-06")) == 1
 
 
 # ------------------------------------------------------------------ T+1 对齐 fail-closed
