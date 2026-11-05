@@ -2120,37 +2120,18 @@ def main() -> None:
                 # 不知道账本历史持仓（002192 卖单被"仓位不足"拒，现网实测）。
                 # 期初持仓从账本读出作 init_positions（框架账户=账本）。
                 state_dir = str(_P(args.state_root or "var/rq_state") / "live")
-                init_pos = {}
+                # 期初三件套（现金/持仓/T+1 冻结）从账本读，口径收在
+                # `runner.ledger_init_state`（交易所映射只判一次）。读不出就拒开
+                # 会话：拿"空账户"去交易是 11-05 P0 的另一半。
                 try:
-                    import sqlite3 as _sq3
-                    _c = _sq3.connect(
-                        f"file:{bridge.broker.db_path}?mode=ro", uri=True)
-                    for _r in _c.execute(
-                            "SELECT symbol, total_volume FROM positions"):
-                        _code = str(_r[0]).zfill(6)
-                        _ob = f"{_code}.{'XSHG' if _code[0] in '69' else 'XSHE'}"
-                        init_pos[_ob] = int(_r[1])
-                    _c.close()
-                except Exception:              # noqa: BLE001
-                    logger.warning("rq tick 期初持仓读取失败（空账户风险）")
-                # 现金基线也必须对齐账本（P0 另一半：框架默认 10 万，账本 6.7 万
-                # ⇒ 买单按 10 万资金校验 = 超支风险）——2026-11-05 同日修
-                _cash = float(bridge.broker.get_cash())
-                # T+1 冻结对齐：账本 available<total 的持仓 → 框架 _non_closable
-                init_frozen = {}
-                try:
-                    import sqlite3 as _sq3f
-                    _cf = _sq3f.connect(
-                        f"file:{bridge.broker.db_path}?mode=ro", uri=True)
-                    for _r in _cf.execute(
-                            "SELECT symbol, total_volume, available_volume"
-                            " FROM positions WHERE total_volume > available_volume"):
-                        _code = str(_r[0]).zfill(6)
-                        _ob = f"{_code}.{'XSHG' if _code[0] in '69' else 'XSHE'}"
-                        init_frozen[_ob] = int(_r[1]) - int(_r[2])
-                    _cf.close()
-                except Exception:              # noqa: BLE001
-                    logger.warning("rq tick 期初冻结读取失败（T+1 对齐缺口）")
+                    st0 = _rq.ledger_init_state(acct_db)
+                except Exception as exc:            # noqa: BLE001
+                    emit({"ok": False,
+                          "error": f"账本期初读不出，rq tick 拒绝开会话："
+                                   f"{type(exc).__name__}: {exc}"})
+                    sys.exit(1)
+                init_pos, init_frozen, _cash = (st0["positions"], st0["frozen"],
+                                                st0["cash"])
                 plan = [{"biz_id": i["biz_id"], "symbol": i["symbol"],
                          "action": i["action"], "volume": i["volume"],
                          "decided_at": i.get("decided_at")}
