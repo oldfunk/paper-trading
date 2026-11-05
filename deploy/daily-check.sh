@@ -39,16 +39,19 @@ except json.JSONDecodeError:
 if not isinstance(obj, dict):
     sys.stderr.write("daily-check: 没解出 JSON（%s）\n" % sys.argv[1])
     sys.exit(2)
-rec = obj.get("data", obj)
-rec = {"kind": sys.argv[2], "at": datetime.datetime.now().isoformat(timespec="seconds"),
+data = obj.get("data", obj) if isinstance(obj, dict) else {}
+rec = {"kind": sys.argv[2],
+       "at": datetime.datetime.now().isoformat(timespec="seconds"),
        "exit_code": int(sys.argv[3]), "today": sys.argv[4]}
 if sys.argv[2] == "daily_check":
-    rec.update({k: rec.get(k) for k in ("green", "warn", "red", "skipped",
-                                        "rollback_required", "ok")})
-    rec["red_ids"] = [i["id"] for i in rec.get("items", []) if i.get("status") == "red"]
-    rec["warn_ids"] = [i["id"] for i in rec.get("items", []) if i.get("status") == "warn"]
+    for k in ("green", "warn", "red", "skipped", "rollback_required", "ok"):
+        rec[k] = data.get(k)
+    items = data.get("items") or []
+    rec["red_ids"] = [i["id"] for i in items if i.get("status") == "red"]
+    rec["warn_ids"] = [i["id"] for i in items if i.get("status") == "warn"]
 else:
-    rec.update({"scenes": obj.get("scenes"), "guard": obj.get("guard_stale_state")})
+    rec["scenes"] = data.get("scenes")
+    rec["guard"] = data.get("guard_stale_state")
 print(json.dumps(rec, ensure_ascii=False))
 ' "$1" "$2" "$3" "$TODAY" >> "$OUT"
 }
