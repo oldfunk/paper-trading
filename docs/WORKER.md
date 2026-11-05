@@ -1356,3 +1356,67 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   - [ ] `report-t73.md`
 - [ ] **T74（Hermes，P0）**：审 T73（顺序取证的正确性 + 四场景的判别力）
 '@; git add -A; git commit -m "chore(worker): Batch 18 - T73 init_positions last mile (Portfolio/data_source order forensics + 4-scene lock-in), T74 review; today's 6 fixes all deployed" 2>&1 | Select-Object -Last 1; git push origin main 2>&1 | Select-Object -Last 1
+
+
+## Batch 17/18 交付核销（Qoder · 2026-11-05，分支 `worker/t71-t73-init-positions`）
+
+对照派发原文逐条核销（基准=Batch 17/T71、Batch 18/T73 原文与 11-04 的 Q1-Q5 批复，
+不是我的实现）。细节与证据在 `report-t73.md` / `report-t71.md`。
+
+- [x] **T73（P0·最后一环）**：
+  - [x] **取证（文件:行）**：`main.py:147 mod_handler.start_up()` → `:150-151`（我们已
+        设过 data_source，`BaseDataSource` 兜底不进）→ `:155 set_data_proxy(env.data_source)`
+        → `:171 INIT_PORTFOLIO`（全包无监听者，`set_portfolio` 只在 `:174`）→
+        `:172-176 Portfolio(config.base.init_positions)`；mod 排序见 `mod/__init__.py:68`。
+        **结论：Portfolio 构建时用的就是我们的 `PaperDataSource`，"顺序/注册时机"排除。**
+  - [x] **真因（不是顺序）**：`utils/config.py:213` 必经 `parse_init_positions`，而它
+        `:271` 对非字符串一律返回 `[]`——引擎 venv 实测
+        `parse_init_positions({'002192.XSHE':100}) == []`。`build_config` 一直给 dict
+        ⇒ 框架每次建空仓账户。顺带解释了 ③④⑤ 的 `get_bar` 修复为何"单测过、现网无效"：
+        `portfolio/account.py:90` 那句在生产路径上从未被执行。
+  - [x] **修复**：形态（`init_positions_arg`）+ 复发哨兵（`reconcile_init_positions`/
+        `InitPositionError`）+ 一条口径（`ledger_init_state`，9 项里含 `920156.BJ` 的
+        交易所映射）+ T+1 冻结时机（`t1_plan`/`POST_BEFORE_TRADING`/`POST_SYSTEM_RESTORED`）
+        + 指纹豁免账本派生量（Hermes T74-P1）+ 供给并集 + `prev_close` 有限性
+        （Hermes T74-P2）+ `RqAttrDict` 回读陷阱 + `reset-state` 认 `live` 目录。
+  - [x] **四场景全绿**（NEC 现网库副本 + 引擎 venv 子进程，`ledger=False`）：
+        A 冻结拒（框架看得见 200 股、`closable=0`、拒单原文"可平仓/行权量为 0.0"）/
+        B 超支拒（"当前资金: 50000.00，所需 52583.67"——用的账本现金不是框架默认 10 万）/
+        C 卖成交（002192 100@47.30，费用三分量齐）/ D 买成交（000858 100@75.10）。
+        另加"同状态目录跑第二遍 ⇒ 框架比账本少仓就拒开"一条（T72 的 fail-closed 审点）。
+  - [x] **回归 + 固化**：`tests/test_init_positions_e2e.py`（一份代码两跑法：pytest 与
+        脚本；无 rqalpha 即 skip，子进程 + 账本副本，不碰生产）、
+        `tests/test_init_align_t73.py`（15）、`tests/test_decision_gate_t71.py`（5+9）、
+        Q5（9）、Q1（1，做过变异验证）。全量 **806 passed / 11 skipped**，
+        `wiring_audit` 退出码 0。
+  - [x] `report-t73.md`
+- [x] **T71（P1·边界工具化）**：
+  - [x] **决策时点门边界测试**：当日不强交 / 到点必须交（含 5 分钟对齐空档）/
+        决定后无 bar 保持 WAITING / `now == decided_at` 边界 / 解不出时刻不门控。
+        派发设想的"次日提交"半段**与 `expire_stale` 打架**，按现状钉住并上报 **Q6**
+        （现网 `002192_SELL_100@15:09:20` 明天会被 expired，不是被执行）。
+  - [x] **state 重建的 T+1 对齐**：做成"会话内自动对齐 + 三道 fail-closed"而不是
+        "重建后记得跑的工具"（工具有被忘记的固有概率）：`t1_freeze_plan` 只加不减、
+        `T1FreezeMissing` 会话闸（无留痕就不落账）、事件挂不上就拒开、
+        少仓就拒开；运维侧 `ledger reset-state --only rq_session_state` 现在会挪开 `live`。
+  - [x] `report-t71.md`
+- [x] **11-04 批复里"已批未做"三件（本轮一并落地）**：
+  - [x] **Q1（批：改）**：`engine/runner.py` 预算改每条意图现读；测试
+        `test_daily_budget_applies_inside_the_same_round` 在旧实现下实测变红
+        （两笔 BUY 都成交），改后 13 passed。
+  - [x] **Q4（批：跑）**：补齐"大上下文 × max_tokens=1200"格（1 次云端请求、
+        `provider._request` 直调、账本副本、不写 op_log，md5 前后同值）
+        ⇒ 66.5s / prompt 45,364 / completion 512 / `finish=stop`。
+        **它修正了 T63 的结论**：固定小预算下大/小上下文差 38.2s（-57%），
+        不是"上下文不是主因"——两个变量都真实，小预算下上下文的影响才被暴露。
+  - [x] **Q5（批：给）**：`m3_verify.waiting_grade` 0/2/8 取样、阈值 ≤2 green /
+        >2 warn / >5 red，按**单只最大滞后天数**判；green 也写天数与只数。
+- [ ] **等主 AI 的 1 件**：**Q6**（`questions.md` 2026-11-05 节）——盘后做出的决定
+  次日到底执行还是过期。改了交易语义，我不擅自动手；批"转次日"我就按 Q6 里的
+  改法落地，批"维持过期"我一字不改，**但 Batch 17 那句"明天开盘验证执行"需要换成
+  "明天盘中重新入队验证"**。
+- **另外两件是告知**：① 部署前必须先停 `rq tick` cron 再挪开 `var/rq_state/live`
+  （`init_positions` 只对新建 state 生效，续跑跳恢复的是那本空仓账户；现在这条会**响**
+  而不是静默）；② `docs/WORKER.md` 末尾混进了一段 PowerShell 派发命令文本
+  （`'@; git add -A; git commit -m "chore(worker): Batch 18 …`），是 Batch 18 那次
+  heredoc 收尾泄漏，属主 AI 的派发记录，我没代改。

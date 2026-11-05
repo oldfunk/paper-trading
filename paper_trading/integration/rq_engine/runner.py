@@ -493,7 +493,12 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
                                   settle_expected=1 if not state_dir else 1,
                                   expect_transfer_fee=cfg["mod"]["ptpaper"]["transfer_fee_rate"] > 0,
                                   settled_biz=settled_biz,
-                                  init_frozen=cfg["mod"]["ptpaper"]["init_frozen"])
+                                  # 用**入参**那份原始 dict，不从 cfg 里读回来：
+                                  # rqalpha 的 `ModHandler.set_env` 会把
+                                  # `config.mod.ptpaper` 换成 `RqAttrDict`
+                                  # （只给属性访问、不可下标），读回来就 `TypeError`
+                                  # ——现网四场景第一跑就是这么炸的（T73 实测）
+                                  init_frozen=init_frozen)
     done = False
     if gate and err is None and verdict["ok"]:
         gate.mark_done(date.fromisoformat(today), fp,
