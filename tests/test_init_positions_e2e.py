@@ -19,6 +19,7 @@ D 正常买成交），**判别力来自"账本与框架必须一致"**：A/C �
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sqlite3
 import subprocess
@@ -50,6 +51,8 @@ SCENES = {
     "D_normal_buy_fills": {"biz": "t73-d", "symbol": BUY_TARGET,
                            "action": "buy", "volume": 100},
 }
+#: 场景名以 A/B/C/D 开头（判据分支与 `spikes` 里的口语称呼都用前缀）
+BY_PREFIX = {k[0]: k for k in SCENES}
 
 
 def make_ledger(path, *, cash=CASH, positions=None) -> str:
@@ -128,7 +131,7 @@ def check_scene(name: str, res: dict) -> list[str]:
     rejects = ev.get("rejects") or []
     align = ev.get("init_align") or {}
     fz = ev.get("frozen_align") or {}
-    spec = SCENES[name.split("_")[0]]
+    spec = SCENES[BY_PREFIX[name[0]]]
     ob = f"{spec['symbol']}.{'XSHG' if spec['symbol'][0] in '69' else 'XSHE'}"
     filled = [t for t in trades if t.get("symbol") == ob]
 
@@ -140,12 +143,14 @@ def check_scene(name: str, res: dict) -> list[str]:
         bad.append(f"{name}: 框架快照里 {ob} 仓位为 0（账本有仓，导入没生效）")
 
     if name.startswith("A_"):
-        # T+1：quantity 有、closable 必须 0，且这单卖不掉
-        if int(_pos(snap, ob).get("closable", -1)) != 0:
-            bad.append(f"{name}: 冻结仓在框架里仍可平（closable="
-                       f"{_pos(snap, ob).get('closable')}，应为 0）")
-        if not fz.get("applied"):
-            bad.append(f"{name}: T+1 对齐没落进框架（frozen_align.applied 空）")
+        # T+1：框架看得见这只仓（quantity>0，不是空仓假绿），但平不了（closable=0）
+        frz = next((a for a in (fz.get("applied") or []) if a.get("symbol") == ob), None)
+        if not frz:
+            bad.append(f"{name}: 账本冻结没落进框架（frozen_align.applied="
+                       f"{fz.get('applied')}）")
+        elif int((fz.get("closable") or {}).get(ob, -1)) != 0:
+            bad.append(f"{name}: 冻结后框架仍可平 {ob}"
+                       f"（closable={fz.get('closable')}）")
         if filled:
             bad.append(f"{name}: 冻结仓被 T+0 卖出 {filled}")
     elif name.startswith("B_"):
@@ -165,6 +170,46 @@ def check_scene(name: str, res: dict) -> list[str]:
     return bad
 
 
+def _spawn(py, name, *, ledger, state, data_db, bundle, config, today) -> dict:
+    """一个场景一个子进程，返回 run_session 的关键结果（失败也返回结构化 error）。"""
+    cmd = [py, str(Path(__file__).resolve()), "--child", "--scene", name,
+           "--ledger", ledger, "--data-db", str(data_db), "--bundle", str(bundle),
+           "--state", str(state), "--today", today, "--config", str(config)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+    line = [l for l in (proc.stdout or "").splitlines() if l.startswith("{")]
+    if proc.returncode != 0 or not line:
+        return {"error": f"子进程 rc={proc.returncode} {(proc.stderr or '')[-400:]}"}
+    return json.loads(line[-1])
+
+
+def guard_stale_state(*, data_db, bundle, workdir, python_bin=None, today=None,
+                      config=None) -> list[str]:
+    """同一状态目录跑两遍 C：框架已卖光、账本副本没动 ⇒ 第二遍必须**拒开**。
+
+    这条不是第四个场景，是修好之后新加的那道闸的可执行证明——现网明天早上就会
+    撞上它的同类形状（`var/rq_state/live` 里躺着 11-05 建的空仓账户，而账本有 7 只）。
+    拒跑 = 让运维去 `ledger reset-state`，而不是让引擎拿一本与账本脱钩的账户继续交易。
+    """
+    today = today or date.today().isoformat()
+    workdir = Path(workdir)
+    ledger = make_ledger(workdir / "guard_ledger.db", cash=CASH)
+    state = workdir / "state_guard"
+    name = "C_normal_sell_fills"
+    args = dict(ledger=ledger, state=state, data_db=data_db, bundle=bundle,
+                config=str(config or ROOT / "config.yaml"), today=today)
+    first = _spawn(python_bin or sys.executable, name, **args)
+    bad = check_scene(name, first)
+    if bad:
+        return [f"guard/第一跳: {b}" for b in bad]
+    second = _spawn(python_bin or sys.executable, name, **args)
+    err = str(second.get("error") or "")
+    if not err:
+        return ["guard/第二跳: 账本与框架已脱钩却仍开会话（少仓校验没生效）"]
+    if "框架账户比账本少" not in err:
+        return [f"guard/第二跳: 拒跑原因不是少仓校验：{err[:200]}"]
+    return []
+
+
 def run_scenes(*, data_db, bundle, workdir, python_bin=None, today=None,
                config=None) -> dict:
     """四场景各起一个子进程，返回 `{scene: {"failures": [...], "res": {...}}}`。"""
@@ -175,18 +220,9 @@ def run_scenes(*, data_db, bundle, workdir, python_bin=None, today=None,
     py = python_bin or sys.executable
     out = {}
     for name in SCENES:
-        state = workdir / f"state_{name}"
-        cmd = [py, str(Path(__file__).resolve()), "--child", "--scene", name,
-               "--ledger", ledger, "--data-db", str(data_db), "--bundle", str(bundle),
-               "--state", str(state), "--today", today,
-               "--config", str(config or ROOT / "config.yaml")]
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
-        line = [l for l in (proc.stdout or "").splitlines() if l.startswith("{")]
-        if proc.returncode != 0 or not line:
-            out[name] = {"failures": [f"{name}: 子进程失败 rc={proc.returncode} "
-                                     f"{(proc.stderr or '')[-400:]}"]}
-            continue
-        res = json.loads(line[-1])
+        res = _spawn(py, name, ledger=ledger, state=workdir / f"state_{name}",
+                     data_db=data_db, bundle=bundle,
+                     config=str(config or ROOT / "config.yaml"), today=today)
         out[name] = {"failures": check_scene(name, res), "res": res}
     return out
 
@@ -203,12 +239,19 @@ def main() -> int:
     ap.add_argument("--today")
     ap.add_argument("--python", dest="python_bin")
     ap.add_argument("--workdir")
+    ap.add_argument("--out", help="把结果 JSON 写到这里（stdout 会被日志污染）")
+    ap.add_argument("--no-guard", action="store_true",
+                    help="只跑四场景，跳过『账本↔框架脱钩拒跑』那条额外证明")
     a = ap.parse_args()
     if a.child:
         return run_child(a)
     today = a.today or date.today().isoformat()
-    with tempfile.TemporaryDirectory(prefix="t73-scenes-") as wd:
-        need = [s for s in (SELLABLE, FROZEN, BUY_TARGET)]
+    ctx = (tempfile.TemporaryDirectory(prefix="t73-scenes-") if not a.workdir
+           else contextlib.nullcontext(Path(a.workdir)))
+    with ctx as wd:
+        if a.workdir:
+            Path(wd).mkdir(parents=True, exist_ok=True)
+        need = [SELLABLE, FROZEN, BUY_TARGET]
         missing = {s: bars_today(a.data_db, s, today) for s in need
                    if bars_today(a.data_db, s, today) < 48}
         if missing:
@@ -217,9 +260,14 @@ def main() -> int:
             return 0
         results = run_scenes(data_db=a.data_db, bundle=a.bundle, workdir=wd,
                              python_bin=a.python_bin, today=today, config=a.config)
-    fails = [f for r in results.values() for f in r["failures"]]
-    print(json.dumps({
+        guard = ([] if a.no_guard else
+                 guard_stale_state(data_db=a.data_db, bundle=a.bundle, workdir=wd,
+                                   python_bin=a.python_bin, today=today,
+                                   config=a.config))
+    fails = [f for r in results.values() for f in r["failures"]] + guard
+    payload = json.dumps({
         "today": today,
+        "guard_stale_state": "GREEN" if not guard else guard,
         "scenes": {k: ("GREEN" if not v["failures"] else v["failures"])
                    for k, v in results.items()},
         "framework_positions": {
@@ -229,7 +277,12 @@ def main() -> int:
                     for k, v in results.items()},
         "frozen_align": {k: (v.get("res", {}).get("evidence") or {}).get("frozen_align")
                          for k, v in results.items()},
-    }, ensure_ascii=False, indent=1))
+    }, ensure_ascii=False, indent=1)
+    # PaperBroker 的 INFO 日志走 stdout，混进 JSON 里就没法机读——要落文件就 --out
+    if a.out:
+        Path(a.out).write_text(payload, encoding="utf-8")
+    else:
+        print(payload)
     return 1 if fails else 0
 
 
@@ -252,8 +305,10 @@ def test_init_positions_four_scenes():
     with tempfile.TemporaryDirectory(prefix="t73-") as wd:
         results = run_scenes(data_db=data_db, bundle=bundle, workdir=wd,
                              python_bin=py, today=today)
-    fails = [f"{k}: {x}" for k, v in results.items() for x in v["failures"]]
-    assert not fails, "四场景未全绿：\n" + "\n".join(fails)
+        guard = guard_stale_state(data_db=data_db, bundle=bundle, workdir=wd,
+                                  python_bin=py, today=today)
+    fails = [f"{k}: {x}" for k, v in results.items() for x in v["failures"]] + guard
+    assert not fails, "四场景+脱钩闸未全绿：\n" + "\n".join(fails)
 
 
 def _pytest_skip(why: str):

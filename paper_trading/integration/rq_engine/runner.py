@@ -180,6 +180,35 @@ def ledger_init_state(account_db) -> dict:
     return out
 
 
+def t1_freeze_plan(frozen: Optional[dict], framework: Optional[dict]) -> list:
+    """账本的 T+1 冻结量 → 框架里该改哪些仓的 `_non_closable`（**只加不减**）。
+
+    `framework` = `{order_book_id: {"quantity": int, "non_closable": int}}`。
+
+    为什么"只加不减"：`_non_closable` 调小 = 解锁 T+0 卖出，那是把合规闸拆掉。
+    日内多跳时框架自己给"当天买入"记的冻结（`position_model.py:176-177`）可能
+    比账本期初的冻结更大，期初数只是**下限**；而"账本已解冻、框架还冻着"
+    最多让人错过一次卖出，反过来是让违规成交落进账本。两种错的代价不对等。
+
+    返回 `[{symbol, from, to, quantity}, ...]`（含无需改动的项，便于审计
+    "这只为什么没冻"），调用方按 `to > from` 才真去写框架。
+    """
+    out = []
+    for ob, qty in sorted((frozen or {}).items()):
+        q = int(qty)
+        if q <= 0:
+            continue
+        have = (framework or {}).get(str(ob)) or {}
+        total = int(have.get("quantity", 0))
+        cur = int(have.get("non_closable", 0))
+        if total == 0:
+            continue        # 框架没这只仓：少仓的已在 POST_SYSTEM_INIT 停线
+        want = min(q, total)     # 冻结不可能超过持仓，超过就全冻
+        out.append({"symbol": str(ob), "from": cur, "to": max(want, cur),
+                    "quantity": total, "changed": want > cur})
+    return out
+
+
 def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
                  init_cash: float = INIT_CASH_DEFAULT,
                  state_dir: str = "", evidence: str = "",

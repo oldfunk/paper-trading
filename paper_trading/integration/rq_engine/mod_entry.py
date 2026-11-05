@@ -42,6 +42,7 @@ class PtPaperMod(AbstractMod):
         #: T73 期初对齐留痕（进 evidence，四场景判据读它）
         self._init_align: dict = {}
         self._frozen_align: dict = {}
+        self._positions_landed: dict = {}
 
     # -- 事件采集（G-T13-7/8 的证据来源）----
     def _count(self, event):
@@ -159,14 +160,15 @@ class PtPaperMod(AbstractMod):
         for ob, dirs in dict(getattr(acct, "_positions", {}) or {}).items():
             pos = dirs.get(POSITION_DIRECTION.LONG)
             if pos is not None:
-                out[str(ob)] = (int(pos.quantity), int(getattr(pos, "_non_closable", 0)))
+                out[str(ob)] = {"quantity": int(pos.quantity),
+                                "non_closable": int(getattr(pos, "_non_closable", 0))}
         return out
 
-    def _align_after_portfolio(self, env, mod_config) -> None:
-        """Portfolio 建好之后的两道闸：账本↔框架同仓校验 + T+1 冻结补齐。
+    def _check_positions_landed(self, env, mod_config) -> None:
+        """账本有仓、框架没有 ⇒ 拒开这一跳（POST_SYSTEM_INIT，portfolio 刚建好）。
 
         **事件监听函数返回真值会让框架停止往下派发**（`core/events.py:43-46`
-        `if listener(event): break`），所以本函数一律返回 None。
+        `if listener(event): break`），所以本函数与 `_apply_t1_freeze` 一律返回 None。
         """
         from .runner import InitPositionError
 
@@ -176,39 +178,51 @@ class PtPaperMod(AbstractMod):
         for u in (self._init_align or {}).get("unsupported") or []:
             expected.pop(str(u["symbol"]), None)   # 已剔掉的不在框架里，不该报错
         have = self._framework_positions(env)
-        short = [{"symbol": ob, "ledger": qty, "framework": have.get(ob, (0, 0))[0]}
+        short = [{"symbol": ob, "ledger": qty,
+                  "framework": have.get(ob, {}).get("quantity", 0)}
                  for ob, qty in sorted(expected.items())
-                 if have.get(ob, (0, 0))[0] < qty]
+                 if have.get(ob, {}).get("quantity", 0) < qty]
         if short:
             raise InitPositionError(
                 f"框架账户比账本少 {len(short)} 只仓：{short[:6]}——多半是旧的"
                 f"会话状态目录在续跑一本空仓账户（11-05 现网：live/portfolio.state "
                 f"positions 空、账本 7 只）。先停 cron、用 `ledger reset-state` 把"
                 f"会话状态挪开，让下一跳从账本重建账户")
+        self._positions_landed = {"checked": len(expected), "framework": len(have)}
+
+    def _apply_t1_freeze(self, env, mod_config) -> None:
+        """把账本的 T+1 冻结量补进框架（**必须在盘前释放之后**）。
+
+        时机是被框架逼出来的，两跳各一个入口：
+        * 新会话：`Position.before_trading()` 会把 `_non_closable` **清成 0**
+          （`portfolio/position.py:248`，由 `Account._on_before_trading` 在
+          PRE_BEFORE_TRADING 调，`account.py:122/364`）——这就是"昨天的仓今天可卖"。
+          挂在它之前的任何对齐（11-05 的第一版挂在 POST_SYSTEM_INIT）都会被它抹掉；
+        * 续跑跳：`executor._ensure_before_trading`（`core/executor.py:64-67`）
+          当天不再发 PRE/POST_BEFORE_TRADING，冻结从 state 恢复（`non_closable`
+          是持久化字段）——这条路上要在 POST_SYSTEM_RESTORED 之后补，别在盘前补。
+        """
+        from .runner import t1_freeze_plan
+
         frozen = dict(getattr(mod_config, "init_frozen", None) or {})
-        applied = []
         acct = getattr(getattr(env, "portfolio", None), "stock_account", None)
-        all_pos = dict(getattr(acct, "_positions", {}) or {}) if acct else {}
-        for ob, qty in sorted(frozen.items()):
-            q = int(qty)
-            if q <= 0:
+        have = self._framework_positions(env)
+        plan = t1_freeze_plan(frozen, have)
+        for item in plan:
+            if not item["changed"]:
                 continue
-            # 与 _framework_positions 同一口径读 _positions：`portfolio.get_position()`
-            # 要先查合约的 account_type，标的表外的代码会抛 InstrumentNotFound
-            dirs = all_pos.get(ob)
+            dirs = dict(getattr(acct, "_positions", {}) or {}).get(item["symbol"])
             p = dirs.get(POSITION_DIRECTION.LONG) if dirs else None
-            if p is None or int(p.quantity) == 0:
-                continue                 # 上面已按"少仓"停线；这里只处理有仓的
-            want = min(q, int(p.quantity))   # 冻结不可能超过持仓，超过就全冻
-            # **只加不减**：日内多跳时框架自己给"当天买入"记的 `_non_closable`
-            # 可能比账本期初的冻结更大；把 `_non_closable` 调小 = 解锁 T+0 卖出，
-            # 那是把合规闸拆掉（宁可多冻一天：卖不掉只是漏机会，T+0 卖出是违规）。
-            cur = int(getattr(p, "_non_closable", 0))
-            if want > cur:
-                p._non_closable = want              # noqa: SLF001 - 框架无公开 API
-                applied.append({"symbol": ob, "from": cur, "to": want})
-        self._frozen_align = {"checked": len(frozen), "applied": applied,
-                              "framework_positions": len(have)}
+            if p is None:
+                continue
+            p._non_closable = item["to"]            # noqa: SLF001 - 框架无公开 API
+        self._frozen_align = {
+            "checked": len(frozen), "applied": plan,
+            "framework_positions": len(have),
+            "closable": {i["symbol"]: int(i["quantity"]) - int(i["to"]) for i in plan},
+        }
+
+    # -- 生命周期 --
 
     # -- 生命周期 --
     def start_up(self, env, mod_config) -> None:
@@ -272,10 +286,26 @@ class PtPaperMod(AbstractMod):
         # 旧写法在本方法里直接读 `env.portfolio`——但 Portfolio 是 `main.py:174` 建的，
         # `start_up` 是 `main.py:147`，此刻**还没有 portfolio**，异常被 `except` 咽成
         # 一条 warning ⇒ T+1 对齐从未生效（T74 前置审查 P1 的第二条，实测确认）。
-        # 挂在 POST_SYSTEM_INIT（`main.py:178`，portfolio 已就绪、executor 未起跑）。
+        # 就算挪到 POST_SYSTEM_INIT 也不够：`Position.before_trading()` 在
+        # PRE_BEFORE_TRADING 里把 `_non_closable` 清零（昨天的仓今天可卖，
+        # `portfolio/position.py:248`），冻结必须补在它**之后**——见 `_apply_t1_freeze`。
         env.event_bus.add_listener(
             EVENT.POST_SYSTEM_INIT,
-            lambda e: self._align_after_portfolio(env, mod_config))
+            lambda e: self._check_positions_landed(env, mod_config))
+        # 少仓校验还要挂第二个时刻：续跑跳的账户是 `persist_helper.restore`
+        # （main.py:210）换上去的，比 POST_SYSTEM_INIT（main.py:178）**晚**——
+        # 只挂前者的话，"状态目录里躺着一本与账本脱钩的账户"会被刚按账本
+        # 建好的临时 Portfolio 挡过去（四场景 e2e 的 guard 实测就是这么漏的）。
+        env.event_bus.add_listener(
+            EVENT.POST_SYSTEM_RESTORED,
+            lambda e: self._check_positions_landed(env, mod_config))
+        for ev_name in ("POST_BEFORE_TRADING", "POST_SYSTEM_RESTORED"):
+            try:
+                env.event_bus.add_listener(
+                    getattr(EVENT, ev_name),
+                    lambda e: self._apply_t1_freeze(env, mod_config))
+            except Exception:                   # noqa: BLE001 - 事件名随版本变
+                logger.warning("T+1 对齐事件 %s 不存在，冻结量将不落框架", ev_name)
 
     def tear_down(self, code, exception=None):
         ev = getattr(self._mc, "evidence", "") if self._mc else ""
@@ -297,6 +327,7 @@ class PtPaperMod(AbstractMod):
             # T73：期初对齐留痕（四场景判据 + 事后审计都读这个，不看日志）
             "init_align": self._init_align,
             "frozen_align": self._frozen_align,
+            "positions_landed": self._positions_landed,
             "exit_code": str(getattr(code, "value", code)),
             "exception": str(exception) if exception else None,
         }, ensure_ascii=False, indent=1), encoding="utf-8")
