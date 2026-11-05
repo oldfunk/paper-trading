@@ -122,6 +122,22 @@ M3 行写的"cron 切 rqalpha 常驻（一天一进程）"**不一致**，请显
 - 第一小时 / 第一天 / 第一周逐项跑 `docs/m3-checklist.md`（T46 产出），
   **任何钱类项红 ⇒ 立即回退并归因**（§5.6 原文）。
 - 影子对账建议第一周继续跑：它是"新线是否漂移"唯一的外部对照（G-T13 家族）。
+- **每日核对（T80）**：`python -m paper_trading.cli m3 daily-check --json`（只读），
+  观察报告按下列模板记入 `docs/worker/observation-m3-<date>.md`：
+
+  ```
+  ## <日期>（第 N 个交易日）
+  - 盘前：cron 正常；var/rq_state/live 无旧空仓状态；engine.enabled=<值>
+  - 首跳：init_align.kept/dropped；frozen_align.applied/closable；有无 InitPositionError
+  - 盘中：新意图数 / 成交笔数 / 拒单原因；重复 NAV；intent_ledger_conflict
+  - 盘后：m3 verify 绿/黄/红（红项逐条归因）；daily-check 结论
+  - 异常：时间、证据（evidence/op_log/账本行）、处置、是否回退
+  - 结论：绿 / 黄（可观察）/ 红（已回退或待裁决）
+  ```
+
+  判别力口径：**绿** = 钱类全绿且无未归因异常；**黄** = 非钱类告警或已知发布节奏
+  （如母库参照滞后 ≤2 日）且有解释；**红** = 钱类红、未归因成交/拒单、NAV 双写、
+  框架/账本脱钩。红必须写事故报告并触发回退评估。
 
 ## 5. 回退方案
 
