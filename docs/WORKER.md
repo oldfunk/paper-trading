@@ -1436,3 +1436,35 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   持仓对齐（m3 verify 全项）；③ 当日新意图全链。**只读核对 + 报告**
   （不改生产）
 
+
+---
+
+## Batch 20 · M4 收尾全部排布（主 AI 派发 2026-11-05 晚 · 用户指示"收尾交给员工"）
+
+> **M3 验收标准（文档 §5）**：一周观察 + 面板/审计完整。当前观察期第 4 天。
+> **M4 验收标准（主 AI 定，全部满足才签字关闭 M3）**：
+> ① 观察期通过（连续 5 个交易日无未归因异常，或用户批准的压缩口径）；
+> ② 每日核对全绿（T77/T80 的核对清单：002192 顺延执行/init 对齐/新意图全链）；
+> ③ **parity/verify 永久门禁进 CI**（独立步骤、退出码可见）；
+> ④ 文档闭环（§5.10 对齐 + AGENTS + migration-m3 + 观察报告）；
+> ⑤ T81 审查无 P0。
+
+- [ ] **T78（Qoder，P0·M4-③）永久门禁进 CI**：`m3 verify` + `test_init_positions_e2e`
+  四场景 + wiring_audit 固化为 `.github/workflows/test.yml` 的**独立步骤**
+  （退出码非 0 直接告警）；`report-t78.md`（CI 配置 diff + 本地复跑证据）
+- [ ] **T79（Hermes，P0·M4-④）文档闭环**：
+  - [ ] `refactor-plan` §5 M3 行**对齐实现**（文档写"rqalpha 常驻一天一进程"，
+    实现是**队列模式**：engine 每分钟判定入队 + rq tick 每 5 分钟执行——
+    写明偏离原因（R2 裁决：1d 会话做不了盘中实时）+ 新增 §5.10 实现现状）
+  - [ ] AGENTS 部署节更新（rqalpha 底座的操作面：rq tick/意图队列/m3 verify/
+    回退开关一行说明）
+  - [ ] `migration-m3.md` 补"观察期每日核对记录"模板 + 观察报告框架
+  - [ ] `report-t79.md`（改动清单 + 无矛盾自查）
+- [ ] **T80（Qoder，P1·M4-②）每日核对自动化**：T77 的核对项做成
+  `cli m3 daily-check`（只读：002192 顺延执行结果/init 对齐/新意图全链/
+  m3 verify 全项）+ 每日 cron 或手动清单；`report-t80.md`
+- [ ] **T81（Hermes，P0·M4-⑤）收尾审查**：审 T78/T79/T80——门禁**真跑**
+  （不是"配置写了"）、文档**无矛盾**（refactor-plan/AGENTS/migration-m3 三处
+  对同一事实的表述一致）、观察报告框架的**判别力**（红/绿/黄的口径）；
+  `report-t81.md`，P0 → questions.md
+'@; git add -A; git commit -m "chore(worker): Batch 20 - M4 wrap-up fully assigned (T78 CI gate, T79 doc closure incl M3 queue-mode alignment, T80 daily-check automation, T81 review); M3 sign-off criteria fixed" 2>&1 | Select-Object -Last 1; git push origin main 2>&1 | Select-Object -Last 1
