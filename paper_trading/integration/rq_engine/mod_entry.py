@@ -299,13 +299,22 @@ class PtPaperMod(AbstractMod):
         env.event_bus.add_listener(
             EVENT.POST_SYSTEM_RESTORED,
             lambda e: self._check_positions_landed(env, mod_config))
+        registered = []
         for ev_name in ("POST_BEFORE_TRADING", "POST_SYSTEM_RESTORED"):
-            try:
-                env.event_bus.add_listener(
-                    getattr(EVENT, ev_name),
-                    lambda e: self._apply_t1_freeze(env, mod_config))
-            except Exception:                   # noqa: BLE001 - 事件名随版本变
-                logger.warning("T+1 对齐事件 %s 不存在，冻结量将不落框架", ev_name)
+            ev = getattr(EVENT, ev_name, None)
+            if ev is None:
+                continue
+            env.event_bus.add_listener(ev, lambda e: self._apply_t1_freeze(env, mod_config))
+            registered.append(ev_name)
+        if dict(getattr(mod_config, "init_frozen", None) or {}) and not registered:
+            # 有要冻的仓却没有能挂对齐的事件 ⇒ 不许"先跑着再说"：框架会当成
+            # 全额可卖，T+0 卖出合规风险由这一跳承担（T72 审的正是这条语义）。
+            from .runner import InitPositionError
+
+            raise InitPositionError(
+                f"EVENT 里没有 POST_BEFORE_TRADING/POST_SYSTEM_RESTORED"
+                f"（框架版本变了？），T+1 冻结无处可挂："
+                f"{sorted(mod_config.init_frozen)}")
 
     def tear_down(self, code, exception=None):
         ev = getattr(self._mc, "evidence", "") if self._mc else ""

@@ -351,7 +351,7 @@ def session_fingerprint(cfg: dict, intraday: bool = False) -> str:
 def check_session_gates(evidence: dict, plan: list, *, handler_calls: int,
                         settle_expected: int = 1,
                         expect_transfer_fee: bool = False,
-                        settled_biz=()) -> dict:
+                        settled_biz=(), init_frozen=None) -> dict:
     """会话后置门禁（纯函数，可离线测）。"""
     counts = evidence.get("event_counts") or {}
     trades = evidence.get("trades") or []
@@ -379,6 +379,20 @@ def check_session_gates(evidence: dict, plan: list, *, handler_calls: int,
         if not cost.get("wrapped"):
             errors.append("TransferFeeNotInstalled: 配了过户费率，但没有一个合约 decider "
                           f"被套上 overlay（cost={cost}）")
+    # T71/T72 的 fail-closed 半段：账本说"这些仓今天不能平"，会话结束时必须能
+    # 拿出"框架确实冻了"的留痕。事件没发（框架改版）/挂在错误的时刻上（11-05
+    # 第一版就是）都会让对齐静默消失，而静默消失的 T+1 对齐 = 框架允许 T+0 卖出。
+    frozen = dict(init_frozen or {})
+    if frozen:
+        applied = {(a.get("symbol")): a for a in
+                   ((evidence.get("frozen_align") or {}).get("applied") or [])}
+        dropped = {str(u.get("symbol")) for u in
+                   (evidence.get("init_align") or {}).get("unsupported") or []}
+        miss = sorted(s for s, v in frozen.items()
+                      if int(v) > 0 and str(s) not in applied and str(s) not in dropped)
+        if miss:
+            errors.append(f"T1FreezeMissing: 账本冻结 {miss} 在框架里没有对齐留痕"
+                          f"（applied={sorted(applied)}）——本会话不落账")
     settlement = counts.get("SETTLEMENT", 0)
     warn = []
     if settlement > settle_expected:
@@ -478,7 +492,8 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
     verdict = check_session_gates(evidence, plan, handler_calls=len(st.handler_dates),
                                   settle_expected=1 if not state_dir else 1,
                                   expect_transfer_fee=cfg["mod"]["ptpaper"]["transfer_fee_rate"] > 0,
-                                  settled_biz=settled_biz)
+                                  settled_biz=settled_biz,
+                                  init_frozen=cfg["mod"]["ptpaper"]["init_frozen"])
     done = False
     if gate and err is None and verdict["ok"]:
         gate.mark_done(date.fromisoformat(today), fp,
