@@ -2115,8 +2115,24 @@ def main() -> None:
                 feed = ensure_today_minutes(bridge.data_db, syms, now=_dt.now())
                 if feed.get("errors"):
                     logger.warning(f"rq tick 分钟线供给异常：{feed['errors']}")
-                state_root = _P(args.state_root or "var/rq_state")
-                state_dir = str(state_root / today)
+                # M3b P0 修复（2026-11-05）：state 必须**连续**（固定目录）——
+                # 原实现 `state_root/today` 每天新建 state ⇒ 框架空账户重启，
+                # 不知道账本历史持仓（002192 卖单被"仓位不足"拒，现网实测）。
+                # 期初持仓从账本读出作 init_positions（框架账户=账本）。
+                state_dir = str(_P(args.state_root or "var/rq_state") / "live")
+                init_pos = {}
+                try:
+                    import sqlite3 as _sq3
+                    _c = _sq3.connect(
+                        f"file:{bridge.broker.db_path}?mode=ro", uri=True)
+                    for _r in _c.execute(
+                            "SELECT symbol, total_volume FROM positions"):
+                        _code = str(_r[0]).zfill(6)
+                        _ob = f"{_code}.{'XSHG' if _code[0] in '69' else 'XSHE'}"
+                        init_pos[_ob] = int(_r[1])
+                    _c.close()
+                except Exception:              # noqa: BLE001
+                    logger.warning("rq tick 期初持仓读取失败（空账户风险）")
                 plan = [{"biz_id": i["biz_id"], "symbol": i["symbol"],
                          "action": i["action"], "volume": i["volume"],
                          "decided_at": i.get("decided_at")}
@@ -2126,7 +2142,8 @@ def main() -> None:
                     symbols=syms, plan=plan, state_dir=state_dir,
                     workdir=state_dir, fee=bridge.broker.config,
                     frequency="1m", intraday_resume=True,
-                    executed_ids=executed, ledger=True)
+                    executed_ids=executed, ledger=True,
+                    init_positions=init_pos)
                 trades = res.get("evidence", {}).get("trades") or []
                 led = None
                 posting_ok = True

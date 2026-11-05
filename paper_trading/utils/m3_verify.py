@@ -378,7 +378,8 @@ def check_audit_trail(conn, today: str) -> dict:
     acts = _rows(conn, """SELECT action, COUNT(*) n FROM op_log
                           WHERE substr(timestamp,1,10)=?
                             AND (action LIKE '%:buy' OR action LIKE '%:sell'
-                                 OR action IN ('agent:tick','ai:decide','m3:switch','parity:diff'))
+                                 OR action IN ('agent:tick','ai:decide','m3:switch',
+                                               'parity:diff','rq:fill'))
                           GROUP BY action""", (today,))
     fills = int(n_fill[0]["c"]) if n_fill else 0
     if fills and not acts:
