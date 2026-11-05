@@ -11,6 +11,7 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
+from rqalpha.const import POSITION_DIRECTION
 from rqalpha.core.events import EVENT
 from rqalpha.interface import AbstractMod
 
@@ -143,6 +144,18 @@ class PtPaperMod(AbstractMod):
             # resume 跳过 BEFORE_TRADING 也不再漏装；事件监听保留为幂等兜底
             self._install_costs()
             env.event_bus.add_listener(EVENT.POST_BEFORE_TRADING, self._install_costs)
+        # M3b T+1 对齐（2026-11-05）：init_positions 导入的持仓框架视为**可卖**；
+        # 账本 available<total 的持仓（如 11-04 买入的 300390）必须把冻结量
+        # 设回框架（_non_closable），否则框架会允许 T+0 卖出 = T+1 违规。
+        init_frozen = getattr(mod_config, "init_frozen", None) or {}
+        for obid, qty in init_frozen.items():
+            try:
+                pos = env.portfolio.get_position(obid, POSITION_DIRECTION.LONG)
+                if pos is not None:
+                    pos._non_closable = int(qty)      # noqa: SLF001 - 框架内部态，
+                    # 期初对齐的唯一入口（框架无公开 API 设冻结量）
+            except Exception:                 # noqa: BLE001 - 对齐失败不挡启动（拒卖风险由 verify 兜）
+                logger.warning("init_frozen 对齐失败：%s", obid)
 
     def tear_down(self, code, exception=None):
         ev = getattr(self._mc, "evidence", "") if self._mc else ""

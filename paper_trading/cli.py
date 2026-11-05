@@ -2133,6 +2133,24 @@ def main() -> None:
                     _c.close()
                 except Exception:              # noqa: BLE001
                     logger.warning("rq tick 期初持仓读取失败（空账户风险）")
+                # 现金基线也必须对齐账本（P0 另一半：框架默认 10 万，账本 6.7 万
+                # ⇒ 买单按 10 万资金校验 = 超支风险）——2026-11-05 同日修
+                _cash = float(bridge.broker.get_cash())
+                # T+1 冻结对齐：账本 available<total 的持仓 → 框架 _non_closable
+                init_frozen = {}
+                try:
+                    import sqlite3 as _sq3f
+                    _cf = _sq3f.connect(
+                        f"file:{bridge.broker.db_path}?mode=ro", uri=True)
+                    for _r in _cf.execute(
+                            "SELECT symbol, total_volume, available_volume"
+                            " FROM positions WHERE total_volume > available_volume"):
+                        _code = str(_r[0]).zfill(6)
+                        _ob = f"{_code}.{'XSHG' if _code[0] in '69' else 'XSHE'}"
+                        init_frozen[_ob] = int(_r[1]) - int(_r[2])
+                    _cf.close()
+                except Exception:              # noqa: BLE001
+                    logger.warning("rq tick 期初冻结读取失败（T+1 对齐缺口）")
                 plan = [{"biz_id": i["biz_id"], "symbol": i["symbol"],
                          "action": i["action"], "volume": i["volume"],
                          "decided_at": i.get("decided_at")}
@@ -2143,7 +2161,8 @@ def main() -> None:
                     workdir=state_dir, fee=bridge.broker.config,
                     frequency="1m", intraday_resume=True,
                     executed_ids=executed, ledger=True,
-                    init_positions=init_pos)
+                    init_positions=init_pos, init_cash=_cash,
+                    init_frozen=init_frozen)
                 trades = res.get("evidence", {}).get("trades") or []
                 led = None
                 posting_ok = True

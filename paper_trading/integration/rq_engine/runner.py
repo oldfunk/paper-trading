@@ -85,6 +85,7 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
                  ledger: bool = False,
                  frequency: str = "1d",           # M3b："1m" = 5 分钟 bar 驱动分钟会话
                  init_positions: Optional[dict] = None,   # M3b：期初持仓（账本对齐）
+                 init_frozen: Optional[dict] = None,      # M3b：期初冻结量（T+1 对齐）
                  extra: Optional[dict] = None) -> dict:
     """一个模拟日的 rqalpha 配置（纯函数，便于离线测试）。
 
@@ -150,6 +151,7 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
                 "require_today_reference": bool(require_today_reference),  # T50-C
                 "ledger": bool(ledger),                   # T47-G1/G3：会话成交是否落现网账本
                 "frequency": frequency,                   # M3b：mod 按此选日线/分钟 store
+                "init_frozen": dict(init_frozen or {}),   # M3b：期初 T+1 冻结量
             },
         },
     }
@@ -187,6 +189,7 @@ def session_fingerprint(cfg: dict, intraday: bool = False) -> str:
     if not intraday:
         payload["symbols"] = sorted(cfg["mod"]["ptpaper"]["symbols"])
     payload["init_positions"] = cfg["base"].get("init_positions") or {}
+    payload["init_frozen"] = cfg["mod"]["ptpaper"].get("init_frozen") or {}
     return config_fingerprint(payload)
 
 
@@ -264,7 +267,8 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
                 ledger: bool = False, frequency: str = "1d",
                 intraday_resume: bool = False,
                 executed_ids: Optional[set] = None,
-                init_positions: Optional[dict] = None) -> dict:
+                init_positions: Optional[dict] = None,
+                init_frozen: Optional[dict] = None) -> dict:
     """跑一个模拟日（**G-T13-9：一个进程只允许一次**）。
 
     `intraday_resume=True`（M3b 日内多跳）：同日续跑放行（SessionGate intraday）。
@@ -289,7 +293,8 @@ def run_session(*, today: str, data_db: str, bundle: str, symbols: list, plan: l
                        matching_type=matching_type, fee=fee,
                        require_today_reference=require_today_reference,
                        ledger=ledger, frequency=frequency,
-                       init_positions=init_positions)
+                       init_positions=init_positions,
+                       init_frozen=init_frozen)
     fp = session_fingerprint(cfg, intraday=intraday_resume)
 
     gate = SessionGate(state_dir) if state_dir else None
