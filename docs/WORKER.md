@@ -1334,3 +1334,25 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 - [ ] **T72（Hermes，P1）**：审 T71（决策时点门测试的完备性 + T+1 对齐的
   fail-closed 语义——重建时对齐失败必须拒跑，不许"先跑着再说"）
 
+
+## Batch 18 · init_positions 最后一环（主 AI 派发 2026-11-05 · 今日第 6 层）
+
+> 今日已修（全部上线）：① state 连续（每日→固定 live）② 现金基线 ③ T+1 冻结对齐
+> ④ 1d get_bar 分钟聚合（bundle 落后致 init 失败）⑤ date→datetime 归一
+> ⑥ datetime 模块别名。**仍未通**：init_positions 导入的持仓在框架里为空
+> （C 场景 002192 卖单仍被"仓位不足"拒）——聚合 get_bar 单测通过、key 格式
+> 正确，**怀疑 Portfolio 构建时用的 data_source 不是我们的**（顺序/注册时机）。
+
+- [ ] **T73（Qoder，P0·最后一环）**：
+  - [ ] **取证**：rqalpha `main.py` 的 mod start_up 与 `Portfolio(...)` 构建的
+    **先后顺序**（文件:行）——确认 Portfolio 构建时 `env.data_source` 是不是
+    我们注册的 PaperDataSource；若不是，**注册时机**怎么提前（更早的钩子/
+    mod 装载顺序/config 层注入）
+  - [ ] **修复 + 四场景测试锁定**（用现网库副本，主 AI 已建
+    `spikes/_p0_scene.py` + 四场景脚本）：A T+1 冻结拒 / B 超支拒 /
+    C 正常卖成交 / D 正常买成交——**四场景全绿 = 修复完成**
+  - [ ] **回归**：全量测试 + 把四场景固化为 `tests/test_init_positions_e2e.py`
+    （子进程、库副本，不碰生产）
+  - [ ] `report-t73.md`
+- [ ] **T74（Hermes，P0）**：审 T73（顺序取证的正确性 + 四场景的判别力）
+'@; git add -A; git commit -m "chore(worker): Batch 18 - T73 init_positions last mile (Portfolio/data_source order forensics + 4-scene lock-in), T74 review; today's 6 fixes all deployed" 2>&1 | Select-Object -Last 1; git push origin main 2>&1 | Select-Object -Last 1
