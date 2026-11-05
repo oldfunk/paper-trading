@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from datetime import date
 from pathlib import Path
@@ -19,6 +20,8 @@ from paper_trading.data.db_manager import DataDBManager
 from paper_trading.integration.rq_engine import costs
 from paper_trading.integration.rq_engine.provider import (FilePersistProvider,
                                                         PersistStateError)
+
+logger = logging.getLogger(__name__)
 from paper_trading.integration.rq_engine.store import RawDayBarStore
 
 from paper_trading.integration.rq_engine.data_source import PaperDataSource
