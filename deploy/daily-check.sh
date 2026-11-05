@@ -57,7 +57,7 @@ print(json.dumps(rec, ensure_ascii=False))
 }
 
 # ---- 1) 每日核对（m3 verify 全套 + 框架对齐/顺延落地/意图全链）
-RC=1
+RC=0
 RAW=$(mktemp)
 $PY -m paper_trading.cli --data-db "$DATA_DB" --account-db "$ACCT_DB" \
      m3 daily-check --json --today "$TODAY" > "$RAW" 2>>"$ERR" || RC=$?
@@ -67,7 +67,7 @@ echo "[daily-check] $TODAY daily_check exit=$RC"
 
 # ---- 2) init_positions 四场景（A 冻结拒 / B 超支拒 / C 卖成交 / D 买成交 + 脱钩拒跑）
 # 这层只有装了 rqalpha、有 bundle、有当日分钟线的机器上跑得动 —— 就是这台。
-SC_RC=1
+SC_RC=0
 if [ "${PT_RUN_SCENES:-1}" = "1" ] && [ -x "$ENG" ] && [ -d "$BUNDLE" ]; then
   TMPD=$(mktemp -d)
   cp "$DATA_DB" "$TMPD/data_copy.db" 2>>"$ERR"
