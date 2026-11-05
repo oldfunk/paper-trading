@@ -249,6 +249,43 @@ def test_raw_gate_skip_without_symbols():
     assert mv.check_raw_gate(None, [], TODAY)["status"] == "skip"
 
 
+# ---------- 母库参照滞后分档（Q5 批复：0/2/8 三档）----------
+@pytest.mark.parametrize("days_ago,status", [
+    (0, "green"), (2, "green"), (3, "warn"), (5, "warn"), (6, "red"), (8, "red")])
+def test_waiting_grade_breaks_at_2_and_5(days_ago, status):
+    assert mv.waiting_grade(days_ago) == status
+
+
+def _stub_flip(monkeypatch, waiting_days):
+    """把逐日台账换成"只有滞后天数"的假象：闸的其余分支不是本测试的对象。"""
+    from paper_trading.data import raw_feed
+
+    monkeypatch.setattr(raw_feed, "flip_watch_with_mother", lambda *a, **k: {
+        "violations": [], "warnings": [], "waiting_days": waiting_days,
+        "incomplete_days": 0, "no_reference_days": 0, "audit_complete": True,
+        "per_symbol": {"000651": {"daily": {"waiting_days": waiting_days}}}})
+
+
+def test_raw_gate_green_writes_the_lag_even_when_green(data_db, monkeypatch):
+    """≤2 是母库发布节奏：绿，但**必须把天数写在 detail 里**（不许假装没事）。"""
+    _stub_flip(monkeypatch, 2)
+    r = mv.check_raw_gate(data_db, ["000651"], "2026-10-29", days=10)
+    assert r["status"] == "green", r["detail"]
+    assert "滞后 2 个交易日" in r["detail"]
+
+
+def test_raw_gate_warn_when_lag_between_3_and_5(data_db, monkeypatch):
+    _stub_flip(monkeypatch, 3)
+    r = mv.check_raw_gate(data_db, ["000651"], "2026-10-29", days=10)
+    assert r["status"] == "warn" and "滞后 3 个交易日" in r["detail"]
+
+
+def test_raw_gate_red_when_mother_reference_really_broke(data_db, monkeypatch):
+    _stub_flip(monkeypatch, 8)
+    r = mv.check_raw_gate(data_db, ["000651"], "2026-10-29", days=10)
+    assert r["status"] == "red" and "参照源断了" in r["detail"]
+
+
 # ---------- 汇总 ----------
 def test_verify_all_flags_rollback_only_for_money_red(broker, data_db, monkeypatch):
     """非钱类红（影子留痕缺失等）只 exit 1；钱类红才 rollback_required。"""

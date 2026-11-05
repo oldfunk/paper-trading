@@ -185,6 +185,24 @@ def check_duplicate_fills(conn, today: str) -> dict:
                 on_red="回退")
 
 
+#: 母库参照滞后的分档（Q5 批复：0/2/8 三档 = ≤2 green / >2 warn / >5 红）。
+#: 没有阈值之前，"母库按发布节奏晚 1–2 天"与"真的断了 20 天"长得一模一样
+#: （都是 `warn waiting_days=N`），11-04 现网 19 只挂 2 天 = 长期黄灯壁纸；
+#: 下一次真断供时没人再看它（纪律 4：报警本身不许失真）。
+WAIT_GREEN_MAX = 2
+WAIT_RED_MIN = 5
+
+
+def waiting_grade(max_waiting_days: int) -> str:
+    """母库参照滞后（交易日）→ 灯色。`green` 也要在 detail 里把天数写出来。"""
+    n = int(max_waiting_days or 0)
+    if n > WAIT_RED_MIN:
+        return "red"
+    if n > WAIT_GREEN_MAX:
+        return "warn"
+    return "green"
+
+
 def check_raw_gate(db, symbols, today, days: int = 60) -> dict:
     """引擎吃的原始价必须：有料、是 raw、新鲜、且逐日台账无未翻转（T41 的闸）。"""
     from paper_trading.data import raw_feed
@@ -215,13 +233,31 @@ def check_raw_gate(db, symbols, today, days: int = 60) -> dict:
         return item("raw_gate", "行情口径与新鲜度闸", "red",
                     "；".join(bits) + "——引擎会对这些标的 fail-closed 拒单",
                     on_red="回退（价都不对，账不可能对）")
-    if not flip["audit_complete"] or flip["waiting_days"]:
+    # 母库参照滞后：按**单只最大滞后天数**分档（不是合计——合计会把"19 只各
+    # 滞后 2 天"和"1 只滞后 38 天"混成同一个数字，那正是壁纸化的成因）。
+    waits = {str(s): int((v.get("daily") or {}).get("waiting_days") or 0)
+             for s, v in (flip.get("per_symbol") or {}).items()}
+    max_wait = max(waits.values(), default=0)
+    n_wait = sum(1 for w in waits.values() if w > 0)
+    grade = waiting_grade(max_wait)
+    wait_note = (f"母库参照滞后 {max_wait} 个交易日（×{n_wait} 只，"
+                 f"合计 waiting_days={flip['waiting_days']}）")
+    if grade == "red":
+        return item("raw_gate", "行情口径与新鲜度闸", "red",
+                    f"{wait_note} > {WAIT_RED_MIN} —— 这不是发布节奏，是参照源断了："
+                    "引擎对这些标的拿不到可核对的参照价", on_red="归因")
+    if grade == "warn":
         return item("raw_gate", "行情口径与新鲜度闸", "warn",
-                    f"waiting_days={flip['waiting_days']} "
+                    f"{wait_note}（>{WAIT_GREEN_MAX} 才异常，这条要盯但不必停）",
+                    on_red="归因")
+    if not flip["audit_complete"]:
+        return item("raw_gate", "行情口径与新鲜度闸", "warn",
                     f"incomplete_days={flip['incomplete_days']} "
                     f"complete={flip['audit_complete']}", on_red="归因")
     return item("raw_gate", "行情口径与新鲜度闸", "green",
-                f"{len(symbols)} 只全部新鲜且逐日台账完整", on_red="回退")
+                f"{len(symbols)} 只全部新鲜且逐日台账完整"
+                + (f"；{wait_note} ≤{WAIT_GREEN_MAX} 属母库发布节奏" if n_wait else ""),
+                on_red="回退")
 
 
 def check_minute_feed(data_db, symbols, today: str, now: Optional[datetime] = None,

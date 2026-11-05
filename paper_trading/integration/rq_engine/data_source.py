@@ -65,7 +65,20 @@ class PaperDataSource(BaseDataSource):
             row["total_turnover"] = float(sum(
                 b["total_turnover"] for b in sel
                 if np.isfinite(b["total_turnover"]))) or np.nan
-            row["prev_close"] = float(sel[0]["prev_close"])
+            # 聚合出的"当日 OHLC"里 prev_close/涨跌停带必须有限（T74 审查 P2）：
+            # 这两个数是撮合判涨跌停的唯一依据（`matcher/base.py:207-218`），
+            # NaN 蒙过去 = 一整天的 band 失真。缺就如实报"这天没得算"——
+            # 调用方（`Account.__init__` 取期初成本价）会因此明确报错，
+            # 而不是拿 NaN 建成一仓看不见的成本。
+            pc = float(sel[0]["prev_close"])
+            if not (np.isfinite(pc) and np.isfinite(float(sel[0]["limit_up"]))):
+                problems = getattr(self._pt_store, "problems", None)
+                if isinstance(problems, list):
+                    problems.append(
+                        f"1d 聚合失败：{instrument.order_book_id} {day_key} "
+                        f"prev_close/涨跌停带非有限（pc={pc}）")
+                return None
+            row["prev_close"] = pc
             row["limit_up"] = float(sel[0]["limit_up"])
             row["limit_down"] = float(sel[0]["limit_down"])
             return row
