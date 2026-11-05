@@ -39,10 +39,11 @@ class PaperDataSource(BaseDataSource):
         ⇒ 期初持仓**静默导入失败**（框架空仓，卖单全被拒）。分钟 store 有
         当日 48 根分钟 bar ⇒ 按日聚合出等价日线（OHLC/量额求和）。"""
         import numpy as np
+        import datetime as _dtm
         from rqalpha.utils.datetime_func import convert_dt_to_int
         # init_positions 的 prev_date 是 date（无时分）——convert 需要 datetime
-        if isinstance(dt, datetime.date) and not isinstance(dt, datetime.datetime):
-            dt = datetime.datetime(dt.year, dt.month, dt.day)
+        if isinstance(dt, _dtm.date) and not isinstance(dt, _dtm.datetime):
+            dt = _dtm.datetime(dt.year, dt.month, dt.day)
         bars = self._pt_store.get_bars(instrument.order_book_id)
         if bars is None or len(bars) == 0:
             return None
