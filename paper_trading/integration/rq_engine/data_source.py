@@ -33,17 +33,40 @@ class PaperDataSource(BaseDataSource):
     def get_bar(self, instrument, dt, frequency):
         """M3b：开源 BaseDataSource 对 `frequency != '1d'` 直接
         NotImplementedError（`base_data_source/data_source.py:232`，分钟查询
-        只在商业版 rqdatac 数据源里）——子类覆盖为从我们的分钟 store 查询
-        （`datetime <= dt` 的最后一根，分钟 bar 的标准 ≤ 语义，返回 numpy 行
-        与基类一致，由 data_proxy 包 BarObject）。日线走基类。"""
-        if frequency == "1d" or not self._minute:
-            return super().get_bar(instrument, dt, frequency)
+        只在商业版 rqdatac 数据源里）——子类覆盖为从我们的 store 查询。
+        **1d 也覆盖**（2026-11-05）：init_positions 导入期初持仓时框架取
+        `prev_date` 的 1d bar 作成本价——bundle 月末落后（无近日 bar）⇒ NaN
+        ⇒ 期初持仓**静默导入失败**（框架空仓，卖单全被拒）。分钟 store 有
+        当日 48 根分钟 bar ⇒ 按日聚合出等价日线（OHLC/量额求和）。"""
         import numpy as np
         from rqalpha.utils.datetime_func import convert_dt_to_int
         bars = self._pt_store.get_bars(instrument.order_book_id)
         if bars is None or len(bars) == 0:
             return None
         dt_int = convert_dt_to_int(dt)
+        if frequency == "1d":
+            # 分钟 bar 按日聚合（当日 OHLC：首开/最高/最低/末收；量额求和）
+            day_key = str(dt_int)[:8]
+            sel = [b for b in bars
+                   if str(int(b["datetime"]))[:8] == day_key]
+            if not sel:
+                return None
+            row = np.zeros(1, dtype=bars.dtype)[0]
+            row["datetime"] = int(day_key) * 1_000_000
+            row["open"] = float(sel[0]["open"])
+            row["high"] = float(max(b["high"] for b in sel))
+            row["low"] = float(min(b["low"] for b in sel))
+            row["close"] = float(sel[-1]["close"])
+            row["volume"] = float(sum(b["volume"] for b in sel))
+            row["total_turnover"] = float(sum(
+                b["total_turnover"] for b in sel
+                if np.isfinite(b["total_turnover"]))) or np.nan
+            row["prev_close"] = float(sel[0]["prev_close"])
+            row["limit_up"] = float(sel[0]["limit_up"])
+            row["limit_down"] = float(sel[0]["limit_down"])
+            return row
+        if not self._minute:
+            return super().get_bar(instrument, dt, frequency)
         i = int(np.searchsorted(bars["datetime"], dt_int, side="right")) - 1
         if i < 0:
             return None
