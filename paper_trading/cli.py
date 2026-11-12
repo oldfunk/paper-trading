@@ -1518,6 +1518,25 @@ def main() -> None:
                            help="只看钱类项（切换日第一小时用）")
     m3_verify.add_argument("--json", action="store_true")
 
+    # T80（M4-②）：每日核对全绿是 M3 关闭条件之一，所以要一条"跑一次出一个码"的命令
+    m3_daily = m3_sub.add_parser(
+        "daily-check", help="每日核对（只读）：m3 verify 全套 + 框架对齐/顺延落地/"
+                            "意图全链；红=退出码非 0，可直接挂 cron 或 CI")
+    m3_daily.add_argument("--today", default=None)
+    m3_daily.add_argument("--symbols", nargs="*")
+    m3_daily.add_argument("--pool-from", default="config")
+    m3_daily.add_argument("--pool-limit", type=int, default=20)
+    m3_daily.add_argument("--pool-tag", default="")
+    m3_daily.add_argument("--no-picks", action="store_true")
+    m3_daily.add_argument("--days", type=int, default=60)
+    m3_daily.add_argument("--heartbeat", default=None)
+    m3_daily.add_argument("--state-dir", default=None,
+                          help="会话留痕目录（默认 var/rq_state/live）")
+    m3_daily.add_argument("--expect-work", choices=["yes", "no", "auto"],
+                          default="auto",
+                          help="今日是否应有会话留痕：no=队列空（无留痕不算红）")
+    m3_daily.add_argument("--json", action="store_true")
+
     # ledger（T47-G3/G4：执行底座可见性 + 切换前的冷备归档/新开账）
     ledger_parser = subparsers.add_parser(
         "ledger", help="账本底座工具（executor 只读查看；archive 冷备旧账后新开；"
@@ -2090,6 +2109,9 @@ def main() -> None:
                 # 跨日未执行的意图先过期：意图是"某日某分钟的决定"，隔日补执行
                 # 等于拿昨天的决定交易今天的价格（不可归因），宁可让规则重触发。
                 expired = _q.expire_stale(acct_db, today)
+                # Q6（11-05 批复）：盘后做出的决定顺延一个交易日，本跳要把它
+                # **说出来**而不是悄悄留着——明天开盘验证件走的正是这条路。
+                carried = _q.carried_ids(acct_db, today)
                 intents = _q.pending(acct_db)[: int(args.limit)]
 
                 def _beat(detail: str) -> None:
@@ -2101,7 +2123,7 @@ def main() -> None:
                 if not intents:
                     _beat("idle")
                     emit({"ok": True, "idle": True, "why": "队列空，本跳无事",
-                          "expired": len(expired)})
+                          "expired": len(expired), "carried": carried})
                     sys.exit(0)
                 executed = _q.executed_keys_from_ledger(acct_db, today)
                 syms = sorted({i["symbol"] for i in intents})
@@ -2165,6 +2187,7 @@ def main() -> None:
                 st = verdict["stats"]
                 res["intent_outcomes"] = {
                     "in": len(intents), "expired": len(expired),
+                    "carried": carried,
                     "executed": st.get("executed", 0) + st.get("executed_idempotent", 0),
                     "rejected": st.get("rejected", 0), "kept_queued": st.get("kept", 0),
                     "waiting_decision": len(waiting),
@@ -2275,18 +2298,47 @@ def main() -> None:
             from paper_trading.integration.rq_engine import ledger as _ld
             from paper_trading.utils import m3_verify as _m3
 
-            if (getattr(args, "m3_command", None) or "verify") != "verify":
+            m3_cmd = getattr(args, "m3_command", None) or "verify"
+            if m3_cmd not in ("verify", "daily-check"):
                 parser.print_help()
                 sys.exit(2)
             today = args.today or _date.today().isoformat()
             syms, note, _, _ = _resolve_syms(bridge, args)
             hb_path = getattr(args, "heartbeat", None) or None
+            executor = _ld.executor_from_config(
+                load_engine_config(getattr(bridge, "config_path", None)))
+            if m3_cmd == "daily-check":
+                from paper_trading.utils import daily_check as _dc
+
+                state_dir = str(args.state_dir or "var/rq_state/live")
+                expect = args.expect_work
+                if expect == "auto":
+                    from paper_trading.integration.rq_engine import queue as _qq
+
+                    expect = "no" if not _qq.pending(str(bridge.broker.db_path)) else "yes"
+                res = _dc.daily_check(
+                    broker=bridge.broker, data_db=bridge.data_db,
+                    account_db=str(bridge.broker.db_path), symbols=syms,
+                    today=today, cfg=bridge.broker.config, days=args.days,
+                    heartbeat_path=(_PP(hb_path) if hb_path else None),
+                    executor=executor, state_dir=state_dir,
+                    work_expected=(expect == "yes"))
+                res["pool_source"] = note
+                res["state_dir"] = state_dir
+                if getattr(args, "json", False):
+                    emit(res)
+                else:
+                    print(_m3.format_text(res))
+                if res["rollback_required"]:
+                    sys.exit(3)
+                if res["red"]:
+                    sys.exit(1)
+                sys.exit(0)
             res = _m3.verify_all(broker=bridge.broker, data_db=bridge.data_db,
                                  symbols=syms, today=today,
                                  cfg=bridge.broker.config, days=args.days,
                                  heartbeat_path=(_PP(hb_path) if hb_path else None),
-                                 executor=_ld.executor_from_config(
-                                     load_engine_config(getattr(bridge, "config_path", None))))
+                                 executor=executor)
             res["pool_source"] = note
             if getattr(args, "money_only", False):
                 res["items"] = [i for i in res["items"] if i["money"]]

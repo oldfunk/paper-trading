@@ -1468,3 +1468,70 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   对同一事实的表述一致）、观察报告框架的**判别力**（红/绿/黄的口径）；
   `report-t81.md`，P0 → questions.md
 '@; git add -A; git commit -m "chore(worker): Batch 20 - M4 wrap-up fully assigned (T78 CI gate, T79 doc closure incl M3 queue-mode alignment, T80 daily-check automation, T81 review); M3 sign-off criteria fixed" 2>&1 | Select-Object -Last 1; git push origin main 2>&1 | Select-Object -Last 1
+
+
+## Batch 19/20 交付核销（Qoder · 2026-11-05 晚，分支 `worker/t75-t80-wrapup`）
+
+对照派发原文逐条核销（基准=Batch 19 的 T75/T77、Batch 20 的 T78/T80 与 M4 五条验收标准、
+`questions.md` 11-04 的 Q6 批复），不是拿我的实现反推拍板。
+证据在 `report-t75.md` / `report-t78.md` / `report-t80.md`。
+
+- [x] **T75（P2·T74 残留两项）**：
+  - [x] ① **prev_close 的 NaN 断言（回退前一日日线）**：新增纯函数
+        `store.aggregate_day_from_minutes`（`data_source.get_bar` 的 1d 分支只剩一次调用），
+        非有限 ⇒ 回退"上一交易日末根分钟 close"+ 同一个 `bands.limit_prices` 现算带；
+        退无可退才失败并写 `store.problems`。测试 4 条（含"回退值必须是上一交易日的
+        末根"与"不许返回全零假 bar"）。抽到 `store.py` 的唯一理由：那里不 import
+        rqalpha，CI 里能真测——否则这条永远只有生产机能碰。
+  - [x] ② **前缀覆盖测试（6/0/3/688/8）**：`test_order_book_id_prefix_coverage` 把
+        Hermes 点名的六个前缀 + 北交所 920 段钉在 `store.to_order_book_id` 与
+        `markets.order_book_id` **同值**上；另加 `test_bj_symbol_survives_the_init_chain_loudly`
+        （实测 bundle `.BJ`=0 只 ⇒ 期初如实 `unsupported` 剔除并留名字，
+        同时被 `T1FreezeMissing` 与 daily-check 豁免，不产生假红）。
+  - [x] `report-t75.md`
+- [x] **T78（P0·M4-③）永久门禁进 CI**：
+  - [x] `.github/workflows/test.yml` 新增三步（`daily-check` 门禁自检 / 钱类合规契约 /
+        四场景步骤），每步独立退出码；wiring_audit 保持原独立一步。
+  - [x] `m3 verify` 侧：新增 `tests/ci_gate_selfcheck.py`——跑真 CLI、真退出码，
+        四条断言含"健康基线必须无红"与"**造一个必须红的现场 ⇒ 非零退出**"
+        （门禁不会失败就不是门禁）。
+  - [x] `test_init_positions_e2e` 四场景：CI 里跑不动是事实（rqalpha/bundle/当日分钟线
+        三样都没有，硬塞只得到"永远 skip 的绿色步骤"=假绿），因此挂在**生产机每日实跑**
+        （`deploy/daily-check.sh`，`PT_RUN_SCENES=1` 默认开）；CI 仍保留该步并用 `-rs`
+        把 skip 原因打出来。边界与若要真进 CI 的代价写在 `report-t78.md` §5。
+  - [x] 彩排证据（现网候选树、只读）：`daily_check exit=3 / scenes exit=0`，
+        两本生产库 md5 前后同值；彩排本身抓出两个"门禁谎报"洞（JSONL 全 null、
+        成功时仍报 1），都已修并各自成一条 commit。
+  - [x] `report-t78.md`（含 CI diff + 本地/NEC 复跑输出）
+- [x] **T80（P1·M4-②）每日核对自动化**：
+  - [x] `paper_trading/utils/daily_check.py` + `cli m3 daily-check`：m3 verify 全套
+        + `init_align`（框架账户=账本同源）/ `carry_over`（Q6 顺延有没有兑现）/
+        `intent_chain`（当日意图闭环）；退出码 0/1/3 与 `m3 verify` §5.6 同一把尺子。
+        队列空时 `init_align` 判 **skip 不判红**（报警不许失真）。
+  - [x] cron 草稿 + `deploy/daily-check.sh`（JSONL 一天两行，供 T79 观察报告聚合）。
+        **crontab 一行都没动**，装法写在报告里。
+  - [x] 现网只读实跑（§2 of report-t80）：`init_align` 如实红——现网跑的是 main
+        `7cd31a5`，**T73 修复尚未部署**，15:52 那份 live evidence 里没有对齐留痕。
+  - [x] `report-t80.md`
+- [ ] **T77（P1·明天开盘验证件）**：**必须等 11-06 开盘后有真会话才能核**，
+  今晚能交付的是命令与判据（都已就绪并彩排过）：
+  `deploy/daily-check.sh`（或 `cli m3 daily-check --json`）看 `init_align` 是否转绿、
+  `carry_over` 里 `002192_SELL_100@2026-11-05T15:09:20` 的结论、
+  `intent_chain` 当日分布。**前提是主 AI 先部署本分支并把 `var/rq_state/live` 挪开**
+  （`init_positions` 只对新 state 生效；不挪则每一跳都会被少仓校验响亮拒跑）。
+- [x] **Q6 批复落地（盘后决定转次日）**：`queue.is_carried` —— `created_at` 时刻
+  `>15:00` 且 `day` 正是那天的**下一个交易日**才顺延；日历答不出⇒不顺延（保守）。
+  `expire_stale` 改成同一判据的单一口径，`carried_ids` 供报告，`rq tick` 输出
+  `carried` 字段（顺延必须说出来，不能悄悄留着）。测试 4 条：盘后转次日 /
+  盘中照旧过期 / 只顺一天 / 日历不可信时不过期；`tests/test_decision_gate_t71.py`
+  的文件头也随之改成"四向都钉住"。
+- [ ] **新发现待裁决 Q7（钱类）**：`nav_history` 同一业务日被写两行
+  （现网 11-05：`rq-nav` 09:32 + `nav:close` 16:30；11-04 只有 09:32 那一行）。
+  两条缺陷互相绊脚：D1 幂等标记不统一（旧线只查 `nav:close`，不看 `rq-nav`/
+  `nav_history` 当天有行）；D2 `rq tick` 盘中任意一跳就写"收盘 NAV"，价取
+  `daily_bars_raw` 里 ≤今日的**最后一根**（盘中⇒昨天收盘）⇒ 净值序列里出现
+  按昨价估的"收盘"行，而回撤基线读的就是它。
+  **为什么我不各修一半**：只修 D1 会让盘中那条昨价行成为当日唯一 NAV，
+  16:30 的收盘 NAV 反而被让位闸挡掉——比现在更糟。三个可选项与倾向写在
+  `questions.md` Q7。现在 `m3 daily-check` 每天会把它报成钱类红（退出码 3），
+  所以这条不会烂在没人看见的地方。

@@ -883,3 +883,49 @@ incomplete=0`，但 **19 只标的各挂着 11-02、11-03 两天 `waiting_refere
 并且**明天要验证执行请盘中重新入队一条新意图**。
 
 批复：
+
+## 2026-11-05 · T78/T80 落地时发现的新缺陷（Qoder）——请拍板 Q7
+
+**Q7｜同一业务日写进 `nav_history` 两行（钱类），而且两个修法互相绊脚**
+
+现网物证（只读查询，`md5` 前后同值 `d3d98da6…`；`m3 daily-check` 报红，退出码 3）：
+
+```
+nav_history   21|2026-11-05T09:32:03|total=101603.80     ← rq tick 写的
+              22|2026-11-05T16:30:43|total=102311.80     ← 旧线 agent 写的
+op_log        rq-nav   |2026-11-05T09:32:03|{"date":"2026-11-05","total_value":101603.8}
+              nav:close|2026-11-05T16:30:43|{"date":"2026-11-05","nav":102311.8}
+```
+
+两个缺陷，必须一起看：
+
+- **D1 判据不统一**（纪律 7）：同一件业务事实"今天的收盘净值"有两套幂等标记。
+  rq 侧（`ledger.record_close_nav`）查 `rq-nav` **或** `nav:close` **或** `nav_history` 当天有行；
+  旧线（`agent/loop._snapshot_close_nav:498`）只查 `has_operation("nav:close", day)`。
+  于是 rq 先写了当天行，旧线看不见 ⇒ 同日两行。`m3 verify` 的 `nav` 项按"必须幂等 1 行"
+  判钱类红——**它报得对**。
+- **D2 价格基准**（更要命）：`rq tick` **任意一跳**（有成交就）调 `record_close_nav`，
+  价取 `close_prices()`＝`daily_bars_raw` 里 `≤今日` 的**最后一根**。盘中（09:32）当天
+  日线还没出 ⇒ 取到的是**昨天收盘** ⇒ 净值序列里出现"以昨日价估今日"的行。
+  11-04 当天只有 09:32 那一行（100,986.96），也就是说 11-04 的"收盘净值"其实是
+  早上按昨价估的——回撤基线/`peak` 就是被这种行喂大的（`risk_manager` 读 NAV）。
+
+为什么我不各修一半：**只修 D1**（旧线也查 `nav_history` 当天有行）会让盘中那条
+**昨价估值的行**成为当天唯一 NAV，16:30 的收盘 NAV 反而被让位闸挡掉——面板从此
+把盘中估值当收盘价，比现在"两行但最后一行是对的"更糟。所以 D1/D2 必须同批处理。
+
+三个可选项（我倾向 ①）：
+1. **盘中不写收盘 NAV**：`record_close_nav` 只在"当日日线 raw 已有行"时写
+   （`close_prices` 加 `require_today`，数据驱动、不看时钟），盘中跳一律
+   `{"recorded": False, "reason": "close_bar_not_final"}`；同日幂等再统一成
+   "`nav_history` 当天有行"一条判据（`broker.has_nav_for_day`，两边都调它）。
+   代价：`test_close_prices_reads_only_latest_raw_bar` 的契约要改（它现在断言"取最近一根"）。
+2. **盘中照写、当日可覆盖**：把 NAV 改成"同日 upsert（保留最新）"，`m3 verify` 的
+   "恰 1 行"判据不变；代价是历史某天的值会被当天后续跳改写，审计要看 op_log 才知道。
+3. **维持现状**：只靠 `m3 daily-check` 每天报红，由人工决定何时清理。
+
+批 ①：我按 ① 改（`paper_broker.has_nav_for_day` + `ledger`/`agent` 两条写入路径共用 +
+`close_prices(require_today=True)` + 3~4 条测试 + 翻转上面那条旧契约测试并写明理由）。
+批 ②/③：我不动结算路径，把这条留在 questions.md。
+
+批复：

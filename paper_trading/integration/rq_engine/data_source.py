@@ -17,7 +17,11 @@ from typing import Optional
 from rqalpha.const import INSTRUMENT_TYPE, MARKET
 from rqalpha.data.base_data_source.data_source import BaseDataSource
 
+from paper_trading.utils import get_logger
+
 from .store import RawDayBarStore
+
+logger = get_logger(__name__)
 
 
 class PaperDataSource(BaseDataSource):
@@ -49,38 +53,17 @@ class PaperDataSource(BaseDataSource):
             return None
         dt_int = convert_dt_to_int(dt)
         if frequency == "1d":
-            # 分钟 bar 按日聚合（当日 OHLC：首开/最高/最低/末收；量额求和）
-            day_key = str(dt_int)[:8]
-            sel = [b for b in bars
-                   if str(int(b["datetime"]))[:8] == day_key]
-            if not sel:
-                return None
-            row = np.zeros(1, dtype=bars.dtype)[0]
-            row["datetime"] = int(day_key) * 1_000_000
-            row["open"] = float(sel[0]["open"])
-            row["high"] = float(max(b["high"] for b in sel))
-            row["low"] = float(min(b["low"] for b in sel))
-            row["close"] = float(sel[-1]["close"])
-            row["volume"] = float(sum(b["volume"] for b in sel))
-            row["total_turnover"] = float(sum(
-                b["total_turnover"] for b in sel
-                if np.isfinite(b["total_turnover"]))) or np.nan
-            # 聚合出的"当日 OHLC"里 prev_close/涨跌停带必须有限（T74 审查 P2）：
-            # 这两个数是撮合判涨跌停的唯一依据（`matcher/base.py:207-218`），
-            # NaN 蒙过去 = 一整天的 band 失真。缺就如实报"这天没得算"——
-            # 调用方（`Account.__init__` 取期初成本价）会因此明确报错，
-            # 而不是拿 NaN 建成一仓看不见的成本。
-            pc = float(sel[0]["prev_close"])
-            if not (np.isfinite(pc) and np.isfinite(float(sel[0]["limit_up"]))):
+            # 分钟 bar 按日聚合（口径与 prev_close 回退都在 `store.aggregate_day_from_minutes`，
+            # 那里不 import rqalpha，CI 里能直接测）
+            from .store import aggregate_day_from_minutes, to_symbol
+
+            row, note = aggregate_day_from_minutes(
+                bars, str(dt_int)[:8], to_symbol(instrument.order_book_id))
+            if note:
                 problems = getattr(self._pt_store, "problems", None)
                 if isinstance(problems, list):
-                    problems.append(
-                        f"1d 聚合失败：{instrument.order_book_id} {day_key} "
-                        f"prev_close/涨跌停带非有限（pc={pc}）")
-                return None
-            row["prev_close"] = pc
-            row["limit_up"] = float(sel[0]["limit_up"])
-            row["limit_down"] = float(sel[0]["limit_down"])
+                    problems.append(note)
+                logger.warning(note)
             return row
         if not self._minute:
             return super().get_bar(instrument, dt, frequency)
