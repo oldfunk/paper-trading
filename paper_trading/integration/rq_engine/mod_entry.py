@@ -165,7 +165,11 @@ class PtPaperMod(AbstractMod):
         return out
 
     def _check_positions_landed(self, env, mod_config) -> None:
-        """账本有仓、框架没有 ⇒ 拒开这一跳（POST_SYSTEM_INIT，portfolio 刚建好）。
+        """框架账户与账本必须**逐只等量**：少仓或多仓都拒开这一跳。
+
+        少仓＝账本有仓框架没有（卖单被冤枉拒）；多仓＝框架有账本没有的仓
+        （按不存在的持仓卖出/按虚高市值算风险），两个方向都是钱类错误。
+        多仓只可能来自"状态目录里躺着一本与账本脱钩的账户"（T81 P2-3）。
 
         **事件监听函数返回真值会让框架停止往下派发**（`core/events.py:43-46`
         `if listener(event): break`），所以本函数与 `_apply_t1_freeze` 一律返回 None。
@@ -188,7 +192,19 @@ class PtPaperMod(AbstractMod):
                 f"会话状态目录在续跑一本空仓账户（11-05 现网：live/portfolio.state "
                 f"positions 空、账本 7 只）。先停 cron、用 `ledger reset-state` 把"
                 f"会话状态挪开，让下一跳从账本重建账户")
-        self._positions_landed = {"checked": len(expected), "framework": len(have)}
+        self._positions_landed = {"checked": len(expected), "framework": len(have),
+                                  "extra": []}
+        extra = [{"symbol": ob, "framework": int(v.get("quantity", 0)),
+                  "ledger": int(expected.get(ob, 0))}
+                 for ob, v in sorted(have.items())
+                 if int(v.get("quantity", 0)) > int(expected.get(ob, 0))]
+        if extra:
+            self._positions_landed["extra"] = extra
+            raise InitPositionError(
+                f"框架账户比账本多 {len(extra)} 只仓：{extra[:6]}——状态目录里的"
+                f"账户与账本脱钩（多出的仓会被当成可卖持仓/虚高市值）。先停 cron、"
+                f"用 `ledger reset-state --only rq_session_state` 把会话状态挪开，"
+                f"让下一跳从账本重建账户")
 
     def _apply_t1_freeze(self, env, mod_config) -> None:
         """把账本的 T+1 冻结量补进框架（**必须在盘前释放之后**）。

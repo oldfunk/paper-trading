@@ -162,9 +162,42 @@ def check_nav(conn, today: str, now: Optional[datetime] = None) -> dict:
                     f"total≠cash+市值：{json.dumps(bad[0], ensure_ascii=False)[:160]}",
                     money=True, on_red="回退")
     days = {_day(r["timestamp"]) for r in rows}
+    # 恰 1 行还不够：那一行必须是**收盘口径**（T85/Q8）。现网 11-12 的唯一一行
+    # 是 09:30 `ai:decide` 写的盘中快照——用昨日收盘价估值、且早于当日全部成交，
+    # 而 Q7-D1 的统一让位判据又把它当成"今天已记过"，收盘 NAV 从此写不进来。
+    # 只数行数的话这种"绿着的假账"看不见（纪律 4：报警不许失真）。
+    from paper_trading.integration.rq_engine.queue import CLOSE_TIME
+
+    row = todays[0]
+    ts = str(row["timestamp"])
+    last_fill = ""
+    if _has_table(conn, "fills"):
+        f = _rows(conn, "SELECT timestamp FROM fills WHERE substr(timestamp,1,10)=?"
+                        " ORDER BY timestamp DESC LIMIT 1", (today,))
+        last_fill = str(f[0]["timestamp"]) if f else ""
+    intraday = ts[11:16] < CLOSE_TIME
+    pre_fill = bool(last_fill) and ts < last_fill
+    if intraday or pre_fill:
+        why = []
+        if intraday:
+            why.append(f"时刻 {ts[11:16]} 早于收盘 {CLOSE_TIME}")
+        if pre_fill:
+            why.append(f"早于当日最后一笔成交 {last_fill[11:19]}")
+        tn = now or datetime.now()
+        not_due = (today == tn.date().isoformat()
+                   and (tn.hour, tn.minute) < CLOSE_NAV_DUE)
+        msg = (f"{today} 唯一一行 NAV 不是收盘口径（{'、'.join(why)}）"
+               f"——净值/回撤基线按盘中价失真")
+        if not_due:
+            return item("nav", "NAV 收盘记录", "warn",
+                        msg + f"；收盘窗口未过（{CLOSE_NAV_DUE[0]:02d}:"
+                              f"{CLOSE_NAV_DUE[1]:02d} 之后才该有收盘行），当前 {tn:%H:%M}",
+                        money=True, on_red="见 questions.md Q8")
+        return item("nav", "NAV 收盘记录", "red", msg, money=True,
+                    on_red="见 questions.md Q8：盘中快照抢占了收盘 NAV 的让位闸")
     return item("nav", "NAV 收盘记录", "green",
-                f"{today} 恰 1 行且自洽；库里共 {len(days)} 个净值日", money=True,
-                on_red="回退")
+                f"{today} 恰 1 行且自洽（收盘口径 {ts[11:16]}）；库里共 {len(days)} 个净值日",
+                money=True, on_red="回退")
 
 
 def check_duplicate_fills(conn, today: str) -> dict:

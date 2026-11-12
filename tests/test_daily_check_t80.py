@@ -50,6 +50,18 @@ def _set_created(db, ts: str) -> None:
         c.execute("UPDATE rq_intents SET created_at=?", (ts,))
 
 
+def _fill(db, symbol="002192", direction=-1, volume=100, price=47.3, ts=None):
+    """账本当日一笔 filled 成交——`executed` 的凭据（T85 一致性断言用）。"""
+    stamp = ts or f"{TODAY}T09:31:05"
+    with sqlite3.connect(db) as c:
+        cur = c.execute(
+            "INSERT INTO orders (symbol, direction, volume, order_type, status,"
+            " filled_volume, filled_price, created_at, filled_at)"
+            " VALUES (?,?,?,'LIMIT','filled',?,?,?,?)",
+            (symbol, direction, volume, volume, price, stamp, stamp))
+        return int(cur.lastrowid)
+
+
 def _ev(kept=(("002192.XSHE", 100), ("300390.XSHE", 200)), dropped=(), uns=()):
     return {"init_align": {"kept": [list(k) for k in kept],
                            "dropped_silently": list(dropped),
@@ -139,13 +151,14 @@ def test_intent_chain_flags_open_intents_same_day(tmp_path):
     assert r["status"] == "warn"                       # 当日入队到收盘仍未定局
 
 
-def test_intent_chain_green_when_all_settled(tmp_path):
-    db = str(tmp_path / "acct.db")
+def test_intent_chain_green_when_all_settled(tmp_path, acct):
+    db = acct
     q.enqueue(db, "002192", "sell", 100, rule_ref="r")
     biz = q.pending(db)[0]["biz_id"]
     with q._conn(db) as c:                             # noqa: SLF001 - 核对日用今天
         c.execute("UPDATE rq_intents SET created_at=?", (f"{TODAY}T09:31:00",))
-    q.mark(db, biz, "executed", {"fill": 47.3})
+    oid = _fill(db)
+    q.mark(db, biz, "executed", {"order_id": oid, "price": 47.3})
     r = dc.check_intent_chain(db, TODAY)
     assert r["status"] == "green" and "executed" in r["detail"]
 

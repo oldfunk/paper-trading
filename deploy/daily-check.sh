@@ -16,7 +16,7 @@ set -u
 # 默认值就是现网路径。
 ROOT=${PT_ROOT:-/home/nec/paper-trading}
 PY=${PT_PY:-$ROOT/venv/bin/python}
-ENG=/home/nec/venvs/rq-engine/bin/python
+ENG=${PT_ENGINE_PY:-/home/nec/venvs/rq-engine/bin/python}
 BUNDLE=${PT_RQ_BUNDLE:-/home/nec/.rqalpha/bundle}
 # 库路径默认就是现网那两本；彩排时可以指到别处（只读打开，不写）。
 DATA_DB=${PT_DATA_DB:-$ROOT/data.db}
@@ -70,10 +70,19 @@ echo "[daily-check] $TODAY daily_check exit=$RC"
 SC_RC=0
 if [ "${PT_RUN_SCENES:-1}" = "1" ] && [ -x "$ENG" ] && [ -d "$BUNDLE" ]; then
   TMPD=$(mktemp -d)
-  cp "$DATA_DB" "$TMPD/data_copy.db" 2>>"$ERR"
-  $PY tests/test_init_positions_e2e.py --data-db "$TMPD/data_copy.db" \
-     --bundle "$BUNDLE" --python "$ENG" --workdir "$TMPD/scenes" \
-     --out "$TMPD/scenes.json" --today "$TODAY" >>"$ERR" 2>&1 || SC_RC=$?
+  # 一致快照（T81 P2-5）：`cp` 一个正在被写的库会拿到半截页，四场景据此跑出的
+  # 绿/红都不可信。VACUUM INTO 由 sqlite 自己保证一致，源库以 mode=ro 打开。
+  if $PY -c 'import sqlite3, sys
+c = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
+c.execute("VACUUM INTO ?", (sys.argv[2],))
+c.close()' "$DATA_DB" "$TMPD/data_copy.db" 2>>"$ERR"; then
+    $PY tests/test_init_positions_e2e.py --data-db "$TMPD/data_copy.db" \
+       --bundle "$BUNDLE" --python "$ENG" --workdir "$TMPD/scenes" \
+       --out "$TMPD/scenes.json" --today "$TODAY" >>"$ERR" 2>&1 || SC_RC=$?
+  else
+    echo "daily-check: data.db 一致快照失败（VACUUM INTO），四场景不跑" >> "$ERR"
+    SC_RC=3
+  fi
   if [ -s "$TMPD/scenes.json" ]; then
     emit_line "$TMPD/scenes.json" scenes "$SC_RC" || SC_RC=3
   else

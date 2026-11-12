@@ -43,12 +43,31 @@ def latest_evidence(state_dir, today: str) -> tuple[Optional[dict], str]:
         return None, f"{f.name} 解析失败：{type(exc).__name__}: {exc}"
 
 
+def today_buys(account_db, today: str) -> set:
+    """当日**买成交**的标的（order_book_id）。期初留痕里不可能有它们。"""
+    from paper_trading.integration.rq_engine.store import to_order_book_id
+
+    with contextlib.closing(_ro(account_db)) as c:
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                         " AND name='fills'").fetchone():
+            return set()
+        return {to_order_book_id(r["symbol"]) for r in c.execute(
+            "SELECT DISTINCT symbol FROM fills WHERE substr(timestamp,1,10)=?"
+            " AND direction=1", (today,))}
+
+
 def check_init_align(state_dir, account_db, today: str, *,
                      work_expected: Optional[bool] = None) -> dict:
     """框架账户必须与账本同源（T73 的日常化）。
 
     `work_expected=False`（队列本来就空、没开会话）⇒ 没有留痕是正常的，判 skip；
     其余情况下"没留痕/被吞/比账本少仓"都是红。
+
+    **同期比同期**（T85 彩排照出来的假红）：留痕是会话期初的快照，账本是"此刻"。
+    当天卖光两只仓之后 `framework=8 > 账本 6` 是**正常**的，拿它判多仓就会天天
+    钱类红 ⇒ 门禁成了永久非零的壁纸。所以多/少仓一律用留痕里同一时刻的
+    `positions_landed.checked`（期初应有）与 `framework`（期初实有）比；
+    当前账本只用来查"期初该有的仓没进框架"，且豁免当日买成交新建的仓。
     """
     ev, src = latest_evidence(state_dir, today)
     if ev is None:
@@ -67,16 +86,40 @@ def check_init_align(state_dir, account_db, today: str, *,
     uns = align.get("unsupported") or []
     uns_syms = {str(u.get("symbol")) for u in uns}
     ledger = ledger_positions(account_db)
+    checked_n, fw_n = landed.get("checked"), landed.get("framework")
+    # 少仓：期初实有 < 期初应有（同一时刻的两个数，与当天成交无关）
+    if isinstance(checked_n, int) and isinstance(fw_n, int) and fw_n < checked_n:
+        return item("init_align", "框架账户与账本同源", "red",
+                    f"框架期初持仓 {fw_n} 只 < 账本应有 {checked_n} 只（留痕 {src}）",
+                    money=True,
+                    on_red="先停 cron，`ledger reset-state --only rq_session_state`")
     # 框架标的表里本就没有的合约（开源 bundle 无北交所 `.BJ`）不是"缺仓"——
     # 它被 `reconcile_init_positions` 如实剔除过，runner 侧会以
     # INSTRUMENT_UNAVAILABLE 给意图定局。豁免只认这份剔除留痕，不认"我没查到"。
     kept_syms = {str(k) for k, _ in align.get("kept") or []}
+    bought = today_buys(account_db, today)
     missing = [{"symbol": ob, "ledger": qty} for ob, qty in sorted(ledger.items())
-               if qty > 0 and ob not in kept_syms and ob not in uns_syms]
+               if qty > 0 and ob not in kept_syms and ob not in uns_syms
+               and ob not in bought]
     if missing:
         return item("init_align", "框架账户与账本同源", "red",
                     f"账本有仓而未进框架：{missing[:5]}（留痕 {src}）",
                     money=True,
+                    on_red="先停 cron，`ledger reset-state --only rq_session_state`")
+    # 反方向也要查（T81 P2-3）：框架多出账本没有的仓 ⇒ 按不存在的持仓卖出、
+    # 按虚高市值算风险。留痕里有逐只 `extra` 就用它；旧留痕只有计数，
+    # 那就用**同期**的"框架只数 > 期初应有只数"兜底（不是与此刻的账本比）。
+    extra = landed.get("extra")
+    if extra:
+        return item("init_align", "框架账户与账本同源", "red",
+                    f"框架多出账本没有的仓：{extra[:5]}（留痕 {src}）",
+                    money=True,
+                    on_red="先停 cron，`ledger reset-state --only rq_session_state`")
+    if extra is None and isinstance(checked_n, int) and isinstance(fw_n, int) \
+            and fw_n > checked_n:
+        return item("init_align", "框架账户与账本同源", "red",
+                    f"框架期初持仓 {fw_n} 只 > 账本应有 {checked_n} 只（留痕 {src}"
+                    f" 无逐只 extra 字段，按同期计数判多仓）", money=True,
                     on_red="先停 cron，`ledger reset-state --only rq_session_state`")
     bits = [f"框架持仓 {landed.get('framework', '?')} 只/账本 {len(ledger)} 只",
             f"T+1 冻结留痕 {len(frozen.get('applied') or [])} 条"]
@@ -96,32 +139,109 @@ def ledger_positions(account_db) -> dict:
 
 
 def check_intent_chain(account_db, today: str, *, executor: str = "rqalpha") -> dict:
-    """当日新意图全链闭环：入队的每一条都得有结论，且落账笔数与 executed 数一致。"""
+    """当日新意图全链闭环：每条都得有结论，且 `executed` 必须有账本成交为证。
+
+    一致性断言（T81 P2-1，此前 docstring 承诺了但代码没做）：
+    * 认领成交的意图：`result.order_id` 必须指向账本**当日 filled** 的那一笔，
+      且标的/方向/数量相符；
+    * 幂等命中的意图（`reason` 含"幂等命中"）：当日账本必须真有同款成交；
+    * 两者都给不出 ⇒ **钱类红**：意图表说成交了、账本没有，就是假账。
+    反方向：当日 filled 里没有任何意图认领的 ⇒ warn（条件单/旧线也会成交，
+    不能一律当假账，但必须说得出口，不许静默）。
+    """
+    from paper_trading.integration.rq_engine.queue import intent_key
+
     with contextlib.closing(_ro(account_db)) as c:
+        has_intents = bool(c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='rq_intents'"
+        ).fetchone())
         rows = [dict(r) for r in c.execute(
-            "SELECT biz_id, symbol, side, volume, status, created_at"
+            "SELECT biz_id, symbol, side, volume, status, created_at, result"
             " FROM rq_intents WHERE substr(created_at,1,10)=?", (today,))] \
-            if c.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
-                         " AND name='rq_intents'").fetchone() else []
+            if has_intents else []
         if not rows:
             return item("intent_chain", "当日意图全链", "skip",
                         f"{today} 没有新意图（executor={executor}）")
-        open_ = [r for r in rows if r["status"] in ("pending", "queued")]
-        filled = int(c.execute(
-            "SELECT COUNT(*) FROM orders WHERE substr(created_at,1,10)=?"
-            " AND status='filled'", (today,)).fetchone()[0]) \
-            if c.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
-                         " AND name='orders'").fetchone() else 0
+        has_orders = bool(c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='orders'"
+        ).fetchone())
+        orders = [dict(r) for r in c.execute(
+            "SELECT order_id, symbol, direction, volume, status FROM orders"
+            " WHERE substr(created_at,1,10)=? AND status='filled'", (today,))] \
+            if has_orders else []
+        # 认领关系要跨日看：昨天盘后决定、今天顺延执行的意图，它的 created_at
+        # 是昨天，不在 rows 里，但那笔成交确实是它认领的。
+        claimed, idem_keys = set(), set()
+        for r in (c.execute("SELECT symbol, side, volume, result FROM rq_intents"
+                            " WHERE status='executed'") if has_intents else []):
+            try:
+                res = json.loads(r["result"] or "{}") or {}
+            except Exception:                # noqa: BLE001 - 坏了下面按"没认领"算
+                res = {}
+            oid = res.get("order_id")
+            if oid is not None:
+                claimed.add(int(oid))
+            elif "幂等命中" in str(res.get("reason") or ""):
+                # 幂等命中不带 order_id：它认领的是"当日同款"那笔成交
+                idem_keys.add(intent_key(r["symbol"], r["side"], r["volume"]))
+    by_oid = {int(o["order_id"]): o for o in orders}
+    filled_keys = {intent_key(o["symbol"],
+                              "BUY" if int(o["direction"]) == 1 else "SELL",
+                              o["volume"]) for o in orders}
     dist: dict = {}
     for r in rows:
         dist[r["status"]] = dist.get(r["status"], 0) + 1
-    detail = (f"当日 {len(rows)} 条：{dist}；账本当日 filled={filled}")
+    detail = f"当日 {len(rows)} 条：{dist}；账本当日 filled={len(orders)}"
+
+    bad = []
+    for r in rows:
+        if r["status"] != "executed":
+            continue
+        try:
+            res = json.loads(r["result"] or "{}") or {}
+        except Exception:                    # noqa: BLE001
+            res = {}
+        oid = res.get("order_id")
+        if oid is not None:
+            o = by_oid.get(int(oid))
+            want = (str(r["symbol"]).split(".")[0][:6].zfill(6),
+                    str(r["side"]).upper(), int(r["volume"]))
+            got = (str(o["symbol"]).split(".")[0][:6].zfill(6),
+                   "BUY" if int(o["direction"]) == 1 else "SELL",
+                   int(o["volume"])) if o else None
+            if o is None or got != want:
+                bad.append({"biz_id": r["biz_id"], "order_id": oid,
+                            "why": "账本当日无此 filled 成交" if o is None
+                                   else f"成交与意图不符（账本 {got}）"})
+        elif "幂等命中" in str(res.get("reason") or ""):
+            if intent_key(r["symbol"], r["side"], r["volume"]) not in filled_keys:
+                bad.append({"biz_id": r["biz_id"],
+                            "why": "标了幂等命中，但账本当日没有同款成交"})
+        else:
+            bad.append({"biz_id": r["biz_id"],
+                        "why": f"executed 却无成交凭据（result={str(res)[:80]}）"})
+    if bad:
+        return item("intent_chain", "当日意图全链", "red",
+                    f"{detail}——executed 与账本对不上 {len(bad)} 条：{bad[:3]}",
+                    money=True, on_red="停 cron 归因：意图表与账本必须同源")
+    unclaimed = [int(o["order_id"]) for o in orders
+                 if int(o["order_id"]) not in claimed
+                 and intent_key(o["symbol"],
+                                "BUY" if int(o["direction"]) == 1 else "SELL",
+                                o["volume"]) not in idem_keys]
+    open_ = [r for r in rows if r["status"] in ("pending", "queued")]
     if open_:
         return item("intent_chain", "当日意图全链", "warn",
                     f"{detail}——仍未定局 {len(open_)} 条"
                     f"（{[o['biz_id'] for o in open_][:3]}）：收盘后还在等就是漏环节",
                     on_red="归因")
-    return item("intent_chain", "当日意图全链", "green", detail)
+    if unclaimed:
+        return item("intent_chain", "当日意图全链", "warn",
+                    f"{detail}——{len(unclaimed)} 笔成交无意图认领"
+                    f"（order_id {unclaimed[:5]}）：条件单/旧线成交要归因，不许静默",
+                    on_red="归因")
+    return item("intent_chain", "当日意图全链", "green",
+                detail + f"；executed 逐笔有账本凭据，成交全部有认领")
 
 
 def check_carry_over(account_db, today: str, *, now: Optional[datetime] = None,
@@ -146,9 +266,16 @@ def check_carry_over(account_db, today: str, *, now: Optional[datetime] = None,
 
     carried = [r for r in rows if is_carried(r["created_at"], today)]
     if not carried:
-        stale = [r for r in rows if not is_carried(r["created_at"], today)]
+        stale = [r for r in rows if r["status"] in ("pending", "queued")]
+        if stale:
+            # T81 P2-2：过期未决还挂着 = `expire_stale` 漏跑（或会话根本没起）。
+            # 此前这里一律 green，等于把"没人清理队列"报成健康。
+            return item("carry_over", "盘后意图顺延落地", "warn",
+                        f"今日无顺延意图，但昨日及以前仍有 {len(stale)} 条未决挂着"
+                        f"（{[s['biz_id'] for s in stale][:3]}）——应已被过期处理",
+                        on_red="查 rq tick 是否跑成、expire_stale 是否被跳过")
         return item("carry_over", "盘后意图顺延落地", "green",
-                    f"今日无顺延意图（昨日及以前未决 {len(stale)} 条应已被过期处理）")
+                    f"今日无顺延意图（昨日及以前未决 0 条，过期处理已生效）")
     open_ = [r for r in carried if r["status"] in ("pending", "queued")]
     samples = [(r["symbol"], r["side"], r["volume"], r["status"]) for r in carried][:5]
     detail = f"顺延 {len(carried)} 条：{samples}"
