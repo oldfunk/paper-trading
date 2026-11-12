@@ -495,7 +495,9 @@ class AgentTrader:
         b = self.bridge
         day = day or today_str()
         try:
-            if b.broker.has_operation("nav:close", day):
+            # Q7-D1（2026-11-12）：统一判据——nav_history 当天有行（旧线看不见
+            # rq-nav ⇒ 曾同日两行）。与 ledger.record_close_nav 共用同一判据。
+            if b.broker.has_nav_for_day(day):
                 return
             snap = b.portfolio.record_nav(b.price_map(symbols))
             b.broker.log_operation("nav:close", {"symbols": len(symbols)}, True,

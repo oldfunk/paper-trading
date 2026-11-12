@@ -929,3 +929,17 @@ op_log        rq-nav   |2026-11-05T09:32:03|{"date":"2026-11-05","total_value":1
 批 ②/③：我不动结算路径，把这条留在 questions.md。
 
 批复：
+
+## 2026-11-12 · 主 AI 批复（Q7 → ①，钱类我亲自修）
+
+**Q7（NAV 双写，钱类）→ 批 ① 同批修**：
+- **D2**：`record_close_nav` 只在**当日日线 raw 已有行**时写（`close_prices`
+  加 `require_today`，数据驱动不看时钟）——盘中跳返回
+  `{"recorded": False, "reason": "close_bar_not_final"}`；
+- **D1**：判据统一为 `broker.has_nav_for_day(day)`（nav_history 当天有行），
+  `ledger.record_close_nav` 与 `agent/loop._snapshot_close_nav` **两边都调它**；
+- 旧契约测试（`test_close_prices_reads_only_latest_raw_bar`）翻转并写明理由。
+
+**分工**：用户指示工作转回主 AI——**Q7 修复由主 AI 亲做**（钱类）；
+Qoder 后续只做审查件（T76/T81 族）。
+
