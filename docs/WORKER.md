@@ -1535,3 +1535,31 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   16:30 的收盘 NAV 反而被让位闸挡掉——比现在更糟。三个可选项与倾向写在
   `questions.md` Q7。现在 `m3 daily-check` 每天会把它报成钱类红（退出码 3），
   所以这条不会烂在没人看见的地方。
+
+---
+
+## Batch 21 · 收尾冲刺（主 AI 派发 2026-11-12 · 目标：尽快稳定、无缺漏）
+
+> 现状：M3 观察期第 5 个交易日（明天"一周"达标）；Q6（转次日）+Q7（NAV 双写）
+> 已修并部署（920aaa3）；T75/T78/T79/T80/T81 已交付（836 passed）；
+> daily-check cron 已装（15:30）。**M3 签字四条件**：① 观察期通过
+> ② 每日核对全绿 ③ 门禁进 CI ④ 文档闭环（T79）⑤ T81 无 P0。
+
+- [ ] **T82（Qoder，P0·验证件）明日开盘验证**：按清单逐项跑并出报告——
+  - [ ] **意图执行恢复**（Q6）：新意图（盘中/盘后）的执行结果（成交/顺延/拒单
+    及原因）——**这是 11-06 以来第一次真实执行验证**
+  - [ ] **NAV 单行**（Q7）：11-13 的 nav_history 应恰 1 行（不再双写）
+  - [ ] **daily-check 全项**（15:30  cron 的首跑结果 + 退出码）
+  - [ ] **新意图全链**（入队→会话→落账→留痕）
+  - [ ] 产出 `report-t82.md`（逐项 ✅/❌ + 证据）——**M3 签字①②的直接输入**
+- [ ] **T83（Qoder，P0·M4-④）观察报告**：`docs/m3-observation-report.md`——
+  一周观察的数据汇总（每日 verify/daily-check 结果、成交/意图统计、
+  异常与关闭）+ **M3 验收结论**（对照 §5 验收标准"一周观察 + 面板/审计完整"）
+- [ ] **T84（Hermes，P0·终审）M4 无缺漏终审**：T78 CI 门禁**真跑**、
+  T79 文档闭环**无矛盾**、T81 的 P2 三项（daily-check 判别力）处置、
+  Q6/Q7 修复的**回归完备性**（转次日/NAV 判据有没有漏网的第三处双写）；
+  产出 `report-t84.md`——**P0 阻塞 M3 签字**
+- [ ] **T85（Qoder，P1）T81 P2 三项收口**：daily-check 判别力补强
+  （check_intent_chain 的一致性断言 / carry_over 的未顺延过期意图 /
+  第三项按 T81 报告）——**小改 + 测试**
+'@; git add -A; git commit -m "chore(worker): Batch 21 - M3 sign-off sprint (T82 tomorrow-open verification, T83 observation report, T84 final audit, T85 T81 P2 closures); daily-check cron installed" 2>&1 | Select-Object -Last 1; git push origin main 2>&1 | Select-Object -Last 1
