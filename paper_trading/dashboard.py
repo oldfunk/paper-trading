@@ -1087,9 +1087,9 @@ class Handler(BaseHTTPRequestHandler):
                 # 只读看门狗状态（var/health_status.json + 实时心跳体检），不碰账本
                 from paper_trading.utils import heartbeat as hb
 
-                st = hb.read_status()
-                if not st:
-                    st = hb.probe()      # 没人跑过 check：直接按心跳现状判一次
+                st = hb.read_status(max_age_sec=300)   # Q11：快照超 5 分钟=无效
+                if not st:                             # → 落 probe() 实时判
+                    st = hb.probe()
                 self._json({"ok": True, "data": st})
             elif u.path == "/api/status":
                 from paper_trading.cli import TradingBridge
