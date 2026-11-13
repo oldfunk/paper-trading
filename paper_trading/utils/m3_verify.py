@@ -370,7 +370,13 @@ def check_intent_queue(conn, today: str, now: Optional[datetime] = None,
     for r in rows:
         by[r["status"]] = by.get(r["status"], 0) + 1
     phantom = [r["biz_id"] for r in rows
-               if r["status"] == "executed" and "order_id" not in str(r.get("result") or "")]
+               if r["status"] == "executed"
+               and "order_id" not in str(r.get("result") or "")
+               # 幂等命中（同日同款已成交的二次触发被拦）不带 order_id 是
+               # 设计行为——它的一致性由 daily-check 的 intent_chain 单独断言
+               # （账本当日必须有同款成交），这里不再当"假账"报红（2026-11-13
+               # 现网：000426 重触发被正确拦，却把核对染红）。
+               and "幂等命中" not in str(r.get("result") or "")]
     tn = now or datetime.now()
     stale_pending = []
     for r in rows:

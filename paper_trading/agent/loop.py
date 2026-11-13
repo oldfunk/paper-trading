@@ -685,6 +685,16 @@ class AgentTrader:
                     "timestamp": t.isoformat(), "symbols": symbols}
         pending = b.broker.get_pending_plan(today)
         action = due_action(t, pending_plan=bool(pending), force=force)
+        # 心跳在 tick 入口统一 touch（2026-11-13）：此前只有完整 decide 才 touch，
+        # 早退分支（outside-runtime-window/no-fresh-data/min-interval/…）全都不写
+        # ⇒ cron 每 5 分钟都在跑、心跳却停在数小时前，看门狗报"应跳未跳"（Q11
+        # 的姊妹缺陷：daily-check 2026-11-13 红的正是它）。
+        try:
+            from paper_trading.utils import heartbeat as _hb
+
+            _hb.touch("agent", ok=True, detail=f"tick action={action}")
+        except Exception:                       # noqa: BLE001 - 心跳不拖垮决策链
+            pass
         if action == "execute_plan":
             logger.info(f"Runtime open execution: plan {pending['id']}")
             res = self.run(symbols, candidates=candidates,
