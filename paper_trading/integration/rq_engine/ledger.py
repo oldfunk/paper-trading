@@ -116,10 +116,16 @@ def _is_today(day: str) -> bool:
 
 
 def _raw_has_today(broker, symbol: str, day: str) -> bool:
-    """该标的当日是否有 raw 日线行（Q7-D2 的数据驱动判据）。"""
+    """该标的当日是否有 raw 日线行（Q7-D2 的数据驱动判据）。
+
+    注意：raw 表在 **data.db**（不是账本 paper_account.db）——查错库会
+    异常→按"有"返回→拦不住（2026-11-13 现网 09:32 盘中行就是这么漏写的）。
+    """
     try:
         import sqlite3
-        c = sqlite3.connect(f"file:{broker.db_path}?mode=ro", uri=True)
+        from pathlib import Path as _P
+        data_db = _P(broker.db_path).parent / "data.db"
+        c = sqlite3.connect(f"file:{data_db}?mode=ro", uri=True)
         try:
             n = c.execute(
                 "SELECT COUNT(*) FROM daily_bars_raw WHERE symbol=? AND"
