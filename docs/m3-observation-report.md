@@ -365,3 +365,53 @@ Q6 的顺延执行 0 次、Q7 的收盘 NAV 0 次。它们的回归完备性目�
 | 漂移拒单按日计数 | `rq_tick.log` 逐行扫日期标记 + `配置指纹漂移` 计数（79/78/78/78/76 = 389） |
 | daily-check 实测 | NEC 候选树 + 生产副本跑 `deploy/daily-check.sh`，rc=3 |
 | 执行位 | `test -x /home/nec/paper-trading/deploy/daily-check.sh` ⇒ 不可执行 |
+
+---
+
+## 9. 2026-11-13 晚间验证与修复追加（主 AI，Qoder 退场后亲做）
+
+> T83 的"不予签字"成立时点：全部修复（指纹/Q6/Q7/Q10/Q11）在 11-12 晚才部署，
+> 11-13 是**新代码第一个完整交易日**。本节为当日实况与剩余缺口的关闭记录。
+
+### 9.1 新代码首日实况（逐项）
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| 意图执行恢复（Q6） | ✅ 3 条 executed（盘中自动执行，11-06 以来首次） | `rq_intents` 11-13 全 executed |
+| 盘中成交 | ✅ 000426 买 400@23.78（09:32）、002215 买 1300@7.40（09:37） | `fills` + `rq:fill` 留痕 |
+| NAV 单行（Q7） | ✅ 收盘 NAV 恰 1 行 97,934.65（raw 定稿价） | `nav_history` + `rq nav-close` |
+| T+1 拒单 | ✅ A 场景 GREEN | daily-check scenes |
+| 四场景 | ✅ 全 GREEN | `daily_check.jsonl` scenes exit=0 |
+
+### 9.2 首日新暴露的 4 个洞（全部当天修复并部署）
+
+| 洞 | 根因 | 修复 | 提交 |
+|---|---|---|---|
+| 09:32 盘中 NAV 行漏拦（D2 复发） | `_raw_has_today` 查错库（账本无 raw 表→异常按"有"） | 改查 data.db；坏行+其幂等标记同批清理（md5 前后核对，备份 `nav-badrow-backup-20261113.db`/`oplog-rqnav-backup-20261113.db`） | 3f52903 |
+| 收盘 NAV 永不写入（T83 结构性缺口） | raw 20:40 入库，tick 窗口 15:57 已收，`rq day` 不在 cron | 新增 `rq nav-close`（幂等+数据驱动）+ cron 20:50 周中 | 73e11ee |
+| 面板恒绿的姊妹缺陷：看门狗报"agent 应跳未跳" | tick 早退分支（outside-window/no-fresh-data…）不 touch 心跳 | tick 入口统一 touch | 591c798 |
+| intent_queue 误报"假账" | 同款重触发被幂等拦（设计行为）被判"executed 无凭据" | m3_verify phantom 检查豁免幂等命中（一致性由 intent_chain 单独断言：账本当日必须有同款成交） | 591c798 |
+
+部署事故一并记录：NEC 树曾停 920aaa3（d95f223 未落）、`daily-check.sh` chmod
+位变更挡 ff-pull——已理顺，部署核验以 `git rev-parse HEAD` 为准。
+
+### 9.3 当晚终态：m3 verify = 9 绿 + 2 黄 + 1 红
+
+- **红：raw_gate**（母库参照滞后 9 交易日 ×10 只）——**Q9，母项目停更所致**。
+  不改判据（Q5 批复三档），不介入母库（红线）。引擎实际价源=本地 raw
+  （本项第一段全绿：无 stale/never/未翻转，42/42 checked）；红的是**独立
+  参照价**的缺失。解除条件：母项目侧恢复 raw 发布。
+- **黄：parity_trace**（影子 cron 未排程；parity 已按 M4 验收口径③由 CI 承担）
+  / **plan_chain**（11-13 计划窗口跑在旧代码上 no-fresh-data，11-13 晚起
+  Q10 修复在位，计划窗口验证件=明日 T82）。
+- **钱类 rc=3 → 已消**：`nav`/`intent_queue`/`heartbeat` 全绿，退出码 1
+  （归因级），无回退必要。
+
+### 9.4 明日（11-14）验证清单（=T82 验证件，主 AI 亲核）
+
+1. 09:30 开盘：agent tick 心跳 touch 生效（看门狗不再报 agent）；
+2. 09:30-10:00：计划执行/新意图全链；
+3. 16:30-18:30：**计划窗口**（Q10 修复后首次）→ 11-15 计划应落库；
+4. 15:30 daily-check cron 首次真跑（今天 15:30 因无执行权限失败，已修 in-tree +x）；
+5. 20:50 nav-close cron 首跑（今日已手动验证同路径）。
+
