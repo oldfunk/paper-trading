@@ -47,7 +47,13 @@ ENGINE_DUE = (9 * 60, 15 * 60 + 59)
 AGENT_DUE_AFTER_MIN = 16 * 60 + 30 + 240      # 20:30
 
 #: 面板服务的两种可能形态（systemd --user 或系统级 unit），逐个探测，任一 active 即算活着
-DASHBOARD_UNITS = ("paper-dashboard.service", "paper-dashboard")
+DASHBOARD_UNITS = (
+    # nec 生产实际是系统级 unit（/etc/systemd/system/），不是 Pi 时代的 user unit
+    "paper-trading-dashboard.service",
+    "paper-trading-parent.service",
+    "paper-dashboard.service",
+    "paper-dashboard",
+)
 SYSTEMCTL_PROBES = (
     ["systemctl", "is-active"],
     ["systemctl", "--user", "is-active"],

@@ -1627,6 +1627,14 @@ def main() -> None:
     rq_state.add_argument("--days", type=int, default=260)
     rq_state.add_argument("--json", action="store_true")
 
+    # M4 收盘 NAV 独立入口（2026-11-13）：当日 raw bar 20:40 才入库，而 tick
+    # 窗口 09:02-15:57 已收 ⇒ 收盘 NAV 曾永远 close_bar_not_final（T83 点名的
+    # 结构性缺口）。cron 20:50（周中，紧跟 20:40 raw 采集）。
+    rq_nav = rq_sub.add_parser(
+        "nav-close", help="M4：收盘 NAV 独立入口（幂等+数据驱动，raw 入库后跑）")
+    rq_nav.add_argument("--today", default=None)
+    rq_nav.add_argument("--json", action="store_true")
+
     # M3b tick：消费 rq_intents 队列的分钟会话（cron 每 5 分钟；切换后的执行入口）
     rq_tick = rq_sub.add_parser(
         "tick", help="M3b：消费意图队列（分钟会话 1m + 日内续跑 + ledger 落账）")
@@ -2079,6 +2087,34 @@ def main() -> None:
 
             cmd = getattr(args, "rq_command", None)
             plan = _json.loads(args.plan) if hasattr(args, "plan") else []
+            if cmd == "nav-close":
+                # M4 收盘 NAV（G2）独立入口：与 _ledger_apply 共用同一把尺子
+                # （close_prices + record_close_nav，D2 数据驱动 + has_nav_for_day
+                # 幂等）。executor 互锁与 tick 同款——非 rqalpha 底座拒跑，防双活。
+                from datetime import date as _date
+
+                from paper_trading.engine.config import load_engine_config
+                from paper_trading.integration.rq_engine import ledger as _ld
+
+                try:
+                    _ex = _ld.executor_from_config(
+                        load_engine_config(getattr(bridge, "config_path", None)))
+                except ValueError as exc:
+                    emit({"ok": False, "error": f"底座配置非法：{exc}"})
+                    sys.exit(2)
+                if _ex != "rqalpha":
+                    emit({"ok": False,
+                          "error": "engine.executor 非 rqalpha，nav-close 拒跑（防双活）"})
+                    sys.exit(2)
+                today = str(getattr(args, "today", "") or _date.today().isoformat())
+                positions = [p.symbol for p in bridge.broker.get_all_positions()
+                             if p.total_volume]
+                prices = _ld.close_prices(bridge.data_db, positions, today)
+                out = _ld.record_close_nav(bridge.broker, prices, today=today)
+                emit({"ok": True, "today": today, "nav": out})
+                ok = bool(out.get("recorded")) or \
+                    out.get("reason") == "already_recorded"
+                sys.exit(0 if ok else 1)
             if cmd == "tick":
                 # M3b 执行入口：消费意图队列 → 分钟会话（1m+日内续跑）→ ledger 落账
                 from datetime import date as _date
