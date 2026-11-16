@@ -249,11 +249,17 @@ def test_raw_gate_skip_without_symbols():
     assert mv.check_raw_gate(None, [], TODAY)["status"] == "skip"
 
 
-# ---------- 母库参照滞后分档（Q5 批复：0/2/8 三档）----------
+# ---------- 母库参照滞后分档（Q5 批复：0/2/8 三档；2026-11-16 裁决 A：>5 降为 warn）----------
 @pytest.mark.parametrize("days_ago,status", [
-    (0, "green"), (2, "green"), (3, "warn"), (5, "warn"), (6, "red"), (8, "red")])
+    (0, "green"), (2, "green"), (3, "warn"), (5, "warn"), (6, "warn"), (8, "warn")])
 def test_waiting_grade_breaks_at_2_and_5(days_ago, status):
     assert mv.waiting_grade(days_ago) == status
+
+
+def test_waiting_grade_never_red_after_ruling_a():
+    """裁决 A：母库参照分支不许出红——断供是母库侧问题，子项目独立部署。"""
+    for days in (10, 30, 90, 365):
+        assert mv.waiting_grade(days) == "warn"
 
 
 def _stub_flip(monkeypatch, waiting_days):
@@ -280,10 +286,16 @@ def test_raw_gate_warn_when_lag_between_3_and_5(data_db, monkeypatch):
     assert r["status"] == "warn" and "滞后 3 个交易日" in r["detail"]
 
 
-def test_raw_gate_red_when_mother_reference_really_broke(data_db, monkeypatch):
+def test_raw_gate_warn_when_mother_reference_really_broke(data_db, monkeypatch):
+    """裁决 A（2026-11-16）：真断供 8 天 → **warn**（不是 red）。
+
+    子项目独立部署、价源=本地 raw；母库参照缺失是"少一层交叉验证"，
+    红只留给我们自己的数据/台账坏了。detail 必须写明裁决与依据。
+    """
     _stub_flip(monkeypatch, 8)
     r = mv.check_raw_gate(data_db, ["000651"], "2026-10-29", days=10)
-    assert r["status"] == "red" and "参照源断了" in r["detail"]
+    assert r["status"] == "warn" and "裁决 A" in r["detail"]
+    assert "滞后 8 个交易日" in r["detail"]
 
 
 # ---------- 汇总 ----------

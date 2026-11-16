@@ -222,15 +222,23 @@ def check_duplicate_fills(conn, today: str) -> dict:
 #: 没有阈值之前，"母库按发布节奏晚 1–2 天"与"真的断了 20 天"长得一模一样
 #: （都是 `warn waiting_days=N`），11-04 现网 19 只挂 2 天 = 长期黄灯壁纸；
 #: 下一次真断供时没人再看它（纪律 4：报警本身不许失真）。
+#:
+#: 2026-11-16 用户裁决 A 修正：**母库参照分支不再出红**。子项目独立部署时
+#: （NEC）不依赖母库——引擎实际价源=本地 raw，本函数第一段已验其新鲜完整；
+#: 母库参照只是"独立第二把尺子"的校验辅助，它的缺失是"少了一层交叉验证"，
+#: 不是"我们自己的数据坏了"。>5 天从红降为 warn（并写明裁决与依据）；
+#: 母库恢复发布后自动回绿。Q5 的三档语义仅保留在测试里作历史对照。
 WAIT_GREEN_MAX = 2
 WAIT_RED_MIN = 5
 
 
 def waiting_grade(max_waiting_days: int) -> str:
-    """母库参照滞后（交易日）→ 灯色。`green` 也要在 detail 里把天数写出来。"""
+    """母库参照滞后（交易日）→ 灯色。`green` 也要在 detail 里把天数写出来。
+
+    裁决 A（2026-11-16）：>WAIT_RED_MIN 从 red 改为 warn——断供是母库侧问题，
+    子项目独立部署、价源完整；red 只留给"我们自己的行情/台账坏了"。
+    """
     n = int(max_waiting_days or 0)
-    if n > WAIT_RED_MIN:
-        return "red"
     if n > WAIT_GREEN_MAX:
         return "warn"
     return "green"
@@ -275,13 +283,11 @@ def check_raw_gate(db, symbols, today, days: int = 60) -> dict:
     grade = waiting_grade(max_wait)
     wait_note = (f"母库参照滞后 {max_wait} 个交易日（×{n_wait} 只，"
                  f"合计 waiting_days={flip['waiting_days']}）")
-    if grade == "red":
-        return item("raw_gate", "行情口径与新鲜度闸", "red",
-                    f"{wait_note} > {WAIT_RED_MIN} —— 这不是发布节奏，是参照源断了："
-                    "引擎对这些标的拿不到可核对的参照价", on_red="归因")
     if grade == "warn":
         return item("raw_gate", "行情口径与新鲜度闸", "warn",
-                    f"{wait_note}（>{WAIT_GREEN_MAX} 才异常，这条要盯但不必停）",
+                    f"{wait_note}（裁决 A 2026-11-16：母库参照源断更是母库侧问题，"
+                    f"子项目独立部署、本地 raw 价源完整新鲜[第一段已验证]——"
+                    f"独立参照价缺失降为 warn；母库恢复发布即回绿）",
                     on_red="归因")
     if not flip["audit_complete"]:
         return item("raw_gate", "行情口径与新鲜度闸", "warn",
