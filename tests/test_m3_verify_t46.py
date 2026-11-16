@@ -138,6 +138,41 @@ def test_nav_green(conn):
     assert mv.check_nav(conn, TODAY)["status"] == "green"
 
 
+# ---------- NAV 值复算（D3，2026-11-16：行数对≠数值对）----------
+def _add_pos(conn, symbol="000651", vol=200):
+    conn.execute("""INSERT INTO positions (symbol, total_volume, available_volume,
+                    avg_cost, last_update, entry_day, peak_price)
+                    VALUES (?, ?, 0, 37.58, ?, ?, 0)""",
+                 (symbol, vol, f"{TODAY}T15:00:00", TODAY))
+    conn.commit()
+
+
+def _add_raw_today(data_db, symbol="000651", close=37.58):
+    data_db.upsert_raw_bars([Bar(symbol=symbol,
+                                 timestamp=datetime(2026, 10, 29, 15, 0),
+                                 open=close, high=close, low=close,
+                                 close=close, volume=1000)])
+
+
+def test_nav_value_red_when_drift_from_raw_recompute(conn, data_db):
+    """账面 NAV 与"cash+Σ(raw×量)"不符 ⇒ 钱类红（11-16 stale 价高估 2,120
+    元就是被这条断言的形状漏掉的——此前只验行数与自洽）。"""
+    _add_pos(conn)
+    _add_raw_today(data_db)
+    add_nav(conn, cash=50000.0, mv_=8000.0, total=58000.0)   # 应 57,516
+    r = mv.check_nav(conn, TODAY, data_db=data_db)
+    assert r["status"] == "red" and r["money"]
+    assert "复算" in r["detail"]
+
+
+def test_nav_value_green_when_matches_raw_recompute(conn, data_db):
+    _add_pos(conn)
+    _add_raw_today(data_db)
+    add_nav(conn, cash=50000.0, mv_=7516.0, total=57516.0)   # 50000+200×37.58
+    r = mv.check_nav(conn, TODAY, data_db=data_db)
+    assert r["status"] == "green", r["detail"]
+
+
 # ---------- 双活检测 ----------
 def test_duplicate_fills_red_when_both_lines_executed(conn):
     add_fill(conn)

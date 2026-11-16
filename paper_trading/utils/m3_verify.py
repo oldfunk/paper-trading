@@ -123,7 +123,8 @@ def check_t_plus_one(conn, today: str) -> dict:
                 money=True, on_red="回退")
 
 
-def check_nav(conn, today: str, now: Optional[datetime] = None) -> dict:
+def check_nav(conn, today: str, now: Optional[datetime] = None,
+              data_db=None) -> dict:
     """收盘 NAV：当天必须恰 1 行，且 `total_value = cash + market_value` 自洽。
 
     T54（NEC 预跑照出来的）：**盘中查今天**必然 0 行——旧线的收盘 NAV 由
@@ -195,6 +196,34 @@ def check_nav(conn, today: str, now: Optional[datetime] = None) -> dict:
                         money=True, on_red="见 questions.md Q8")
         return item("nav", "NAV 收盘记录", "red", msg, money=True,
                     on_red="见 questions.md Q8：盘中快照抢占了收盘 NAV 的让位闸")
+    # D3（2026-11-16）：**值复算**——total_value 必须等于 cash + Σ(当日 raw
+    # 收盘 × total_volume)。此前只验行数与"cash+市值"自洽，11-16 的行
+    # （计划窗口用 stale daily_bars 定价，高估 2,120 元）照样全绿——
+    # 行数对、数值错的洞只有这条断言能照出来。raw 未入库（盘后 20:40 前）
+    # 时不判（归 raw_gate），也不阻塞已有结论。
+    if data_db is not None and _has_table(conn, "positions"):
+        pos = _rows(conn, "SELECT symbol, total_volume FROM positions"
+                        " WHERE total_volume>0")
+        if pos:
+            expected = float(row["cash"])
+            missing_raw: list[str] = []
+            for p in pos:
+                sym = str(p["symbol"]).split(".")[0][:6].zfill(6)
+                bars = data_db.get_raw_bars(sym, start=f"{today}T00:00:00",
+                                            end=f"{today}T23:59:59", limit=1)
+                if not bars:
+                    missing_raw.append(sym)
+                    continue
+                expected += float(bars[-1].close) * int(p["total_volume"])
+            if not missing_raw:
+                drift = abs(float(row["total_value"]) - expected)
+                if drift > MONEY_TOL:
+                    return item("nav", "NAV 收盘记录", "red",
+                                f"{today} NAV 值与当日 raw 复算不符：账面 "
+                                f"{float(row['total_value']):.2f} vs 复算 "
+                                f"{expected:.2f}（差 {drift:.2f}）——价格源/公式失真，"
+                                f"净值与回撤基线被污染", money=True,
+                                on_red="回退（钱类口径）")
     return item("nav", "NAV 收盘记录", "green",
                 f"{today} 恰 1 行且自洽（收盘口径 {ts[11:16]}）；库里共 {len(days)} 个净值日",
                 money=True, on_red="回退")
@@ -582,7 +611,7 @@ def verify_all(*, broker, data_db, symbols: list, today: str,
         items = [
             check_fees(conn, cfg, today),
             check_t_plus_one(conn, today),
-            check_nav(conn, today, now=now),
+            check_nav(conn, today, now=now, data_db=data_db),
             check_duplicate_fills(conn, today),
             check_raw_gate(data_db, symbols, today, days=days),
             check_minute_feed(data_db, symbols, today, now=now, executor=executor),
