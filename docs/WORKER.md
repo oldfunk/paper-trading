@@ -1568,7 +1568,8 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 ## 2026-11-17 · 突击修复（主 AI 亲做，签字后第 2 个交易日）
 
 - [x] **T86 条件单队列闭环（P0·钱类相邻）**：`queued_rq` 不在 `STATUSES`
-  ⇒ 每次触发抛 `ValueError`（生产 250 次），条件单停在 armed（次日重复买入）、
+  ⇒ 每次触发抛 `ValueError`（自 11-06 日志窗口起 **125 次崩溃**，11-17 当日 24 次），
+  条件单停在 armed（次日重复买入）、
   同跳后续条件被跳过、成交后不落定。修复：白名单 + `apply_outcomes` 闭环
   （executed⇒filled / rejected⇒rejected）+ 面板标签 + daily-check 两项
   （`cond_loop` 红 / `engine_crash` 黄）——`7d35292`；生产 #98 按 `fills#32`
