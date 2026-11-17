@@ -262,11 +262,55 @@ def resolve_outcomes(intents: list[dict], posted: list[dict], orders: list[dict]
             "waiting": sorted(waiting)}
 
 
+def _close_conditional(c: sqlite3.Connection, biz_id: str, status: str,
+                       result: dict) -> None:
+    """条件单闭环（2026-11-17）：触发→入队→成交/被拒，条件单必须跟着落定。
+
+    此前队列模式只把条件单标成 armed（`queued_rq` 曾抛 ValueError），成交后
+    也没人回收 ⇒ 面板一直显示"待触发"、次日同条件再买一次、`cond_chain`
+    检查（标了 triggered/executed 必须有成交）因状态没推进而看不见。
+    """
+    try:
+        row = c.execute("SELECT rule_ref, detail FROM rq_intents WHERE biz_id=?",
+                        (biz_id,)).fetchone()
+    except sqlite3.OperationalError:
+        return
+    ref = str((row[0] if row else "") or "")
+    if not ref.startswith("cond:"):
+        return
+    cid = ref[5:].strip()
+    if not cid.isdigit():
+        return
+    why = str(result.get("reason") or result.get("order_status") or "")[:160]
+    prev: dict = {}
+    if row and row[1]:
+        try:
+            prev = json.loads(row[1]) or {}
+        except Exception:                # noqa: BLE001 - 旧格式坏了就只写新信息
+            prev = {}
+    detail = json.dumps({**prev, "rq_intent": biz_id, "why": why},
+                        ensure_ascii=False)
+    if status == "executed":
+        c.execute(
+            "UPDATE conditional_orders SET status='filled',"
+            " filled_at=COALESCE(filled_at, ?),"
+            " filled_price=COALESCE(?, filled_price),"
+            " detail=?"
+            " WHERE id=? AND status IN ('armed','queued_rq')",
+            (datetime.now().isoformat(timespec="seconds"),
+             result.get("price"), detail, int(cid)))
+    elif status in ("rejected", "failed"):
+        c.execute(
+            "UPDATE conditional_orders SET status='rejected', detail=?"
+            " WHERE id=? AND status IN ('armed','queued_rq')", (detail, int(cid)))
+
+
 def apply_outcomes(db_path: str | Path, updates: list[dict]) -> dict:
     """按会话/落账结果精确推进队列状态（M3 接管②，修 P0-3 的"按标的批量标"）。
 
     只承认调用方给的**逐笔**结果：`{biz_id, status, result}`。
     没有结果的意图保持原状态（未决），绝不因为"同标的成交过"就顺带完成。
+    条件是 `rule_ref=cond:<id>` 的意图会同时推进对应条件单状态（闭环）。
     """
     done = {"executed": 0, "rejected": 0, "kept": 0}
     with _conn(db_path) as c:
@@ -274,9 +318,11 @@ def apply_outcomes(db_path: str | Path, updates: list[dict]) -> dict:
             st = str(u.get("status") or "")
             if st not in ("executed", "rejected", "failed"):
                 continue
+            res = u.get("result") or {}
             c.execute("UPDATE rq_intents SET status=?, result=? WHERE biz_id=?",
-                      (st, json.dumps(u.get("result") or {}, ensure_ascii=False),
+                      (st, json.dumps(res, ensure_ascii=False),
                        u.get("biz_id")))
+            _close_conditional(c, str(u.get("biz_id") or ""), st, res)
             done[st] = done.get(st, 0) + 1
     return done
 

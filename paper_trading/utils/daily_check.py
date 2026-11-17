@@ -286,6 +286,81 @@ def check_carry_over(account_db, today: str, *, now: Optional[datetime] = None,
     return item("carry_over", "盘后意图顺延落地", "green", detail)
 
 
+def check_cond_loop(account_db, today: str, *, executor: str = "rqalpha") -> dict:
+    """条件单闭环：今天触发入队的条件单，成交后状态必须落定（2026-11-17 新增）。
+
+    队列模式下"触发"只是入队（`queued_rq`），成交要等 `rq tick`。11-17 生产
+    照出：条件单 #98 触发后 `mark('queued_rq')` 抛非法状态 ⇒ 状态停在 armed ⇒
+    引擎每跳重复入队（次日会再买一次）、后续 armed 条件同跳被跳过、而
+    `cond_chain`（只认 triggered/executed）看不见。判据：今日 `rule_ref=cond:<id>`
+    的意图已 executed ⇒ 该条件单必须 `filled`。
+    """
+    if executor != "rqalpha":
+        return item("cond_loop", "条件单闭环", "skip",
+                    f"executor={executor}，条件单走直撮路径")
+    with contextlib.closing(_ro(account_db)) as c:
+        for t in ("rq_intents", "conditional_orders"):
+            if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                             " AND name=?", (t,)).fetchone():
+                return item("cond_loop", "条件单闭环", "skip", f"还没有 {t} 表")
+        rows = [dict(r) for r in c.execute(
+            "SELECT biz_id, rule_ref, status FROM rq_intents"
+            " WHERE substr(created_at,1,10)=? AND rule_ref LIKE 'cond:%'", (today,))]
+        if not rows:
+            return item("cond_loop", "条件单闭环", "green", f"{today} 无条件触发")
+        ids = set()
+        for r in rows:
+            cid = str(r["rule_ref"])[5:].strip()
+            if cid.isdigit():
+                ids.add(int(cid))
+        if not ids:
+            return item("cond_loop", "条件单闭环", "skip",
+                        f"{today} 有 {len(rows)} 条 cond 意图但 rule_ref 解析不出 id")
+        st = {int(r["id"]): str(r["status"]) for r in c.execute(
+            "SELECT id, status FROM conditional_orders WHERE id IN (%s)"
+            % ",".join("?" * len(ids)), tuple(ids))}
+    executed = {str(r["rule_ref"])[5:].strip() for r in rows
+                if r["status"] == "executed"}
+    stuck = sorted(int(i) for i in executed if st.get(int(i)) != "filled")
+    detail = (f"触发 {sorted(ids)}｜意图 {len(rows)} 条"
+              f"（executed {sum(1 for r in rows if r['status'] == 'executed')}）")
+    if stuck:
+        return item("cond_loop", "条件单闭环", "red",
+                    f"{detail}——已成交的条件单仍非 filled：{stuck}"
+                    f"（会在下一交易日重复触发买入；面板也会一直显示待触发）",
+                    on_red="查 rq 队列闭环（queue.apply_outcomes）与条件状态白名单")
+    return item("cond_loop", "条件单闭环", "green", detail)
+
+
+def check_engine_crashes(account_db, today: str, *, limit: int = 5) -> dict:
+    """引擎日志崩溃扫描：`engine/conds crashed` 这类异常不得静默（warn）。
+
+    11-17 的 `非法状态：queued_rq` 在 engine.log 里刷了 250 次，而 daily-check
+    全绿——log 里的崩溃不会自己变成红/黄。只扫当天、只报计数与首因，
+    避免历史日志把每天报成黄。
+    """
+    log = Path(str(account_db)).resolve().parent / "engine.log"
+    if not log.exists():
+        return item("engine_crash", "引擎崩溃扫描", "skip", f"{log.name} 不存在")
+    hits: list[str] = []
+    try:
+        with log.open(encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                if "crashed" not in ln or f"[{today}" not in ln:
+                    continue
+                hits.append(ln.strip()[:220])
+                if len(hits) >= limit:
+                    break
+    except OSError as exc:                      # noqa: BLE001 - 读不了要说出来
+        return item("engine_crash", "引擎崩溃扫描", "warn",
+                    f"读 {log.name} 失败：{type(exc).__name__}: {exc}")
+    if hits:
+        return item("engine_crash", "引擎崩溃扫描", "warn",
+                    f"{today} 引擎崩溃 ≥{len(hits)} 次：{hits[0]}",
+                    on_red="查该异常是否已修/是否仍在刷（崩溃跳会跳过后续检查项）")
+    return item("engine_crash", "引擎崩溃扫描", "green", f"{today} 无崩溃记录")
+
+
 def daily_check(*, data_db, account_db, symbols: list, today: str, cfg,
                 state_dir: str = "var/rq_state/live",
                 days: int = 60, heartbeat_path=None,
@@ -303,6 +378,8 @@ def daily_check(*, data_db, account_db, symbols: list, today: str, cfg,
         check_init_align(state_dir, account_db, today, work_expected=work_expected),
         check_carry_over(account_db, today, now=now, executor=executor),
         check_intent_chain(account_db, today, executor=executor),
+        check_cond_loop(account_db, today, executor=executor),
+        check_engine_crashes(account_db, today),
     ]
     reds = [i for i in items if i["status"] == "red"]
     items.sort(key=lambda i: m3_verify.STATUS_ORDER.get(i["status"], 9))
