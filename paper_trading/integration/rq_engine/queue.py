@@ -281,6 +281,10 @@ def _close_conditional(c: sqlite3.Connection, biz_id: str, status: str,
     cid = ref[5:].strip()
     if not cid.isdigit():
         return
+    try:                                  # 账本里可能没有条件单表（老库/最小夹具）
+        c.execute("SELECT 1 FROM conditional_orders LIMIT 1")
+    except sqlite3.OperationalError:
+        return
     why = str(result.get("reason") or result.get("order_status") or "")[:160]
     prev: dict = {}
     if row and row[1]:

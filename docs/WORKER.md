@@ -1565,10 +1565,43 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   （check_intent_chain 的一致性断言 / carry_over 的未顺延过期意图 /
   第三项按 T81 报告）——已交付（`report-t85.md`，`test_t85_check_power.py`）
 
-## Batch 22 · 独立运行能力（M3 签字后第一个里程碑 · 排布中）
+## 2026-11-17 · 突击修复（主 AI 亲做，签字后第 2 个交易日）
+
+- [x] **T86 条件单队列闭环（P0·钱类相邻）**：`queued_rq` 不在 `STATUSES`
+  ⇒ 每次触发抛 `ValueError`（生产 250 次），条件单停在 armed（次日重复买入）、
+  同跳后续条件被跳过、成交后不落定。修复：白名单 + `apply_outcomes` 闭环
+  （executed⇒filled / rejected⇒rejected）+ 面板标签 + daily-check 两项
+  （`cond_loop` 红 / `engine_crash` 黄）——`7d35292`；生产 #98 按 `fills#32`
+  补记 filled（`op_log[cond:close]` 留痕，备份 `cond-close-backup-20261117.db`）
+- [x] **收盘 NAV 到点判据对齐现网（假红）**：`CLOSE_NAV_DUE` 18:05 → **21:10**
+  （nav-close cron 20:50）——此前 18:05–20:50 每次核对都报钱类红+要求回退
+  （11-17 20:27 实测）——`ef0a18d`
+
+## Batch 22 · 独立运行能力（M3 签字后第一个里程碑）
 
 > 用户方向（2026-11-16）：子项目应独立于母库工作——内置基础交易策略
 > （不依赖母库/不依赖 AI 计划也能决策），同时兼容自定义交易策略
 > （BaseStrategy 子类 + 配置注入）。现状：`BaseStrategy`/`MACrossStrategy`
-> 已在；规则引擎+队列模式已让系统无计划独立成交（11-16 实证）。
-> 待办：策略注册契约、默认装配、文档与测试（实施清单待出）。
+> 已在，但**装配是硬编码**（`cli.py:196`、`main.py:50`），无注册表/无参数注入/
+> 无自定义加载契约；规则引擎+队列模式已让系统无计划独立成交（11-16 实证）。
+
+- [ ] **T87 策略契约与注册表**：`BaseStrategy` 明确 `params_schema`（类型/默认/
+  范围）+ `name` 唯一性；新增 `paper_trading/strategy/registry.py`：
+  `build(spec)` 按 `{class, params}` 构造，未知类/参数越界 **fail-closed**
+  （返回错误并留痕，不许静默用默认值）。验收：单测覆盖正常/未知类/坏参数。
+- [ ] **T88 配置注入与默认装配**：`strategy.local.yaml` 支持
+  `strategies: [{name, class, params, enabled}]`；`cli.TradingBridge` 与
+  `main.py` 不再硬编码 `MACrossStrategy`，改为注册表装配；空配置 ⇒ 内置默认
+  （MA5/20）；坏配置 ⇒ 启动即失败并写 `op_log[strategy:config]`。
+  验收：配置优先级（local > 默认）、禁用策略不产生信号。
+- [ ] **T89 自定义策略加载契约**：允许 `class: mypkg.MyStrategy`（仅限已安装
+  包/`PAPER_TRADING_STRATEGY_PATH` 白名单目录）；导入失败/非 BaseStrategy 子类
+  ⇒ 拒绝并留痕；文档写明"自定义策略不得直接下单"（只产 `Signal`，执行仍走风控+
+  队列）。验收：临时模块加载成功 + 三类坏输入被拒。
+- [ ] **T90 内置基础策略集与"无 AI 也能决策"**：除 MA 交叉外补一个不依赖母库的
+  基础组合（例：`Breakout` 20 日高突破 + `StopLoss` 已有规则、`RSI` 区间），
+  全部只吃本地 `daily_bars_raw`；给出"断网 + 无 LLM key"的独立运行日配置样例。
+  验收：离线 dry-run 一日产生可解释信号。
+- [ ] **T91 文档与回归**：`docs/strategy-contract.md`（契约/参数表/示例/禁用与
+  回滚）；`tests/test_strategy_registry_t87.py`；CI 门禁含新增测试；
+  文档写明"策略只做判定，L1 执行与钱类口径不变"。
