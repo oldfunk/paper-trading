@@ -138,6 +138,19 @@ def test_nav_green(conn):
     assert mv.check_nav(conn, TODAY)["status"] == "green"
 
 
+def test_nav_warn_before_2110_and_red_after(conn):
+    """到点口径跟现网 nav-close（20:50）对齐：18:30 只许 warn，21:30 才红。
+
+    旧口径 18:05 会在 18:05–20:50 把"还没到点"报成钱类红并要回退
+    （2026-11-17 20:27 实测），那是假警报——收工时间没变，是判据没跟上。
+    """
+    add_nav(conn, ts="2026-10-28T15:30:00")       # 有历史行、今天还没行
+    r = mv.check_nav(conn, TODAY, now=datetime(2026, 10, 29, 18, 30))
+    assert r["status"] == "warn" and "未过" in r["detail"]
+    r2 = mv.check_nav(conn, TODAY, now=datetime(2026, 10, 29, 21, 30))
+    assert r2["status"] == "red" and r2["money"]
+
+
 # ---------- NAV 值复算（D3，2026-11-16：行数对≠数值对）----------
 def _add_pos(conn, symbol="000651", vol=200):
     conn.execute("""INSERT INTO positions (symbol, total_volume, available_volume,

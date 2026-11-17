@@ -250,7 +250,7 @@ def test_nav_red_when_sole_row_is_morning_snapshot(db):
     with sqlite3.connect(db) as c:
         c.row_factory = sqlite3.Row
         nav(c, f"{TODAY}T09:30:42")
-        r = mv.check_nav(c, TODAY, now=datetime(2026, 11, 13, 20, 0))
+        r = mv.check_nav(c, TODAY, now=datetime(2026, 11, 13, 21, 30))
     assert r["status"] == "red" and r["money"] is True
     assert "不是收盘口径" in r["detail"] and "Q8" in r["on_red"]
 
@@ -270,7 +270,7 @@ def test_nav_green_when_row_is_close_caliber(db):
     with sqlite3.connect(db) as c:
         c.row_factory = sqlite3.Row
         nav(c, f"{TODAY}T16:31:17")
-        r = mv.check_nav(c, TODAY, now=datetime(2026, 11, 13, 20, 0))
+        r = mv.check_nav(c, TODAY, now=datetime(2026, 11, 13, 21, 30))
     assert r["status"] == "green", r["detail"]
     assert "收盘口径 16:31" in r["detail"]
 
@@ -281,7 +281,7 @@ def test_nav_red_when_close_row_predates_later_fill(db):
     with sqlite3.connect(db) as c:
         c.row_factory = sqlite3.Row
         nav(c, f"{TODAY}T16:31:17")
-        r = mv.check_nav(c, TODAY, now=datetime(2026, 11, 13, 20, 0))
+        r = mv.check_nav(c, TODAY, now=datetime(2026, 11, 13, 21, 30))
     assert r["status"] == "red" and "早于当日最后一笔成交" in r["detail"]
 
 
