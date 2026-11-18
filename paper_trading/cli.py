@@ -2219,7 +2219,12 @@ def main() -> None:
                 for u in verdict["updates"]:
                     r = dict(u.get("result") or {})
                     r.setdefault("session", today)
-                    _q.mark(acct_db, u["biz_id"], u["status"], r)
+                    u["result"] = r
+                # T86 接线：结论写回走 queue.apply_outcomes（内部 = mark +
+                # _close_conditional，同一事务）。只调 mark 会让条件单永远停在
+                # queued_rq——11-17 至 11-18 生产实况：#94/#95/#104/#105/#106
+                # 全部卡在"已交框架"，#98 靠人工 cond:close 才落定。
+                _q.apply_outcomes(acct_db, verdict["updates"])
                 st = verdict["stats"]
                 res["intent_outcomes"] = {
                     "in": len(intents), "expired": len(expired),
