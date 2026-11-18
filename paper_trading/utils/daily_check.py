@@ -9,6 +9,12 @@
 ② `carry_over`  Q6 顺延的意图今天有没有落地（不能只顺延不兑现）；
 ③ `intent_chain` 当日新意图全链闭环（入队→会话→落账→标记）。
 
+2026-11-17/18 两次事故后追加三项（都是"日志里有真相、门禁看不见"的形状）：
+④ `cond_loop`    已成交的条件单必须 filled（11-17 的 queued_rq 事故）；
+⑤ `engine_crash` engine.log 当日 `crashed` 扫描（11-17 刷 250 次仍全绿）；
+⑥ `tick_stall`   rq_tick.log 当日 `InitPositionError` / `IdleSpin` 扫描
+                （11-18 每跳 0 退出但全天 0 成交）。
+
 全部只读：开库一律 `mode=ro`，不写 `op_log`，不碰状态目录。
 """
 from __future__ import annotations
@@ -361,6 +367,47 @@ def check_engine_crashes(account_db, today: str, *, limit: int = 5) -> dict:
     return item("engine_crash", "引擎崩溃扫描", "green", f"{today} 无崩溃记录")
 
 
+def check_tick_stall(account_db, today: str, *, sample: int = 3) -> dict:
+    """rq tick 会话拒开/空转扫描（2026-11-18 事故派生，T93）。
+
+    11-18 每跳都以 0 退出、心跳正常，而 `InitPositionError` 在 rq_tick.log
+    刷了 142 次、全天 0 成交——`engine_crash` 只扫 engine.log 且只认
+    `crashed` 关键词，这类"活着但没干活"完全看不见。判据：当天日志里出现
+    `InitPositionError`（框架账户与账本脱钩）或 `IdleSpin:`（会话空转）
+    ⇒ warn（不是红：钱没动，但执行能力已经没了，必须在收盘报告里出现）。
+
+    日志是追加写的：按行首日期切换"当前业务日"，只认 today 段——
+    traceback 的后续行没有时间戳，跟着它所属的日期段走。
+    """
+    log = Path(str(account_db)).resolve().parent / "rq_tick.log"
+    if not log.exists():
+        return item("tick_stall", "tick 会话拒开扫描", "skip", f"{log.name} 不存在")
+    needles = ("InitPositionError", "IdleSpin:")
+    hits: list[str] = []
+    cur = ""
+    try:
+        with log.open(encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                s = ln.lstrip()
+                if s.startswith("[20") and len(s) > 11 and s[5] == "-" and s[8] == "-":
+                    cur = s[1:11]
+                if cur != today:
+                    continue
+                if any(n in ln for n in needles):
+                    hits.append(ln.strip()[:220])
+                    if len(hits) >= 200:
+                        break
+    except OSError as exc:                      # noqa: BLE001 - 读不了要说出来
+        return item("tick_stall", "tick 会话拒开扫描", "warn",
+                    f"读 {log.name} 失败：{type(exc).__name__}: {exc}")
+    if hits:
+        return item("tick_stall", "tick 会话拒开扫描", "warn",
+                    f"{today} 会话拒开/空转 ≥{len(hits)} 行：{hits[0]}",
+                    on_red="查当日首个 InitPositionError/IdleSpin：通常是状态目录与账本"
+                           "脱钩或分钟线没接上；确认后 ledger reset-state 并从账本重建")
+    return item("tick_stall", "tick 会话拒开扫描", "green", f"{today} 无拒开/空转")
+
+
 def daily_check(*, data_db, account_db, symbols: list, today: str, cfg,
                 state_dir: str = "var/rq_state/live",
                 days: int = 60, heartbeat_path=None,
@@ -380,6 +427,7 @@ def daily_check(*, data_db, account_db, symbols: list, today: str, cfg,
         check_intent_chain(account_db, today, executor=executor),
         check_cond_loop(account_db, today, executor=executor),
         check_engine_crashes(account_db, today),
+        check_tick_stall(account_db, today),
     ]
     reds = [i for i in items if i["status"] == "red"]
     items.sort(key=lambda i: m3_verify.STATUS_ORDER.get(i["status"], 9))

@@ -239,3 +239,52 @@ def test_cli_tick_writeback_actually_goes_through_apply_outcomes():
         "tick 写回没走 queue.apply_outcomes ⇒ 条件单成交后永停 queued_rq"
     assert "_q.mark(" not in text, \
         "tick 写回退回 mark ⇒ 条件单永停 queued_rq（T86 事故）"
+
+
+def test_tick_stall_warns_on_init_position_error_in_today_log(tmp_path):
+    """11-18 的形状：每跳 0 退出、引擎日志无 `crashed`，但 tick 日志刷
+    `InitPositionError` 且全天 0 成交——必须变成收盘报告里的黄，不许静默。"""
+    b = _acct(tmp_path)
+    log = Path(str(b.db_path)).parent / "rq_tick.log"
+    log.write_text(
+        f"[{TODAY} 10:07:04.253216] DEBUG: system_log: restore portfolio\n"
+        f"[{TODAY} 10:07:04.269000] ERROR: user_system_log: 会话失败\n"
+        "Traceback (most recent call last):\n"
+        "  File \"runner.py\", line 1, in run_session\n"
+        "paper_trading.integration.rq_engine.runner.InitPositionError: "
+        "框架账户比账本多 1 只仓：[{'symbol': '000792.XSHE', "
+        "'framework': 100, 'ledger': 0}]\n",
+        encoding="utf-8")
+    it = dc.check_tick_stall(b.db_path, TODAY)
+    assert it["status"] == "warn", it
+    assert "InitPositionError" in it["detail"]
+    assert "000792" in it["detail"]
+
+
+def test_tick_stall_warns_on_idle_spin_lines(tmp_path):
+    b = _acct(tmp_path)
+    log = Path(str(b.db_path)).parent / "rq_tick.log"
+    log.write_text(f"[{TODAY} 10:12:05.000000] DEBUG: tick\n"
+                   "        \"IdleSpin: handle_bar 一次都没执行（窗口/事件源/数据没接上）\",\n",
+                   encoding="utf-8")
+    assert dc.check_tick_stall(b.db_path, TODAY)["status"] == "warn"
+
+
+def test_tick_stall_ignores_previous_day(tmp_path):
+    """只扫当天：历史事故不该让之后每个交易日都黄（engine_crash 同款纪律）。"""
+    b = _acct(tmp_path)
+    log = Path(str(b.db_path)).parent / "rq_tick.log"
+    log.write_text("[2026-01-01 10:07:04.000000] ERROR: crash\n"
+                   "paper_trading.integration.rq_engine.runner.InitPositionError: old\n"
+                   f"[{TODAY} 09:32:05.000000] DEBUG: 正常开会话\n",
+                   encoding="utf-8")
+    it = dc.check_tick_stall(b.db_path, TODAY)
+    assert it["status"] == "green", it
+
+
+def test_tick_stall_green_without_log_or_hits(tmp_path):
+    b = _acct(tmp_path)
+    assert dc.check_tick_stall(b.db_path, TODAY)["status"] == "skip"
+    log = Path(str(b.db_path)).parent / "rq_tick.log"
+    log.write_text(f"[{TODAY} 09:32:05.000000] DEBUG: 正常开会话\n", encoding="utf-8")
+    assert dc.check_tick_stall(b.db_path, TODAY)["status"] == "green"
