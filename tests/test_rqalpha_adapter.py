@@ -6,6 +6,7 @@
 import json
 import math
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -171,7 +172,7 @@ def test_session_gate_rejects_corrupt_meta(tmp_path):
 
 
 # ---------- runner：配置与后置门禁（G-T13-6/7）----------
-def _cfg(tmp_path, state_dir=""):
+def _cfg(tmp_path, state_dir="", extra=None):
     # T51：费率必须显式给（现网 TradingConfig），这里统一从 config 口径取
     from paper_trading.models import TradingConfig
     from paper_trading.utils import fees as ufees
@@ -179,7 +180,7 @@ def _cfg(tmp_path, state_dir=""):
     return build_config(today="2026-10-28", data_db=str(tmp_path / "data.db"),
                         bundle="C:/bundle", symbols=["000792", "600519"],
                         state_dir=state_dir, evidence=str(tmp_path / "ev.json"),
-                        fee=ufees.fee_dict(TradingConfig()))
+                        fee=ufees.fee_dict(TradingConfig()), extra=extra)
 
 
 def test_build_config_single_day_and_caliber_rules(tmp_path):
@@ -197,6 +198,17 @@ def test_build_config_single_day_and_caliber_rules(tmp_path):
 def test_build_config_without_state_dir_disables_persist(tmp_path):
     cfg = _cfg(tmp_path)
     assert cfg["base"]["persist"] is False
+
+
+def test_build_config_extra_cannot_replace_core(tmp_path):
+    """extra 只能加新顶层键，不许静默覆盖 base/mod/extra（整段覆盖是后门，2026-11-18 收口）。"""
+    with pytest.raises(ValueError, match="extra"):
+        _cfg(tmp_path, extra={"mod": {"ptpaper": {"enabled": False}}})
+    with pytest.raises(ValueError, match="extra"):
+        _cfg(tmp_path, extra={"base": {"start_date": "2020-01-01"}})
+    cfg = _cfg(tmp_path, extra={"some_new_key": {"x": 1}})
+    assert cfg["some_new_key"] == {"x": 1}
+    assert cfg["mod"]["ptpaper"]["enabled"] is True   # 正常路径不受影响
 
 
 def test_session_fingerprint_is_sensitive_and_stable(tmp_path):
@@ -246,6 +258,34 @@ def test_gates_warn_on_double_settlement():
     v = check_session_gates(ev, [{"action": "buy", "symbol": "000792", "volume": 100}],
                             handler_calls=1)
     assert v["ok"] and any("重放昨日结算" in w for w in v["warnings"])
+
+
+# ---------- mod 费用拆分（_on_trade 与 overlay 的交叉核对）----------
+def test_on_trade_other_fees_match_transfer_fee_overlay():
+    """_on_trade 反推的 other_fees 必须等于 overlay 实际补收的过户费。
+
+    _on_trade 用 total - commission - tax 反推（mod_entry.py）；overlay 的
+    calc() 按 abs(price*qty)*rate 补收（costs.py，证据进 deciders.added_total）。
+    两边口径一旦漂移（比如框架 total 里多了一项别的费用），拆分就悄悄错掉，
+    账本的过户费列与框架证据对不上——这条把两边钉在同一把尺子上。
+    """
+    pytest.importorskip("rqalpha")   # mod_entry 在模块级 import rqalpha；产品 venv 无 rqalpha 时跳过
+    from paper_trading.integration.rq_engine import costs
+    from paper_trading.integration.rq_engine.mod_entry import PtPaperMod
+
+    rate = 0.00001                                  # 过户费率（现网口径，T51 显式给）
+    price, qty = 10.0, 1000
+    commission, tax = 2.5, 0.0
+    overlay_fee = costs.transfer_fee_amount(price * qty, rate)
+    trade = SimpleNamespace(order_book_id="000001.XSHE", datetime="2026-10-28 10:00:00",
+                            side="BUY", last_price=price, last_quantity=qty,
+                            transaction_cost=commission + tax + overlay_fee,
+                            commission=commission, tax=tax, position_effect="OPEN")
+    mod = PtPaperMod()
+    mod._on_trade(SimpleNamespace(trade=trade))
+    assert len(mod._trades) == 1
+    assert mod._trades[0]["other_fees"] == pytest.approx(overlay_fee)
+    assert mod._trades[0]["cost"] == pytest.approx(commission + tax + overlay_fee)
 
 
 # ---------- 影子对账（纯算术部分）----------

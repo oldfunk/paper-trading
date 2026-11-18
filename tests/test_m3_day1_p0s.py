@@ -183,6 +183,27 @@ def test_nav_history_helper_is_fail_open_and_uses_a_read_only_uri(broker, tmp_pa
     assert "nav_history 当日行检查失败" in caplog.text
 
 
+def test_record_close_nav_refuses_when_data_db_unreadable(broker, tmp_path, caplog):
+    """data.db 不可读 ⇒ _raw_has_today 不许再按“有”放行（Q8 的重现口子，2026-11-18 改 fail-closed）。
+
+    旧行为：异常返回 True ⇒ 陈旧价直接写进 NAV。现行为：异常返回 False 并告警，
+    record_close_nav 拒写、当晚 NAV 断供（显性红，次日 raw 补齐后可 --today 补写）。
+    """
+    import logging
+
+    broker.apply_external_fill(symbol="000651", direction=1, volume=1000, price=37.58)
+    (tmp_path / "data.db").mkdir()          # 目录当 data.db：连接即失败
+    with caplog.at_level(logging.WARNING):
+        assert ld._raw_has_today(broker, "000651", DAY) is False
+    assert "_raw_has_today 检查失败" in caplog.text
+    out = ld.record_close_nav(broker, {"000651": 40.0}, today=DAY, fp="fp-x")
+    assert out["recorded"] is False
+    assert out["reason"] in ("price_missing", "close_bar_not_final")
+    assert out["symbols"] == ["000651"]
+    with sqlite3.connect(str(broker.db_path)) as c:
+        assert c.execute("SELECT COUNT(*) FROM nav_history").fetchone()[0] == 0
+
+
 def test_corrupt_cooldown_timestamp_warns_instead_of_silently_opening_the_gate(
         bridge, caplog):
     """冷却时间戳坏掉 = P0-1 那道防线静默消失；不吭声就等于把重灌的口子留在那儿。"""

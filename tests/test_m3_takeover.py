@@ -146,6 +146,44 @@ def test_resolve_reports_unclaimed_fill():
     assert out["unclaimed"] == [{"symbol": "600000", "side": "BUY", "volume": 100}]
 
 
+# ==================================================== handle_bar：NOT_CREATED 不占去重位
+def test_second_same_key_intent_is_retried_after_validator_reject(monkeypatch):
+    """第一条被前端风控拒（order_shares 返回 None）⇒ 同跳第二条同款意图必须再试，
+    不能被标 SKIPPED_DUPLICATE（2026-11-18：_submitted_keys 只在真提交时才加）。
+
+    旧行为：_submitted_keys 在 order_shares 返回 None 之前就 add ⇒ 第二条同款
+    被当成“已提交过”去重，实际上两条都没进框架。
+    """
+    import sys
+    import types
+    from types import SimpleNamespace
+
+    rqalpha = types.ModuleType("rqalpha")
+    rqalpha.__path__ = []
+    api = types.ModuleType("rqalpha.api")
+    calls = []
+
+    def _order_shares(ob, vol):
+        calls.append((ob, vol))
+        return None                     # 前端风控挡下：没有 Order 对象
+
+    api.order_shares = _order_shares
+    rqalpha.api = api
+    monkeypatch.setitem(sys.modules, "rqalpha", rqalpha)
+    monkeypatch.setitem(sys.modules, "rqalpha.api", api)
+
+    now = datetime(2026, 10, 30, 10, 0)
+    plan = [{"biz_id": "b1", "action": "buy", "symbol": "002192", "volume": 100,
+             "decided_at": "2026-10-30T09:31:00"},
+            {"biz_id": "b2", "action": "buy", "symbol": "002192", "volume": 100,
+             "decided_at": "2026-10-30T09:31:00"}]
+    st = _SessionState(plan)
+    st.handle_bar(SimpleNamespace(now=now), {"002192.XSHE": SimpleNamespace(close=44.9)})
+    assert [o["status"] for o in st.orders] == ["NOT_CREATED", "NOT_CREATED"]
+    assert len(st.submits) == 2 and len(calls) == 2
+    assert st._submitted_keys == set()
+
+
 # ==================================================== 队列本体
 @pytest.fixture()
 def acct(tmp_path):
@@ -334,13 +372,19 @@ def _fake_rqalpha(monkeypatch):
     """把 `rqalpha.api.order_shares` 换成记数桩：本地没有 rqalpha 也能跑 handle_bar。"""
     import sys
     import types
+    from types import SimpleNamespace
 
     calls = []
     api = types.ModuleType("rqalpha.api")
 
     def order_shares(ob, vol):
         calls.append((ob, vol))
-        return None                     # 返回 None ⇒ 走 NOT_CREATED 记录分支
+        # 模拟提交成功（2026-11-18 起 NOT_CREATED 不占去重位，见 test 7；要测
+        # SKIPPED_DUPLICATE 必须让第一条真提交进框架，返回 None 测不到这条路）
+        return SimpleNamespace(order_book_id=ob,
+                               side="BUY" if vol > 0 else "SELL",
+                               quantity=abs(vol), status="SUBMITTED",
+                               filled_quantity=0, message="")
 
     api.order_shares = order_shares
     root = types.ModuleType("rqalpha")

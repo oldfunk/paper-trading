@@ -75,6 +75,26 @@ def test_aggregate_refuses_when_nothing_to_fall_back_to():
     assert row is None and "无上一交易日可退" in note
 
 
+def test_aggregate_refuses_fallback_when_prev_trading_day_missing():
+    """上一交易日分钟缺失 ⇒ 不许拿更早收盘当 prev_close（T75 回退口子的收口）。
+
+    2026-11-05 的回退只认“序列里更早那一天”，不校验它就是上一交易日：
+    分钟缺一日时 band 会按两天前的收盘算，涨跌停判错方向。prev_day 给定且
+    与回退日不符时必须返回 (None, note)；prev_day 与回退日一致时仍可回退。
+    """
+    bars = _bars([("2026-11-03", [("0935", 46.0, 47.5, 45.8, 47.3, math.nan, math.nan),
+                                  ("1500", 47.0, 47.4, 46.9, 47.30, math.nan, math.nan)]),
+                  ("2026-11-05", [("0935", 47.4, 48.0, 47.0, 47.8, math.nan, math.nan)])])
+    row, note = aggregate_day_from_minutes(bars, "20261105", "002192",
+                                           prev_day="20261104")
+    assert row is None and "拒绝回退" in note and "20261104" in note
+    # 回退日与 prev_day 一致时仍可回退（旧行为保留）
+    row2, note2 = aggregate_day_from_minutes(bars, "20261105", "002192",
+                                             prev_day="20261103")
+    assert row2 is not None and row2["prev_close"] == 47.30
+    assert "回退" in note2
+
+
 def test_aggregate_missing_day_is_not_a_zero_bar():
     bars = _bars([("2026-11-05", [("0935", 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)])])
     row, note = aggregate_day_from_minutes(bars, "20261201", "002192")

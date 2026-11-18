@@ -260,8 +260,11 @@ def test_record_close_nav_refuses_when_position_price_missing(broker):
     assert rows(broker, "nav_history") == []
 
 
-def test_record_close_nav_uses_the_same_math_as_legacy(broker):
+def test_record_close_nav_uses_the_same_math_as_legacy(broker, tmp_path):
     """NAV 公式不许自己另写一套：与 `broker.get_nav()` 逐位相同（pnl 对 initial_cash）。"""
+    # 2026-11-18 起 _raw_has_today fail-closed：data.db 不可读即拒写。补当日 raw 行过门禁。
+    db = DataDBManager(tmp_path / "data.db")
+    db.upsert_raw_bars([mkbar("000651", date(2026, 10, 29), 40.0)])
     broker.apply_external_fill(symbol="000651", direction=1, volume=1000, price=37.58)
     prices = {"000651": 40.0}
     expect = broker.get_nav(prices)
@@ -272,13 +275,23 @@ def test_record_close_nav_uses_the_same_math_as_legacy(broker):
     assert nav["pnl"] == pytest.approx(expect.pnl)         # 自己算的那版恒为 0，正是错处
 
 
-def test_close_prices_reads_only_latest_raw_bar(tmp_path):
+def test_close_prices_reads_today_bar_only(tmp_path):
+    """require_today=True（默认）下只认当日 bar：未来日不许混进来（旧契约保留）。"""
     db = DataDBManager(tmp_path / "data.db")
     db.upsert_raw_bars([mkbar("000651", date(2026, 10, 27), 36.0),
                         mkbar("000651", date(2026, 10, 28), 37.0),
                         mkbar("000651", date(2026, 10, 29), 38.0),
                         mkbar("000651", date(2026, 10, 30), 99.0)])   # 未来日不许混进来
     assert ld.close_prices(db, ["000651", "600000.XSHG"], TODAY) == {"000651": 38.0}
+
+
+def test_close_prices_refuses_stale_bar_when_require_today(tmp_path):
+    """当日 raw 缺行 ⇒ 默认不返回更早的收盘（Q8/Q10 的陈旧价入口，questions.md 批 ①）。"""
+    db = DataDBManager(tmp_path / "data.db")
+    db.upsert_raw_bars([mkbar("000651", date(2026, 10, 28), 37.0)])   # 只有昨日 bar
+    assert ld.close_prices(db, ["000651"], TODAY) == {}
+    # require_today=False 只留给排障：旧行为“取最近一根”仍可用，但生产不许用
+    assert ld.close_prices(db, ["000651"], TODAY, require_today=False) == {"000651": 37.0}
 
 
 # ============================================================ G3 执行底座开关

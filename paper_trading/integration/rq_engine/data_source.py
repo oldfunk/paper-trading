@@ -56,9 +56,15 @@ class PaperDataSource(BaseDataSource):
             # 分钟 bar 按日聚合（口径与 prev_close 回退都在 `store.aggregate_day_from_minutes`，
             # 那里不 import rqalpha，CI 里能直接测）
             from .store import aggregate_day_from_minutes, to_symbol
+            from paper_trading.utils.trading_calendar import prev_trading_day
 
+            try:
+                prev_day = prev_trading_day(dt).strftime("%Y%m%d")
+            except Exception:                       # noqa: BLE001 - 日历取不到时沿用旧回退
+                prev_day = None
             row, note = aggregate_day_from_minutes(
-                bars, str(dt_int)[:8], to_symbol(instrument.order_book_id))
+                bars, str(dt_int)[:8], to_symbol(instrument.order_book_id),
+                prev_day=prev_day)
             if note:
                 problems = getattr(self._pt_store, "problems", None)
                 if isinstance(problems, list):

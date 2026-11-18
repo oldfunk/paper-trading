@@ -232,7 +232,8 @@ def _dt2i_minute(ts: str) -> int:
     return int(d) * 1_000_000 + int(hm) * 100
 
 
-def aggregate_day_from_minutes(bars, day_key: str, symbol: str) -> tuple:
+def aggregate_day_from_minutes(bars, day_key: str, symbol: str, *,
+                               prev_day: str | None = None) -> tuple:
     """把某日的分钟 bar 聚合成等价日线；返回 `(row, note)`。
 
     为什么要这条（2026-11-05）：`init_positions` 导入期初持仓时框架要按
@@ -248,6 +249,9 @@ def aggregate_day_from_minutes(bars, day_key: str, symbol: str) -> tuple:
     看不见的成本（band 是撮合判涨跌停的唯一依据 `matcher/base.py:207-218`）。
 
     note 非空 ⇒ 走了回退/失败路径，调用方要把它写进 `store.problems` 留痕。
+    `prev_day`（可选，YYYYMMDD）：调用方已知的上一交易日。给定后回退只认
+    这一天——上一交易日分钟缺失时宁可失败，也不拿更早的收盘当 prev_close
+    （band 会错方向）。不给时沿用旧行为（取序列里最近的更早一天 + note）。
     """
     sel = [b for b in bars if str(int(b["datetime"]))[:8] == str(day_key)]
     if not sel:
@@ -272,6 +276,12 @@ def aggregate_day_from_minutes(bars, day_key: str, symbol: str) -> tuple:
     earlier = [b for b in bars if str(int(b["datetime"]))[:8] < str(day_key)]
     if earlier:
         last_day = str(int(earlier[-1]["datetime"]))[:8]
+        if prev_day is not None and last_day != str(prev_day):
+            # 上一交易日的分钟缺失：回退到更早的收盘会拿错 band（T75 收口）。
+            # 宁可失败让调用方明确报错，也不用两天前的价当“上一交易日收盘”。
+            return None, (f"1d 聚合拒绝回退：{symbol} {day_key} prev_close/带非有限"
+                          f"（pc={pc} limit_up={lu}），上一交易日({prev_day})无分钟"
+                          f" bar，不用更早({last_day})收盘代替")
         prev = [b for b in earlier if str(int(b["datetime"]))[:8] == last_day]
         cand = float(prev[-1]["close"]) if prev else float("nan")
         if np.isfinite(cand) and cand > 0:

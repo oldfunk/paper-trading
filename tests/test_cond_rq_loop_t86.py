@@ -221,3 +221,81 @@ def test_engine_crash_check_ignores_old_history(tmp_path):
     log.write_text("[2026-01-01 09:00:00] [ERROR] engine/conds crashed: old\n",
                    encoding="utf-8")
     assert dc.check_engine_crashes(b.db_path, TODAY)["status"] == "green"
+
+
+# ---------- tick 接线（bece5d8 之后，2026-11-18）----------
+def test_tick_outcome_sequence_closes_conditional(tmp_path):
+    """tick 的写回顺序（resolve_outcomes → apply_outcomes）必须把条件单标 filled。
+
+    2026-11-18 的教训：t86 旧测试只测了 apply_outcomes 本身，没测生产真正走
+    的那条路——tick 曾长期只调 mark，条件单成交后永停 armed，次日再买一次。
+    这条按 cli.py tick 的顺序跑完整条链（pending → resolve → 补 session →
+    apply_outcomes），断言条件单落定。
+    """
+    db = str(tmp_path / "acct.db")
+    co = ConditionalOrders(db)
+    oid = co.create({"symbol": "000001", "side": "buy", "cond_type": "price_below",
+                     "cond_value": 10.0, "value": 20000})[2]
+    bid = q.enqueue(db, "000001", "buy", 2000, rule_ref=f"cond:{oid}")
+    co.mark(oid, "queued_rq", 9.95)
+
+    verdict = q.resolve_outcomes(q.pending(db),
+                                 [{"symbol": "000001", "side": "BUY", "volume": 2000,
+                                   "order_id": 33, "price": 9.94}],
+                                 orders=[], submits=[])
+    assert [u["biz_id"] for u in verdict["updates"]] == [bid]
+    assert verdict["updates"][0]["status"] == "executed"
+    # tick 的写回（cli.py，bece5d8 之后）：补 session 再调 apply_outcomes
+    for u in verdict["updates"]:
+        r = dict(u.get("result") or {})
+        r.setdefault("session", TODAY)
+        u["result"] = r
+    q.apply_outcomes(db, verdict["updates"])
+
+    o = co.list_all(5)[0]
+    assert o["status"] == "filled"
+    assert o["filled_price"] == 9.94
+    assert o["filled_at"] and "rq_intent" in (o["detail"] or "")
+
+
+def test_tick_outcome_sequence_rejects_conditional(tmp_path):
+    """同上，提交过但无成交 ⇒ 条件单 rejected（不许留在 armed 等次日再触发）。"""
+    db = str(tmp_path / "acct.db")
+    co = ConditionalOrders(db)
+    oid = co.create({"symbol": "000001", "side": "buy", "cond_type": "price_below",
+                     "cond_value": 10.0, "value": 20000})[2]
+    bid = q.enqueue(db, "000001", "buy", 2000, rule_ref=f"cond:{oid}")
+    co.mark(oid, "queued_rq", 9.95)
+
+    verdict = q.resolve_outcomes(
+        q.pending(db), [],
+        orders=[{"biz_id": bid, "symbol": "000001.XSHE", "side": "BUY",
+                 "status": "REJECTED", "message": "风控拒绝：现金不足", "filled": 0}],
+        submits=[{"biz_id": bid, "symbol": "000001.XSHE", "side": "BUY",
+                  "volume": 2000}])
+    assert verdict["updates"][0]["status"] == "rejected"
+    for u in verdict["updates"]:
+        r = dict(u.get("result") or {})
+        r.setdefault("session", TODAY)
+        u["result"] = r
+    q.apply_outcomes(db, verdict["updates"])
+    o = co.list_all(5)[0]
+    assert o["status"] == "rejected"
+    assert "现金不足" in (o["detail"] or "")
+
+
+def test_mark_does_not_close_conditional(tmp_path):
+    """反向契约：queue.mark 只改意图表，不负责条件单闭环（闭环是 apply_outcomes 的事）。
+
+    2026-11-18 的教训：tick 曾长期只调 mark，条件单成交后永停 armed。
+    这条钉住 mark 的语义边界，防止以后有人把 tick 改回 mark 循环而不自知；
+    想改这条语义，先改 conditional.py 模块头那句“闭环由 queue.apply_outcomes 负责”。
+    """
+    db = str(tmp_path / "acct.db")
+    co = ConditionalOrders(db)
+    oid = co.create({"symbol": "000001", "side": "buy", "cond_type": "price_below",
+                     "cond_value": 10.0, "value": 20000})[2]
+    bid = q.enqueue(db, "000001", "buy", 2000, rule_ref=f"cond:{oid}")
+    co.mark(oid, "queued_rq", 9.95)
+    q.mark(db, bid, "executed", {"order_id": 33, "price": 9.94})
+    assert co.list_all(5)[0]["status"] == "queued_rq"   # 仍未落定，等 apply_outcomes

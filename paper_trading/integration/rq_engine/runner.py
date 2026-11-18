@@ -303,6 +303,11 @@ def build_config(*, today: str, data_db: str, bundle: str, symbols: list,
     }
     if extra:
         for k, v in extra.items():
+            if k in ("base", "mod", "extra"):
+                # 2026-11-18：extra 是“加新顶层键”的口子，不是整段覆盖 cfg 的
+                # 后门——base/mod 一旦被整段换掉，费率/撮合/持久化口径全变，
+                # 而指纹与门禁都看不见这次覆盖。
+                raise ValueError(f"build_config 的 extra 不许覆盖顶层键 {k!r}")
             cfg[k] = v
     return cfg
 
@@ -743,7 +748,6 @@ class _SessionState:
             vol = vol_i * (1 if act["action"] == "buy" else -1)
             o = order_shares(ob, vol)
             self._handled.add(bid)
-            self._submitted_keys.add(key)      # 会话内已提交（≠ 账本已成交，别混）
             self.submits.append({"biz_id": bid, "symbol": ob, "side": side,
                                  "volume": vol_i, "decided_at": str(decided or ""),
                                  "submitted_at": str(now)})
@@ -754,6 +758,9 @@ class _SessionState:
                                     "quantity": abs(vol), "status": "NOT_CREATED",
                                     "filled": 0})
                 continue
+            # 只有真提交了才记 _submitted_keys：NOT_CREATED 没进框架，同一跳
+            # 的第二条同款意图必须再试，不能被标 SKIPPED_DUPLICATE（2026-11-18）。
+            self._submitted_keys.add(key)      # 会话内已提交（≠ 账本已成交，别混）
             for od in (o if isinstance(o, (list, tuple)) else [o]):
                 self.orders.append({
                     "biz_id": bid,

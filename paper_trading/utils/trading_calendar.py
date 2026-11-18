@@ -265,6 +265,19 @@ def next_trading_day(
     return dd
 
 
+def prev_trading_day(
+    d: date | datetime | str, holidays: Optional[Set[str]] = None, steps: int = 1
+) -> date:
+    """上一个交易日（steps=1 即 T-1；aggregate 回退校验用）。"""
+    dd = _as_date(d)
+    n = 0
+    while n < steps:
+        dd -= timedelta(days=1)
+        if is_trading_day(dd, holidays):
+            n += 1
+    return dd
+
+
 def load_holidays(extra: Optional[Iterable[str]] = None) -> Set[str]:
     """合并外部节假日列表为集合，容错空值。"""
     out: Set[str] = set()
