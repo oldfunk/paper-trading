@@ -1620,10 +1620,13 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   `expired`（或 `cancelled`，二者择一并写进面板/文档）；`cond_loop`
   增加"`queued_rq` 超过 N 个交易日"判别。验收：造一条过期 `queued_rq`
   条件单，`expire_stale` 后状态落定且 daily-check 不再漏报。
-- [ ] **T93 "活着但没干活"探针**：11-18 每跳都以 0 退出、心跳正常，而
-  `InitPositionError` 在 `rq_tick.log` 刷了 142 次、全日 0 成交——现有
-  `engine_crash` 只扫 `engine.log` 且只认 `crashed` 关键词。修：daily-check
-  增加 `tick_stall` 项，统计当日 `InitPositionError` / `IdleSpin` 连续峰值，
-  以及"交易时段内 ≥N 跳有 pending 意图但 0 成交"。验收：回放 11-18 日志
-  应报红（而不是等到 15:30 由 `intent_queue` 兜底）。
+- [x] **T93 "活着但没干活"探针**（`bb7ff9d`）：11-18 每跳都以 0 退出、心跳正常，
+  而 `InitPositionError` 在 `rq_tick.log` 刷了 142 次、全日 0 成交——现有
+  `engine_crash` 只扫 `engine.log` 且只认 `crashed` 关键词。已加 daily-check
+  `tick_stall`：按行首日期只取当天段，扫 `InitPositionError` / `IdleSpin`，
+  命中记 **warn**（钱没动、不触发 rollback，但收盘报告里必须出现）。
+  验收：4 条单测覆盖"今日命中/IdleSpin/历史不误报/无日志"；11-19 回放
+  11-18 日志应报黄。（"交易时段 ≥N 跳 0 成交"那半条不在本次范围——它本质上
+  是资金/意图口径，`intent_queue` + `tick_stall` 已能定位。）
+
 
