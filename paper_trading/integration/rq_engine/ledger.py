@@ -119,7 +119,9 @@ def _raw_has_today(broker, symbol: str, day: str) -> bool:
     """该标的当日是否有 raw 日线行（Q7-D2 的数据驱动判据）。
 
     注意：raw 表在 **data.db**（不是账本 paper_account.db）——查错库会
-    异常→按"有"返回→拦不住（2026-11-13 现网 09:32 盘中行就是这么漏写的）。
+    异常。2026-11-18 前异常按“有”返回→拦不住（2026-11-13 现网 09:32
+    盘中行就是这么漏写的）；现在异常按“无”处理并告警，宁可当晚 NAV
+    断供（显性红、可补写），也不拿陈旧价写 NAV。
     """
     try:
         import sqlite3
@@ -134,8 +136,13 @@ def _raw_has_today(broker, symbol: str, day: str) -> bool:
             return n > 0
         finally:
             c.close()
-    except Exception:                  # noqa: BLE001
-        return True                    # 查不到按"有"（宁可多写，不让断供）
+    except Exception as exc:          # noqa: BLE001
+        # 2026-11-18：查不到不再按“有”放行——data.db 不可读时放行等于用
+        # 陈旧价写 NAV（Q8 的重现口子）。拒写并告警；20:50 nav-close 下次
+        # 运行或手动 --today 补写。
+        logger.warning("_raw_has_today 检查失败（%s %s），按“无”处理、拒写当日 NAV："
+                       "%s: %s", symbol, day, type(exc).__name__, exc)
+        return False
 
 
 def _nav_history_has_today(broker, today: str) -> bool:
@@ -199,15 +206,25 @@ def record_close_nav(broker, prices: dict, *, today: str, fp: str = "") -> dict:
             "market_value": snap.market_value, "total_value": snap.total_value}
 
 
-def close_prices(db, symbols, today: str) -> dict:
-    """从 raw 表取每只标的当日（或最近一根）收盘价，给 NAV 用。
+def close_prices(db, symbols, today: str, *, require_today: bool = True) -> dict:
+    """从 raw 表取每只标的当日收盘价，给 NAV 用。
 
     只认 `adjust='raw'` 的口径——NAV 用复权价算市值是另一类尺度污染的入口。
+
+    `require_today=True`（默认，questions.md 批 ①）：当日 raw 缺行的标的
+    **不返回**，调用方按缺失处理、拒写 NAV。旧行为“取最近一根”是 Q8/Q10
+    的陈旧价入口（2026-11-16 计划窗口用 11-13 的价给 5/6 持仓定价，NAV
+    高估 2,120 元）。`require_today=False` 只留给明确要“最近价”的排障
+    调用，生产路径不许用。
     """
     out = {}
     for s in symbols or []:
         sym = to_symbol(str(s)) if "." in str(s) else str(s).strip().zfill(6)
-        rows = db.get_raw_bars(sym, limit=1, end=f"{today}T23:59:59")
+        if require_today:
+            rows = db.get_raw_bars(sym, limit=1, start=f"{today}T00:00:00",
+                                   end=f"{today}T23:59:59")
+        else:
+            rows = db.get_raw_bars(sym, limit=1, end=f"{today}T23:59:59")
         if rows:
             out[sym] = float(rows[-1].close)
     return out
