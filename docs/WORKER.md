@@ -1606,3 +1606,24 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 - [ ] **T91 文档与回归**：`docs/strategy-contract.md`（契约/参数表/示例/禁用与
   回滚）；`tests/test_strategy_registry_t87.py`；CI 门禁含新增测试；
   文档写明"策略只做判定，L1 执行与钱类口径不变"。
+
+## Batch 22 追加 · 11-18 事故派生（2026-11-19）
+
+> 事故本体（`rq:fill` 幂等键缺业务日）已由 `01f512f` 当日修复并复盘在
+> `docs/incident-2026-11-18.md`。以下两项是复盘时暴露、但**不属于**当日
+> 止血范围的结构缺口。
+
+- [ ] **T92 条件单僵尸收口**：`queue.expire_stale` 清跨日意图时不落定对应
+  条件单 ⇒ 该单永久停在 `queued_rq`（面板"已交框架"常亮），而
+  `daily_check.check_cond_loop` 只看当天 `executed` 的意图，看不见它们。
+  修：`expire_stale` 命中 `rule_ref=cond:<id>` 时同步把条件单标
+  `expired`（或 `cancelled`，二者择一并写进面板/文档）；`cond_loop`
+  增加"`queued_rq` 超过 N 个交易日"判别。验收：造一条过期 `queued_rq`
+  条件单，`expire_stale` 后状态落定且 daily-check 不再漏报。
+- [ ] **T93 "活着但没干活"探针**：11-18 每跳都以 0 退出、心跳正常，而
+  `InitPositionError` 在 `rq_tick.log` 刷了 142 次、全日 0 成交——现有
+  `engine_crash` 只扫 `engine.log` 且只认 `crashed` 关键词。修：daily-check
+  增加 `tick_stall` 项，统计当日 `InitPositionError` / `IdleSpin` 连续峰值，
+  以及"交易时段内 ≥N 跳有 pending 意图但 0 成交"。验收：回放 11-18 日志
+  应报红（而不是等到 15:30 由 `intent_queue` 兜底）。
+
