@@ -490,7 +490,7 @@ function drawPerf(){
   const y=v=>P.t+(hi-v)/(hi-lo)*(H-P.t-P.b);
   const missSet=new Set(c.missing||[]);
   let g="";
-  const step=niceStep((hi-lo)/3);
+  const step=niceStep((hi-lo)/4);
   const start=Math.ceil(lo/step)*step;
   for(let v=start;v<=hi+1e-9;v+=step){const yy=y(v);
     g+=`<line x1="${P.l}" y1="${yy}" x2="${W-P.r}" y2="${yy}" stroke="var(--divider-thin)" stroke-width="1"/>`;
