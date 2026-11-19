@@ -620,7 +620,11 @@ function renderIntents(){
   document.getElementById("c-intents").textContent=(INTS||[]).length+" 条";
   rowsC(t,[["时间"],["标的"],["方向"],["股数",1],["来源"],["状态"],["结果"]],(INTS||[]).map(r=>{
     const d=new Date(r.created_at),buy=String(r.side).toUpperCase()==="BUY";
-    let why="";try{const o=JSON.parse(r.result||"{}");why=o.reason||o.why||o.error||o.fill_biz_id||""}catch(e){}
+    let why="";try{const o=JSON.parse(r.result||"{}");
+      if(o.order_id!=null)why=`成交 #${o.order_id}`+(o.price!=null?` @${o.price}`:"");
+      else if(o.reason==="FILLED")why="框架已成交（账本未落）";
+      else why=o.reason||o.why||o.error||o.fill_biz_id||"";
+    }catch(e){}
     const ref=String(r.rule_ref||"");
     const src=ref.startsWith("cond:")?"条件 #"+ref.slice(5):(ref?"规则/计划":"—");
     return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><b>${esc(r.symbol||"")}</b></td>`+
