@@ -1641,7 +1641,11 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   最近 45 天（`min_date=2026-09-30`），2026-09-25 中秋被 44 个标的各报一次缺口。
   新增 `calendar_knows()`（双向覆盖判断），质量缺口扫描只统计"知道"的日期；
   `HISTORY_TAIL_DAYS` 45 → 120，让之后的同步覆盖完整回看窗口。
-  验收：`test_evidence_t94.py` + 心跳/质量新增 6 条；全量 903 passed / 13 skipped。
+  **注意**：停滞（stale）扫描**不能**跟着裁剪——2024 年的旧数据在覆盖窗外被
+  算成 0 天就永远不报（NEC 实测两条例用回退即红）。两种语义已拆开：
+  `_trading_days_between(require_known=...)`。
+  验收：`test_evidence_t94.py` + 心跳/质量新增 7 条；全量 904 passed / 13 skipped。
+
 
 
 
