@@ -577,6 +577,7 @@ async function refresh(){
     else{bar.style.display="none";bar.innerHTML="";}
   }catch(e){}
   const st=s.data;
+  const plist=(pos&&pos.data)||st.positions||[];
   const pf=(PERF&&PERF.summary)||{};
   const navTotal=(pf.total_value!=null)?pf.total_value:st.total_value;
   const navCash=(pf.cash!=null)?pf.cash:st.cash;
@@ -590,7 +591,7 @@ async function refresh(){
   document.getElementById("clock").textContent="行情截至 "+asof+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
   document.getElementById("statusbar").innerHTML=`
    <div class="status-item"><span class="status-label">行情截至</span><span class="status-value">${asof}</span></div>
-   <div class="status-item"><span class="status-label">持仓</span><span class="status-value">${st.positions.length} 只</span></div>
+   <div class="status-item"><span class="status-label">持仓</span><span class="status-value">${plist.length} 只</span></div>
    <div class="status-item"><span class="status-label">模式</span><span class="status-value">纸盘 · 只读面板</span></div>`;
   document.getElementById("cards").innerHTML=`
    <div class="market-item"><div class="market-name">总资产 CNY</div><div class="market-value">${fmt(navTotal,0)}</div><div class="kpi-sub">现金 ${fmt(navCash,0)} + 市值 ${fmt(navMv,0)}${PERF&&PERF.asof?" · 收盘 "+PERF.asof:""}</div></div>
@@ -602,7 +603,7 @@ async function refresh(){
   renderToday();
   document.getElementById("c-nav").textContent=(nav.data||[]).length+" 条记录";
   document.getElementById("c-ops").textContent=(ops.data||[]).length+" 条";
-  document.getElementById("c-pos").textContent=(st.positions||[]).length+" 只股票";
+  document.getElementById("c-pos").textContent=(plist||[]).length+" 只股票";
   document.getElementById("c-orders").textContent=(ord.data||[]).length+" 笔";
   rowsC(document.getElementById("nav"),[["时间"],["总资产",1],["可用资金",1],["浮动盈亏",1]],
     (nav.data||[]).map(r=>{const d=new Date(r.timestamp);const pn=Number(r.pnl);
@@ -617,7 +618,7 @@ async function refresh(){
       `<td class="num">${r.total_value_after!=null?fmt(r.total_value_after):"-"}</td></tr>`}),
     10,"暂无操作记录 —— AI 执行每日结算、买入、卖出后会出现在这里");
   rows(document.getElementById("pos"),[["代码"],["名称"],["股数",1],["可卖",1],["成本",1],["现价",1],["市值",1],["占比",1],["浮盈亏",1],["天数",1],["距峰值",1],["走势"]],
-    (st.positions||[]).map(p=>{const pn=(p.current_price-p.avg_cost)*p.total_volume;
+    (plist||[]).map(p=>{const pn=(p.current_price-p.avg_cost)*p.total_volume;
     const live=(QUOTES||{})[p.symbol];
     const pxHtml=live&&live.price?`${fmt(live.price)} <span class="tag live">实时</span>`:`${fmt(p.current_price)}`;
     const share=navTotal?p.market_value/navTotal:null;
