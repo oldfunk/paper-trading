@@ -253,3 +253,19 @@ def test_quality_still_flags_gap_inside_coverage(tmp_path, calendar_env):
     f = check_symbol(b.data_db, "600519", today=date(2026, 11, 6))
     gaps = [x for x in f if x["type"] == "gap"]
     assert gaps and "2026-11-05" in gaps[0]["missing"], f
+
+
+def test_quality_stale_survives_outside_calendar_coverage(tmp_path, calendar_env):
+    """停滞扫描不能用"日历不知道就跳过"：2024 年的旧数据在覆盖窗外，
+    跳过会把 lag 算成 0，陈旧数据假装新鲜（NEC 上实测两条 stale 用例变红）。"""
+    from paper_trading.data.quality import check_symbol
+    from paper_trading.utils import trading_calendar as tc
+
+    tc.save_calendar(["2026-11-06"], path=calendar_env)
+    b = _bridge(tmp_path)
+    b.data_db.upsert_bars([
+        _bar("600519", date(2024, 1, 1) + timedelta(days=i), 10.0)
+        for i in range(5)])
+    f = check_symbol(b.data_db, "600519", today=date(2026, 11, 6))
+    assert any(x["type"] == "stale" for x in f), f
+    assert not any(x["type"] == "gap" for x in f), f
