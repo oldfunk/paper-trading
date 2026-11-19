@@ -359,7 +359,6 @@ function rowsC(t,head,bodyArr,showN,emptyLabel){
    展示规范：股票一律写成 名称(代码)，如 贵州茅台(600519)；
    名称缺失时只写代码，不写“未知”等占位词。 */
 let NAMES={};                                   // {symbol: 真实名称}
-let QUOTES={};                                  // {symbol: 腾讯实时}（盘中才有）
 const sym=c=>NAMES[c]?`${NAMES[c]}(${c})`:c;
 const ACTION_CN={
   "run":"每日结算","cron-run":"每日结算（定时任务）","run:dry-run":"试运行（仅预览，不下单）",
@@ -496,8 +495,9 @@ function drawPerf(){
     g+=`<line x1="${P.l}" y1="${yy}" x2="${W-P.r}" y2="${yy}" stroke="var(--divider-thin)" stroke-width="1"/>`;
     const lab=mode==="nav"?fmt(v,0):pct(v);
     g+=`<text x="${P.l-8}" y="${yy+4}" text-anchor="end" font-size="11" fill="var(--text-tertiary)">${lab}</text>`;}
-  if(mode==="nav"){const yy=y(PERF.initial_cash||100000);
-    g+=`<line x1="${P.l}" y1="${yy}" x2="${W-P.r}" y2="${yy}" stroke="var(--divider)" stroke-width="1" stroke-dasharray="4 4"/>`;}
+  if(mode==="nav"){const init=PERF.initial_cash||100000,yy=y(init);
+    g+=`<line x1="${P.l}" y1="${yy}" x2="${W-P.r}" y2="${yy}" stroke="var(--divider)" stroke-width="1" stroke-dasharray="4 4"/>`;
+    g+=`<text x="${W-P.r}" y="${Math.max(P.t+10,yy-5)}" text-anchor="end" font-size="11" fill="var(--text-tertiary)">初始资金 ${fmt(init,0)}</text>`;}
   const gapBetween=(a,b)=>{const d0=Date.parse(a),d1=Date.parse(b);
     for(const m of missSet){const t=Date.parse(m);if(t>d0&&t<d1)return true;}return false;};
   let solid="",dashed="";
@@ -544,7 +544,7 @@ function renderToday(){
     ["意图",`执行 ${it.executed_today||0} / 未决 ${it.pending||0} / 拒绝 ${it.rejected_today||0}`,""],
     ["体检",ck?`${ck.green} 绿 / ${ck.warn} 黄 / ${ck.red} 红 · ${String(ck.at||"").slice(11,16)}`:"今日未体检",
       ck&&ck.red?"bad":(ck&&ck.warn?"":"ok")],
-    ["行情",`截至 ${OV.quote_asof||(OV.status&&OV.status.data_asof)||"—"}`,""],
+    ["行情",`截至 ${OV.quote_asof||(OV.status&&OV.status.data_asof)||"—"}${OV.prices_ready===false?"（待今日行情）":""}`,""],
   ];
   g.innerHTML=rows.map(r=>`<div class="today-row"><span class="lab">${r[0]}</span>`+
     `<span class="val ${r[2]}"${ck&&r[0]==="体检"&&((ck.red_ids||[]).length||(ck.warn_ids||[]).length)?` title="${esc([].concat(ck.red_ids||[],ck.warn_ids||[]).join("、"))}"`:""}>${r[1]}</span></div>`).join("");
@@ -567,7 +567,6 @@ async function refresh(){
   PERF=(perfR&&perfR.ok)?perfR.data:null;
   OV=(ovR&&ovR.ok)?ovR.data:null;
   NAMES=(nm&&nm.data)||{};
-  try{const qq=await get("/api/quotes");QUOTES=(qq&&qq.data)||{};}catch(e){QUOTES={};}
   // T22 看门狗红条：不健康才显示；恢复后后端状态翻回 healthy=true ⇒ 红条自动消失
   try{const hh=await get("/api/health");const h=(hh&&hh.data)||{};
     const bar=document.getElementById("healthbar");
@@ -579,29 +578,34 @@ async function refresh(){
   const st=s.data;
   const plist=(pos&&pos.data)||st.positions||[];
   const pf=(PERF&&PERF.summary)||{};
-  const navTotal=(pf.total_value!=null)?pf.total_value:st.total_value;
-  const navCash=(pf.cash!=null)?pf.cash:st.cash;
-  const navMv=(pf.market_value!=null)?pf.market_value:st.market_value;
+  const liveMode=!!(OV&&OV.estimated&&OV.prices_ready&&OV.live_total!=null);
+  const navTotal=liveMode?OV.live_total
+    :((pf.total_value!=null)?pf.total_value:st.total_value);
+  const navCash=liveMode?OV.cash
+    :((pf.cash!=null)?pf.cash:st.cash);
+  const navMv=liveMode?OV.live_market_value
+    :((pf.market_value!=null)?pf.market_value:st.market_value);
   const asof=(OV&&OV.quote_asof)||st.data_asof||"无数据";
-  const todayPnl=(OV&&OV.today_pnl!=null)?OV.today_pnl:pf.today_pnl;
-  const todayPct=(OV&&OV.today_pnl_pct!=null)?OV.today_pnl_pct:pf.today_pnl_pct;
-  const est=OV?!!OV.estimated:false;
-  const expo=(pf.exposure!=null)?pf.exposure
-    :(navTotal?navMv/navTotal:null);
+  const todayPnl=(OV&&OV.today_pnl!=null)?OV.today_pnl:null;
+  const todayPct=(OV&&OV.today_pnl!=null)?OV.today_pnl_pct:null;
+  const est=!!(OV&&OV.estimated&&OV.today_pnl!=null);
+  const expo=(navTotal?navMv/navTotal:null);
   document.getElementById("clock").textContent="行情截至 "+asof+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
   document.getElementById("statusbar").innerHTML=`
    <div class="status-item"><span class="status-label">行情截至</span><span class="status-value">${asof}</span></div>
    <div class="status-item"><span class="status-label">持仓</span><span class="status-value">${plist.length} 只</span></div>
    <div class="status-item"><span class="status-label">模式</span><span class="status-value">纸盘 · 只读面板</span></div>`;
   document.getElementById("cards").innerHTML=`
-   <div class="market-item"><div class="market-name">总资产 CNY</div><div class="market-value">${fmt(navTotal,0)}</div><div class="kpi-sub">现金 ${fmt(navCash,0)} + 市值 ${fmt(navMv,0)}${PERF&&PERF.asof?" · 收盘 "+PERF.asof:""}</div></div>
-   <div class="market-item"><div class="market-name">今日盈亏</div><div class="market-value ${cls(todayPnl)}">${todayPnl==null?"—":(todayPnl>=0?"+":"")+fmt(todayPnl)}</div><div class="kpi-sub ${cls(todayPnl)}">${todayPct==null?"—":pct(todayPct)}${est?'<span class="kpi-tag">盘中估算</span>':""}</div></div>
+   <div class="market-item"><div class="market-name">总资产 CNY</div><div class="market-value">${fmt(navTotal,0)}</div><div class="kpi-sub">现金 ${fmt(navCash,0)} + 市值 ${fmt(navMv,0)}${liveMode?" · 盘中价":(PERF&&PERF.asof?" · 收盘 "+PERF.asof:"")}</div></div>
+   <div class="market-item"><div class="market-name">今日盈亏</div><div class="market-value ${cls(todayPnl)}">${todayPnl==null?"—":(todayPnl>=0?"+":"")+fmt(todayPnl)}</div><div class="kpi-sub ${cls(todayPnl)}">${todayPnl==null?"待今日行情":pct(todayPct)}${est?'<span class="kpi-tag">盘中估算</span>':""}</div></div>
    <div class="market-item"><div class="market-name">累计收益</div><div class="market-value ${cls(pf.total_return)}">${pf.total_return==null?"—":(pf.total_return>=0?"+":"")+pct(pf.total_return)}</div><div class="kpi-sub ${cls(pf.total_pnl)}">${pf.total_pnl==null?"—":(pf.total_pnl>=0?"+":"")+fmt(pf.total_pnl)} · 自 ${(PERF&&PERF.series&&PERF.series[0])?PERF.series[0].date:"—"}</div></div>
    <div class="market-item"><div class="market-name">最大回撤</div><div class="market-value">${pf.mdd==null?"—":pct(pf.mdd)}</div><div class="kpi-sub">${pf.mdd_date?"发生于 "+pf.mdd_date:""}${pf.current_drawdown!=null?" · 当前 "+pct(pf.current_drawdown):""}</div></div>
    <div class="market-item"><div class="market-name">仓位</div><div class="market-value">${expo==null?"—":pct(expo)}</div><div class="kpi-sub">现金占比 ${expo==null?"—":pct(1-expo)}</div></div>`;
   drawPerf();
   renderToday();
-  document.getElementById("c-nav").textContent=(nav.data||[]).length+" 条记录";
+  const navRows=(nav.data||[]);
+  const navDays=new Set(navRows.map(r=>String(r.timestamp).slice(0,10))).size;
+  document.getElementById("c-nav").textContent=`${navRows.length} 行 · ${navDays} 个交易日（同日多条保留）`;
   document.getElementById("c-ops").textContent=(ops.data||[]).length+" 条";
   document.getElementById("c-pos").textContent=(plist||[]).length+" 只股票";
   document.getElementById("c-orders").textContent=(ord.data||[]).length+" 笔";
@@ -619,8 +623,8 @@ async function refresh(){
     10,"暂无操作记录 —— AI 执行每日结算、买入、卖出后会出现在这里");
   rows(document.getElementById("pos"),[["代码"],["名称"],["股数",1],["可卖",1],["成本",1],["现价",1],["市值",1],["占比",1],["浮盈亏",1],["天数",1],["距峰值",1],["走势"]],
     (plist||[]).map(p=>{const pn=(p.current_price-p.avg_cost)*p.total_volume;
-    const live=(QUOTES||{})[p.symbol];
-    const pxHtml=live&&live.price?`${fmt(live.price)} <span class="tag live">实时</span>`:`${fmt(p.current_price)}`;
+    const pxHtml=`${fmt(p.current_price)}`+(p.price_source==="分钟"
+      ?` <span class="tag live">${esc(p.price_time||"分钟")}</span>`:"");
     const share=navTotal?p.market_value/navTotal:null;
     const vsPeak=(p.peak_price>0&&p.current_price>0)?(p.current_price/p.peak_price-1):null;
     const d=dayDiff(p.entry_day);
@@ -980,6 +984,20 @@ def _ro(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{Path(db_path).resolve()}?mode=ro", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _limit_arg(q: dict, default: int = 30, maxv: int = 500) -> int:
+    """查询参数 limit 的安全解析：坏值回默认，负数/超大值夹到 1..maxv。
+
+    旧实现 `int(q.get("limit"))`：`?limit=abc` 直接 500；`?limit=-1` 在 SQLite
+    里等于"不限制"，一次请求能把整张 op_log 拉出来。面板是只读页，但错误输入
+    不该变成 500 或大响应。
+    """
+    try:
+        v = int(q.get("limit", [str(default)])[0])
+    except (TypeError, ValueError, IndexError):
+        v = default
+    return max(1, min(v, int(maxv)))
 
 
 def _takeover_token(body: dict, secrets_path) -> str:
@@ -1405,13 +1423,20 @@ def _overview_payload(bridge) -> dict:
 
     by_day = {d: tv for d, tv in navs}
     days = sorted(by_day)
-    raw, quote_asof = _raw_close_map(getattr(bridge, "data_db", None))
-    live_total = float(st.get("total_value") or 0.0)
-    if raw:
-        mv = sum(float(p.get("total_volume") or 0) * raw[p["symbol"]]
-                 for p in (st.get("positions") or [])
-                 if p.get("symbol") in raw)
-        live_total = float(st.get("cash") or 0.0) + mv
+    positions = st.get("positions") or []
+    prices = _display_price_map(getattr(bridge, "data_db", None), today)
+    mv = 0.0
+    missing: list[str] = []
+    for p in positions:
+        info = prices.get(p.get("symbol"))
+        px = info["price"] if info else float(p.get("current_price") or 0.0)
+        mv += float(p.get("total_volume") or 0) * px
+        if not info or info["asof"] != today:
+            missing.append(p.get("symbol"))
+    live_total = float(st.get("cash") or 0.0) + mv
+    prices_ready = not missing
+    quote_asof = max((prices[p["symbol"]]["asof"] for p in positions
+                      if p.get("symbol") in prices), default=None)
     estimated = False
     today_pnl = None
     base = None
@@ -1419,11 +1444,13 @@ def _overview_payload(bridge) -> dict:
         prev = by_day[days[-2]] if len(days) >= 2 else None
         today_pnl = (by_day[days[-1]] - prev) if prev is not None else 0.0
         base = prev if prev else by_day[days[-1]]
-    elif days:
+    elif days and prices_ready:
         last = by_day[days[-1]]
         base = last
         today_pnl = live_total - last
         estimated = True
+    elif days:
+        estimated = True                 # 今日还没有可信价：不拿昨日价冒充
     pct = (today_pnl / base) if (today_pnl is not None and base) else None
     health = hb.read_status(max_age_sec=300) or hb.probe()
     return {
@@ -1432,44 +1459,71 @@ def _overview_payload(bridge) -> dict:
         "today_pnl": None if today_pnl is None else round(today_pnl, 4),
         "today_pnl_pct": None if pct is None else round(pct, 6),
         "estimated": estimated,
+        "live_total": round(live_total, 4),
+        "live_market_value": round(mv, 4),
+        "cash": round(float(st.get("cash") or 0.0), 4),
         "fills": fills,
         "conditions": conds,
         "intents": intents,
         "checks": _today_checks(db, today),
         "quote_asof": quote_asof,
+        "prices_ready": prices_ready,
         "health": {"healthy": health.get("healthy"),
                    "alerts": health.get("alerts") or [],
                    "checked_at": health.get("checked_at")},
     }
 
 
-def _raw_close_map(data_db) -> tuple[dict, str | None]:
-    """最新 raw 收盘（与 NAV/账本同口径：不复权成交价）+ 日期。
+def _display_price_map(data_db, today: str) -> dict:
+    """持仓展示价（优先级）：今日 raw 收盘 > 今日分钟线 > 最近 raw 收盘。
 
-    为什么面板不用 `status.current_price`：那条走 `daily_bars`（前复权），
-    2026-11-19 生产实测它只到 11-18（22 只），而 NAV 收盘（raw）已经是 11-19。
-    同一个页面里两套价会把"总资产"和"净值曲线"画成两个数。raw 与账本成交价
-    同源，市值才能与 `nav_history.market_value` 逐分对上（实测 49,620.0）。
+    只用于**展示**，不回流到撮合/风控/账本：
+    - 收盘后（15:40 raw 落库）用当日 raw，与 NAV 同源；
+    - 盘中 raw 还没今天，用当日分钟线（每 15 分钟更新），标注"分钟 HH:MM"；
+    - 开盘前只有上一交易日 raw，标注"收盘"。
+    这样"现价 / 市值 / 今日盈亏"在任意时点都能互相对上；不会再出现
+    "价格是实时的、市值是昨天的"这种半截数据。
     """
     p = getattr(data_db, "db_path", None) or getattr(data_db, "path", None)
+    out: dict[str, dict] = {}
     if not p:
-        return {}, None
+        return out
     try:
         conn = _ro(str(p))
         try:
-            row = conn.execute(
-                "SELECT MAX(substr(timestamp,1,10)) FROM daily_bars_raw").fetchone()
-            day = row[0] if row else None
-            if not day:
-                return {}, None
-            m = {r[0]: float(r[1]) for r in conn.execute(
-                "SELECT symbol, close FROM daily_bars_raw"
-                " WHERE substr(timestamp,1,10)=?", (day,))}
-            return m, str(day)
+            tabs = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            latest = None
+            if "daily_bars_raw" in tabs:
+                row = conn.execute(
+                    "SELECT MAX(substr(timestamp,1,10)) FROM daily_bars_raw").fetchone()
+                latest = row[0] if row else None
+                if latest:
+                    for r in conn.execute(
+                            "SELECT symbol, close FROM daily_bars_raw"
+                            " WHERE substr(timestamp,1,10)=?", (latest,)):
+                        if r[1] is None:
+                            continue
+                        out[r[0]] = {"price": float(r[1]), "asof": latest,
+                                     "source": "收盘", "time": ""}
+            if "minute_bars" in tabs:
+                rows = conn.execute(
+                    "SELECT symbol, ts, close FROM minute_bars"
+                    " WHERE substr(ts,1,10)=? ORDER BY ts", (today,)).fetchall()
+                for r in rows:
+                    if r[2] is None:
+                        continue
+                    sym = r[0]
+                    cur = out.get(sym)
+                    if cur and cur["asof"] == today and cur["source"] == "收盘":
+                        continue                     # 今日 raw 优先于分钟
+                    out[sym] = {"price": float(r[2]), "asof": today,
+                                "source": "分钟", "time": str(r[1])[11:16]}
         finally:
             conn.close()
     except sqlite3.Error:
-        return {}, None
+        pass
+    return out
 
 
 def _raw_closes(data_db, symbol: str, n: int = 10) -> list[float]:
@@ -1491,18 +1545,26 @@ def _raw_closes(data_db, symbol: str, n: int = 10) -> list[float]:
 
 
 def _positions_payload(bridge) -> list[dict]:
-    """持仓表数据：现价/市值/走势用 raw（与 NAV 同源），补 peak/entry_day。"""
+    """持仓表数据：现价/市值/走势用展示价（今日 raw > 分钟 > 最近 raw）。"""
     st = bridge.get_status()
-    raw, _ = _raw_close_map(getattr(bridge, "data_db", None))
+    today = datetime.now().date().isoformat()
+    prices = _display_price_map(getattr(bridge, "data_db", None), today)
     pos = {p.symbol: p for p in bridge.broker.get_all_positions()}
     for row in st["positions"]:
         p = pos.get(row["symbol"])
         row["peak_price"] = getattr(p, "peak_price", None)
         row["entry_day"] = getattr(p, "entry_day", None)
-        px = raw.get(row["symbol"])
-        if px:
-            row["current_price"] = px
-            row["market_value"] = float(row["total_volume"]) * px
+        info = prices.get(row["symbol"])
+        if info:
+            row["current_price"] = info["price"]
+            row["market_value"] = float(row["total_volume"]) * info["price"]
+            row["price_asof"] = info["asof"]
+            row["price_source"] = info["source"]
+            row["price_time"] = info["time"]
+        else:
+            row["price_asof"] = None
+            row["price_source"] = "日线"
+            row["price_time"] = ""
         row["spark"] = _raw_closes(getattr(bridge, "data_db", None),
                                    row["symbol"], 10)
     return st["positions"]
@@ -1695,7 +1757,7 @@ class Handler(BaseHTTPRequestHandler):
                 q = parse_qs(u.query)
                 co = ConditionalOrders(self.account_db)
                 self._json({"ok": True, "data": {
-                    "orders": co.list_all(int(q.get("limit", ["60"])[0] or 60),
+                    "orders": co.list_all(_limit_arg(q, 60),
                                           q.get("status", [None])[0]),
                     "armed": len(co.pending()),
                     "triggers": _engine_triggers(self.account_db)}})
@@ -1709,7 +1771,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(r, code=200)
             elif u.path in ("/api/nav", "/api/ops", "/api/orders", "/api/fills"):
                 q = parse_qs(u.query)
-                limit = int(q.get("limit", ["30"])[0])
+                limit = _limit_arg(q, 30)
                 conn = _ro(self.account_db)
                 try:
                     # 表名/列名只取自下方固定映射（用户输入仅决定走哪条分支），

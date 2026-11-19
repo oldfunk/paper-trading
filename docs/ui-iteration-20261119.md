@@ -182,7 +182,11 @@ P1 会把这堆纵向 section 收进 `总览 / 交易 / 运维 / 控制台` 四�
 ```
 
 - `today_pnl`：若最新 NAV 是今天 → `last − prev`（`estimated=false`）；
-  否则 `live_total − last`（`estimated=true`，前端标"盘中估算"）。
+  否则**必须**有"今日价"（今日 raw 或今日分钟线）才估算 `live_total − last`
+  （`estimated=true`）；没有今日价（开盘前/数据未更新）→ `today_pnl=null`，
+  页面显示 `—` / `待今日行情`，**不拿昨日价算成 0**。
+  `live_total`/`live_market_value`/`cash` 一并返回，供盘中让 KPI 与持仓同口径。
+- `prices_ready`：是否全部持仓都有"今日价"；false 时不做今日估算。
 - `checks`：读 `logs/daily_check.jsonl` 中今天的最后一条；没有则 `null`。
 - 所有计数从账本只读聚合，不写库。
 
@@ -197,6 +201,14 @@ P1 会把这堆纵向 section 收进 `总览 / 交易 / 运维 / 控制台` 四�
 两者混用会让"总资产"（96,071）与"净值曲线"（95,800）在同一屏出现两个数。
 raw 与账本成交价同源，按 raw 计算的持仓市值与 `nav_history.market_value`
 逐分对上（实测 **49,620.0**）。`quote_asof` 一并返回，页头"行情截至"以它为准。
+
+**11-20 盘中补充（同一原则）**：价格优先级改为
+**今日 raw 收盘 > 今日分钟线 > 最近 raw 收盘**，每行返回
+`price_source`（收盘/分钟）、`price_asof`、`price_time`。
+盘中（raw 还没今天）用分钟线，页面在现价旁标 `10:35`；
+不再让"价格实时、市值昨日"的半截数据同屏。KPI 总资产在 `prices_ready`
+时用同一套价（`/api/overview.live_total`），否则回落到最后 NAV。
+
 
 
 ---
@@ -290,4 +302,26 @@ NAV/raw（见 §6.3），KPI、持仓市值、占比现在逐分对得上。
 先查 15:40/20:40 `fetch-raw` 的 flip 为什么只写回部分 qfq 行，再决定是补
 `data fetch`（qfq）cron 还是从 raw + 复权因子重建；修好前，面板的 raw/NAV
 是唯一可信的"今天"口径。
+
+---
+
+## 14. 接口审计（2026-11-20 开盘前，逐一排查）
+
+| 接口 | 发现 | 处置 |
+|---|---|---|
+| `/api/overview` | 00:04 返回 `today_pnl=0.0, estimated=true`（今日无价，拿昨日价算成 0） | **已修**：无今日价返回 `null`，页面显示 `— / 待今日行情`；新增 `prices_ready`、`live_total`、`live_market_value`、`cash` |
+| `/api/positions` | 盘中价格可能来自实时报价、市值仍按昨收（半截数据） | **已修**：统一展示价 `今日 raw > 今日分钟 > 最近 raw`，返回 `price_source/asof/time`；页面移除客户端实时价覆盖 |
+| `/api/positions` + `/api/overview` | `quote_asof` 取全池最大值，可能被非持仓标的"拉新" | **已修**：只统计持仓的报价日期 |
+| `/api/nav|ops|orders|fills` | `?limit=abc` → 500；`?limit=-1` → SQLite 不限制，可能整表返回 | **已修**：`_limit_arg()` 坏值回默认、夹到 1..500；补接口用例 |
+| `/api/cond` | 同款 `int(limit)` 解析 | **已修**：走同一个 `_limit_arg()` |
+| 页面"净值明细" | 折叠标题写"34 条记录"，与曲线"26/34 交易日"的 34 含义不同（行数 vs 应有交易日） | **已修**：改成"34 行 · 26 个交易日（同日多条保留）" |
+| `/api/performance` | 同日多条、缺日、单点、空库 | 单测覆盖；曲线按日去重、缺口虚线 |
+| `/api/status` | 仍用前复权日线（T96 缺口） | 面板主展示已不依赖；T96 修复前不用于金额口径 |
+| `/api/health` | 09:00 窗口首跳假报 | 已于 T94 修（窗口起点宽限） |
+| `/api/quotes` | P0 页面不再调用（避免"实时价 + 昨日市值"） | 端点保留，P1 分时再用 |
+| `/api/cond` 数据 | 4 条 `queued_rq` 僵尸条件单 | 属 T92，已知；无资金风险 |
+
+审计方法：生产 :8080 逐接口 GET + 与本文件 §6 的口径对账；页面用 715（窄屏）
+与 1440（模拟视口）两种宽度检查，console 0 error，深/浅主题均验证。
+
 
