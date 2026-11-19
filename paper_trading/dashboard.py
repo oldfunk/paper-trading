@@ -625,7 +625,7 @@ function renderIntents(){
       `<td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td>`+
       `<td class="num">${r.volume||0}</td><td class="mut">${esc(src)}</td><td>${chip(r.status)}</td>`+
       `<td class="mut">${esc(String(why).slice(0,120))}</td></tr>`;
-  }).join("")||`<tr><td colspan="7" class="mut">暂无意图</td></tr>`,10,"暂无意图");
+  }),10,"暂无意图");
 }
 function renderOpsPanels(){
   const h=(OV&&OV.health)||{},ck=h.checks||{};
