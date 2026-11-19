@@ -134,6 +134,29 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 .fold[open] summary{border-bottom:1px solid var(--divider)}
 .fold .scroll{padding:0 4px 4px}
 .empty{padding:36px 8px;text-align:center;color:var(--text-tertiary);font-size:13px}
+/* P1（T97）：任务视图 + 运维卡 */
+.tabs{display:flex;gap:4px;margin:-8px 0 20px;border-bottom:1px solid var(--divider-thin);overflow-x:auto}
+.tabs button{border:0;background:transparent;font:inherit;font-size:13px;color:var(--text-secondary);padding:9px 12px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
+.tabs button:hover{background:var(--bg-hover)}
+.tabs button.on{color:var(--text-primary);font-weight:600;border-bottom-color:var(--accent)}
+[data-tab]:not(button){display:none}
+[data-tab]:not(button).on{display:block}
+.overview-grid[data-tab].on{display:grid}
+.hb-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.hb{border:1px solid var(--divider-thin);border-radius:var(--radius-sm);padding:10px 12px}
+.hb .k{font-size:11px;color:var(--text-tertiary);letter-spacing:.04em}
+.hb .v{font-size:13px;font-weight:600;margin-top:2px}
+.hb .a{font-size:11px;color:var(--text-tertiary);margin-top:2px}
+.hb.bad{border-color:#e8b4b1}
+.hb.warn{border-color:#eed3a8}
+.plan-line{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--divider-thin);font-size:13px}
+.plan-line:last-child{border-bottom:none}
+.plan-line .lab{color:var(--text-tertiary);font-size:12px}
+.status-chip{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;background:var(--bg-tertiary);color:var(--text-secondary)}
+.status-chip.ok{background:var(--green-bg);color:var(--green)}
+.status-chip.bad{background:var(--red-bg);color:var(--red)}
+.status-chip.warn{background:#fff3e0;color:#b26a00}
+@media(max-width:900px){.hb-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:1100px){.overview-grid{grid-template-columns:1fr}.market-row{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:720px){.app{padding:16px}.market-row{grid-template-columns:repeat(2,1fr)}.chart-wrap{height:220px}}
 </style>
@@ -149,11 +172,18 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </header>
 
+<nav class="tabs" id="tabs" role="tablist" aria-label="页面视图">
+  <button data-tab="overview" class="on" role="tab">总览</button>
+  <button data-tab="trading" role="tab">交易</button>
+  <button data-tab="ops" role="tab">运维</button>
+  <button data-tab="control" role="tab">控制台</button>
+</nav>
+
 <div class="market-row" id="cards"></div>
 <div class="status-bar" id="healthbar" style="display:none;border-color:#e0524d;color:#e0524d"></div>
 <div class="status-bar" id="statusbar"></div>
 
-<div class="overview-grid">
+<div class="overview-grid" data-tab="overview">
   <section class="card">
     <div class="card-head">
       <h2 class="section-title">收益曲线</h2>
@@ -175,22 +205,27 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </section>
 </div>
 
-<details class="fold" id="navfold">
+<details class="fold" id="navfold" data-tab="overview">
   <summary>净值明细 <span class="s" id="c-nav"></span></summary>
   <div class="scroll"><table id="nav"></table></div>
 </details>
 
-<section>
+<section data-tab="overview">
   <div class="section-header"><h2 class="section-title">当前持仓</h2><span class="section-count" id="c-pos"></span></div>
   <div class="scroll"><table id="pos"></table></div>
 </section>
 
-<section>
+<section data-tab="trading">
   <div class="section-header"><h2 class="section-title">订单记录</h2><span class="section-count" id="c-orders"></span></div>
   <div class="scroll"><table id="orders"></table></div>
 </section>
 
-<section>
+<section data-tab="trading">
+  <div class="section-header"><h2 class="section-title">意图队列</h2><span class="section-count" id="c-intents"></span></div>
+  <div class="scroll"><table id="intents"></table></div>
+</section>
+
+<section data-tab="control">
   <div class="section-header"><h2 class="section-title">投资方案</h2><span class="section-count" id="c-scheme"></span></div>
   <div class="ai-panel">
     <div class="s">三种方案只选其一。母价值需 Stock Dashboard 在同一台机器；自定义点行内“设置”写自然语言交易策略。切换只写本地文件，不进 git。</div>
@@ -206,7 +241,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="control">
   <div class="section-header"><h2 class="section-title">运行时刻</h2><span class="section-count" id="c-sched"></span></div>
   <div class="ai-panel">
     <div class="s">交易时段和 AI 窗口由代码写死，不再按面板队列跑：交易日 09:30–11:30、13:00–15:00；09:30–10:00 只执行前一交易日计划；16:30–18:30 数据定稿后做下一交易日计划；盘中每分钟检查异动，只有异动才调 AI；规则/条件单由引擎每分钟执行。</div>
@@ -216,7 +251,25 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">运行健康</h2><span class="section-count" id="c-health"></span></div>
+  <div class="card">
+    <div class="hb-grid" id="hbgrid"></div>
+    <div class="s" id="health-det"></div>
+  </div>
+</section>
+
+<section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">今日体检</h2><span class="section-count" id="c-checks"></span></div>
+  <div class="card"><div id="checksbox" class="s">加载中…</div></div>
+</section>
+
+<section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">最新计划与数据新鲜度</h2><span class="section-count" id="c-plan"></span></div>
+  <div class="card"><div id="planbox" class="s">加载中…</div></div>
+</section>
+
+<section data-tab="ops">
   <div class="section-header"><h2 class="section-title">数据来源</h2><span class="section-count" id="c-prov"></span></div>
   <div class="ai-panel">
     <div class="s" id="prov-sum">数据来源：加载中…</div>
@@ -224,7 +277,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="control">
   <div class="section-header"><h2 class="section-title">规则引擎</h2><span class="section-count" id="c-engine"></span></div>
   <div class="ai-panel">
     <div class="s" id="engine-sum">规则引擎：加载中…</div>
@@ -247,7 +300,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="trading">
   <div class="section-header"><h2 class="section-title">条件单</h2><span class="section-count" id="c-cond"></span></div>
   <div class="ai-panel">
     <div class="s">条件单 = 现在不成交、只挂条件。盘中引擎每分钟核对实时价，触发即过风控下单（AI 设计或人工添加均可）。</div>
@@ -271,7 +324,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="control">
   <div class="section-header"><h2 class="section-title">AI 问答</h2></div>
   <div class="ai-panel">
     <div class="ai-row">
@@ -284,12 +337,12 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="ops">
   <div class="section-header"><h2 class="section-title">AI 操作流水</h2><span class="section-count" id="c-ops"></span></div>
   <div class="scroll"><table id="ops"></table></div>
 </section>
 
-<section>
+<section data-tab="control">
   <div class="section-header"><h2 class="section-title">模型设置</h2></div>
   <div class="ai-panel">
     <div class="s">先选厂商（接口地址自动填好），填 Key，拉模型列表选一个，保存即可。**本地接口（Ollama / LM Studio / vLLM / 局域网网关）不需要 Key，留空就行**。管理口令由浏览器自动保管，不用填也不用记；**只改模型名/厂商/Key 不需要口令，改接口地址才需要口令**（或填写 API Key 接管一次）。</div>
@@ -433,14 +486,19 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="engine:buy"||a==="engine:sell"||a==="cond:buy"||a==="cond:sell"){
     const fee=(Number(r.commission)||0)+(Number(r.stamp_duty)||0)+(Number(r.transfer_fee)||0);
     return `成交价 ${fmt(r.filled_price)} 元，手续费 ${fmt(fee)} 元`;}
-  if(a==="ai:plan")return `计划#${r.plan_id??""}：${r.summary||""}（${r.n_actions??0}条动作、${r.n_conditions??0}条条件${r.n_conditions_rejected?`、${r.n_conditions_rejected}条解析未过`:""}，${r.plan_date?r.plan_date+"开盘": "下一交易日开盘"}执行）`;
+  if(a==="ai:plan"){
+    if(r.skipped==="no-fresh-data"){
+      const f=r.freshness||{};
+      return `计划跳过：数据覆盖不足（${f.fresh??"?"}/${f.total??"?"}，最旧 ${f.oldest||"未知"}；持仓陈旧 ${Object.keys(f.holdings_stale||{}).join("、")||"无"}）`;
+    }
+    return `计划#${r.plan_id??""}：${r.summary||""}（${r.n_actions??0}条动作、${r.n_conditions??0}条条件${r.n_conditions_rejected?`、${r.n_conditions_rejected}条解析未过`:""}，${r.plan_date?r.plan_date+"开盘": "下一交易日开盘"}执行）`;}
   if(a==="sync"){const u=r.updated||{};const ks=Object.keys(u);
     if(!ks.length)return "无更新";
     return ks.map(s=>`${sym(s)}${u[s]<0?"同步失败":`新增 ${u[s]} 根K线`}`).join("、");}
   if(a==="run"||a==="cron-run")return`产生信号 ${r.signals??0} 个，下单 ${r.orders??0} 笔`;
   if(a==="preview")return "风控检查通过";
   return "完成";}
-let PERF=null,OV=null,PERFMODE="nav";
+let PERF=null,OV=null,INTS=[],PERFMODE="nav";
 function dayDiff(iso){if(!iso)return null;const t=Date.parse(iso+"T00:00:00");
   return isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/86400000));}
 function sparkSVG(vals){
@@ -549,6 +607,68 @@ function renderToday(){
   g.innerHTML=rows.map(r=>`<div class="today-row"><span class="lab">${r[0]}</span>`+
     `<span class="val ${r[2]}"${ck&&r[0]==="体检"&&((ck.red_ids||[]).length||(ck.warn_ids||[]).length)?` title="${esc([].concat(ck.red_ids||[],ck.warn_ids||[]).join("、"))}"`:""}>${r[1]}</span></div>`).join("");
 }
+function chip(status){
+  const m={executed:["ok","已执行"],rejected:["bad","被拒"],expired:["","已过期"],
+           pending:["warn","待执行"],queued:["warn","排队"]};
+  const c=m[String(status)]||["",status||"—"];
+  return `<span class="status-chip ${c[0]}">${esc(c[1])}</span>`;
+}
+function renderIntents(){
+  const t=document.getElementById("intents"); if(!t)return;
+  document.getElementById("c-intents").textContent=(INTS||[]).length+" 条";
+  rowsC(t,[["时间"],["标的"],["方向"],["股数",1],["来源"],["状态"],["结果"]],(INTS||[]).map(r=>{
+    const d=new Date(r.created_at),buy=String(r.side).toUpperCase()==="BUY";
+    let why="";try{const o=JSON.parse(r.result||"{}");why=o.reason||o.why||o.error||o.fill_biz_id||""}catch(e){}
+    const ref=String(r.rule_ref||"");
+    const src=ref.startsWith("cond:")?"条件 #"+ref.slice(5):(ref?"规则/计划":"—");
+    return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><b>${esc(r.symbol||"")}</b></td>`+
+      `<td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td>`+
+      `<td class="num">${r.volume||0}</td><td class="mut">${esc(src)}</td><td>${chip(r.status)}</td>`+
+      `<td class="mut">${esc(String(why).slice(0,120))}</td></tr>`;
+  }).join("")||`<tr><td colspan="7" class="mut">暂无意图</td></tr>`,10,"暂无意图");
+}
+function renderOpsPanels(){
+  const h=(OV&&OV.health)||{},ck=h.checks||{};
+  const ch=document.getElementById("c-health");
+  if(ch)ch.textContent=Object.keys(ck).length?`${Object.values(ck).filter(x=>x&&x.state==="stale").length} 项异常`:"—";
+  const g=document.getElementById("hbgrid");
+  if(g){
+    const labels=[["engine","引擎"],["rq_tick","rq 消费跳"],["minute","分钟采集"],["agent","AI agent"]];
+    g.innerHTML=labels.map(([k,lab])=>{
+      const v=ck[k]||{},st=v.state||"无记录";
+      const bad=st==="stale"?"bad":(st==="ok"?"":(st==="not-due"?"":"warn"));
+      const age=(v.age_sec!=null?Math.round(v.age_sec)+"s 前":"—");
+      return `<div class="hb ${bad}"><div class="k">${lab}</div><div class="v">${esc(st)}</div>`+
+        `<div class="a">${age}${v.limit_sec?` / 阈值 ${Math.round(v.limit_sec)}s`:""}</div></div>`;
+    }).join("");
+  }
+  const hd=document.getElementById("health-det");
+  if(hd)hd.textContent=h.healthy===false?("告警："+(h.alerts||[]).join("；")):("看门狗检查于 "+(h.checked_at||"—"));
+  const c=OV&&OV.checks;
+  document.getElementById("c-checks").textContent=c?`${c.green}/${c.warn}/${c.red}`:"未跑";
+  const cb=document.getElementById("checksbox");
+  if(cb)cb.innerHTML=c?`<div class="plan-line"><span class="lab">结果</span><span>${c.green} 绿 / ${c.warn} 黄 / ${c.red} 红 · ${esc(String(c.at||"").slice(11,16))}</span></div>`+
+    ((c.red_ids||[]).length?`<div class="plan-line"><span class="lab bad">红</span><span class="bad">${esc(c.red_ids.join("、"))}</span></div>`:"")+
+    ((c.warn_ids||[]).length?`<div class="plan-line"><span class="lab">黄</span><span class="mut">${esc(c.warn_ids.join("、"))}</span></div>`:"")
+    :"今日未体检（15:30 自动跑）";
+  const p=OV&&OV.plan;
+  document.getElementById("c-plan").textContent=p?("计划 #"+p.id):"无";
+  const pb=document.getElementById("planbox");
+  if(pb){
+    if(!p){pb.textContent="暂无计划记录";}
+    else{
+      const f=p.freshness||{};
+      const lines=[
+        ["计划",`#${p.id} · ${p.plan_date||"—"} · ${p.status||"—"}`],
+        ["数据截至",`${p.asof||"—"}${f.oldest?"（最旧 "+f.oldest+"）":""}`],
+        ["当日覆盖",f.total?`${f.fresh}/${f.total}（${(Number(f.coverage||0)*100).toFixed(0)}%）`:"无新鲜度记录（T96 之前）"],
+        ["摘要",p.summary||"—"],
+      ];
+      pb.innerHTML=lines.map(([a,b])=>`<div class="plan-line"><span class="lab">${a}</span><span>${esc(String(b))}</span></div>`).join("")
+        +(f.holdings_stale&&Object.keys(f.holdings_stale).length?`<div class="plan-line"><span class="lab bad">持仓陈旧</span><span class="bad">${esc(Object.entries(f.holdings_stale).map(([k,v])=>k+":"+v).join("、"))}</span></div>`:"");
+    }
+  }
+}
 document.getElementById("perfmodes").addEventListener("click",e=>{
   const b=e.target.closest("button[data-mode]");if(!b)return;
   PERFMODE=b.dataset.mode;
@@ -561,11 +681,13 @@ window.addEventListener("resize",()=>{clearTimeout(window.__ptResize);window.__p
 async function refresh(){
  try{
   const [s,ops,pos,ord,nav,nm,prov]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance"].map(get));
-  const [perfR,ovR]=await Promise.all([
+  const [perfR,ovR,intR]=await Promise.all([
     get("/api/performance").catch(()=>({ok:false})),
-    get("/api/overview").catch(()=>({ok:false}))]);
+    get("/api/overview").catch(()=>({ok:false})),
+    get("/api/intents?limit=100").catch(()=>({ok:false}))]);
   PERF=(perfR&&perfR.ok)?perfR.data:null;
   OV=(ovR&&ovR.ok)?ovR.data:null;
+  INTS=(intR&&intR.ok)?intR.data:[];
   NAMES=(nm&&nm.data)||{};
   // T22 看门狗红条：不健康才显示；恢复后后端状态翻回 healthy=true ⇒ 红条自动消失
   try{const hh=await get("/api/health");const h=(hh&&hh.data)||{};
@@ -603,6 +725,8 @@ async function refresh(){
    <div class="market-item"><div class="market-name">仓位</div><div class="market-value">${expo==null?"—":pct(expo)}</div><div class="kpi-sub">现金占比 ${expo==null?"—":pct(1-expo)}</div></div>`;
   drawPerf();
   renderToday();
+  renderIntents();
+  renderOpsPanels();
   const navRows=(nav.data||[]);
   const navDays=new Set(navRows.map(r=>String(r.timestamp).slice(0,10))).size;
   document.getElementById("c-nav").textContent=`${navRows.length} 行 · ${navDays} 个交易日（同日多条保留）`;
@@ -658,6 +782,27 @@ async function refresh(){
     }),12,"暂无来源数据");
  }catch(e){document.getElementById("clock").textContent="刷新失败: "+e}
 }
+/* ---- P1：任务视图（总览 / 交易 / 运维 / 控制台） ---- */
+const TAB_IDS=["overview","trading","ops","control"];
+function applyTab(tab){
+  const t=TAB_IDS.includes(tab)?tab:"overview";
+  document.querySelectorAll("#tabs button").forEach(b=>{
+    const on=b.dataset.tab===t;b.classList.toggle("on",on);
+    b.setAttribute("aria-selected",on?"true":"false");});
+  document.querySelectorAll("[data-tab]:not(button)").forEach(el=>el.classList.toggle("on",el.dataset.tab===t));
+  if(t==="overview"&&typeof drawPerf==="function")setTimeout(drawPerf,0);
+}
+function hashTab(){
+  const h=(location.hash||"").replace(/^#\/?/,"");
+  return TAB_IDS.includes(h)?h:"overview";
+}
+document.getElementById("tabs").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-tab]");if(!b)return;
+  location.hash="#/"+b.dataset.tab;
+});
+window.addEventListener("hashchange",()=>applyTab(hashTab()));
+applyTab(hashTab());
+
 refresh();setInterval(refresh,15000);
 
 /* ---- 模型设置与 AI 问答（口令浏览器自动保管，用户无感） ---- */
@@ -1374,6 +1519,7 @@ def _overview_payload(bridge) -> dict:
     conds = {"armed": 0, "queued_rq": 0, "filled_today": 0, "created_today": 0}
     intents = {"executed_today": 0, "rejected_today": 0, "pending": 0}
     navs: list[tuple[str, float]] = []
+    plan = None
     try:
         conn = _ro(db)
         try:
@@ -1416,6 +1562,19 @@ def _overview_payload(bridge) -> dict:
             if "nav_history" in tabs:
                 navs = [(str(r[0])[:10], float(r[1])) for r in conn.execute(
                     "SELECT timestamp, total_value FROM nav_history ORDER BY id")]
+            if "agent_plans" in tabs:
+                row = conn.execute(
+                    "SELECT id, plan_date, status, plan_json FROM agent_plans"
+                    " ORDER BY id DESC LIMIT 1").fetchone()
+                if row:
+                    try:
+                        pj = json.loads(row["plan_json"] or "{}")
+                    except ValueError:
+                        pj = {}
+                    plan = {"id": row["id"], "plan_date": row["plan_date"],
+                            "status": row["status"], "asof": pj.get("asof"),
+                            "summary": str(pj.get("summary") or "")[:160],
+                            "freshness": pj.get("freshness")}
         finally:
             conn.close()
     except sqlite3.Error:
@@ -1466,11 +1625,13 @@ def _overview_payload(bridge) -> dict:
         "conditions": conds,
         "intents": intents,
         "checks": _today_checks(db, today),
+        "plan": plan,
         "quote_asof": quote_asof,
         "prices_ready": prices_ready,
         "health": {"healthy": health.get("healthy"),
                    "alerts": health.get("alerts") or [],
-                   "checked_at": health.get("checked_at")},
+                   "checked_at": health.get("checked_at"),
+                   "checks": health.get("checks") or {}},
     }
 
 
@@ -1751,6 +1912,24 @@ class Handler(BaseHTTPRequestHandler):
                                 "error": str(e)[:120]})
             elif u.path == "/api/engine":
                 self._json({"ok": True, "data": _engine_view(self._bridge())})
+            elif u.path == "/api/intents":
+                q = parse_qs(u.query)
+                limit = _limit_arg(q, 50, 500)
+                status = (q.get("status") or [None])[0]
+                conn = _ro(self.account_db)
+                try:
+                    sql = ("SELECT biz_id, symbol, side, volume, rule_ref, status,"
+                           " created_at, result FROM rq_intents")
+                    args: list = []
+                    if status:
+                        sql += " WHERE status=?"
+                        args.append(status)
+                    sql += " ORDER BY created_at DESC LIMIT ?"
+                    args.append(limit)
+                    self._json({"ok": True,
+                                "data": [dict(r) for r in conn.execute(sql, args)]})
+                finally:
+                    conn.close()
             elif u.path == "/api/cond":
                 from paper_trading.engine.conditional import ConditionalOrders
 

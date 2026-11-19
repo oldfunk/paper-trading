@@ -318,6 +318,42 @@ def test_positions_prefer_today_minute_then_today_raw(tmp_path):
     assert rows[0]["price_asof"] == today
 
 
+def test_intents_endpoint(tmp_path):
+    db = tmp_path / "acct.db"
+    c = sqlite3.connect(str(db))
+    c.execute("CREATE TABLE rq_intents (biz_id TEXT PRIMARY KEY, symbol TEXT,"
+              " side TEXT, volume INTEGER, rule_ref TEXT, status TEXT,"
+              " created_at TEXT, result TEXT)")
+    for i, (st, ref) in enumerate((("executed", "cond:7"), ("rejected", "engine"))):
+        c.execute("INSERT INTO rq_intents VALUES (?,?,?,?,?,?,?,?)",
+                  (f"i{i}", "000001", "buy", 100, ref, st,
+                   f"2026-11-20T09:3{i}:00", '{"reason":"x"}'))
+    c.commit()
+    c.close()
+
+    class H(d.Handler):
+        account_db = str(db)
+        data_db = str(tmp_path / "data.db")
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{srv.server_port}/api/intents?limit=1",
+                timeout=10) as r:
+            one = json.loads(r.read().decode())
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{srv.server_port}/api/intents?limit=abc",
+                timeout=10) as r:
+            bad = json.loads(r.read().decode())
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert one["ok"] and len(one["data"]) == 1
+    assert bad["ok"] and len(bad["data"]) == 2
+
+
 def test_performance_endpoint(tmp_path):
     db = tmp_path / "acct.db"
     _mk_db(db, [("2026-11-18T20:50:00", 96000.0, 96000.0),

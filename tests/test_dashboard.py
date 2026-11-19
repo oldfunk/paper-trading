@@ -25,6 +25,9 @@ def test_dashboard_imports():
     # T95 P0：曲线/今日卡接口与容器；设计规范要求无 emoji
     assert "perfchart" in d.PAGE and "/api/performance" in d.PAGE
     assert "/api/overview" in d.PAGE and "今日 / 系统" in d.PAGE
+    assert 'id="tabs"' in d.PAGE and 'data-tab="trading"' in d.PAGE
+    assert "/api/intents" in d.PAGE and "意图队列" in d.PAGE
+    assert "运行健康" in d.PAGE and "最新计划与数据新鲜度" in d.PAGE
     assert "🔴" not in d.PAGE and "✅" not in d.PAGE
 
 

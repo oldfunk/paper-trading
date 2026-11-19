@@ -1659,17 +1659,31 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   生产实测：26/34 个交易日有 NAV、缺 8 日、MDD 6.36%、仓位 51.8%。
   验收：`test_dashboard_perf_t95.py` + 页面门禁；三档宽度/深浅色截图。
 
-- [ ] **T96 前复权日线覆盖与计划新鲜度**（2026-11-19 面板 P0 时暴露，11-20 复核后降级）：
-  `daily_bars` 全池 44 只里只有 **22 只**有 11-18 的 qfq 行；但**最新筛选池 20 只
-  100% 覆盖在 11-18**——其余是已离开近期 AI 池、不再被 `sync_data` 更新的标的。
-  所以不是"半库坏了"，真正的问题是：
-  ① 计划只记 `max(asof)`，不记 per-symbol 末根日期与覆盖率（11-19 计划整池 T-1，
-  与母库 issue #5 同类）；
-  ② 旧的池外标的会停在 T-5 而没人看见。
-  修：计划/`ai:decide` 记 `freshness={fresh:n,total:n}` 与逐只 asof；候选池要求
-  覆盖率下限（例 ≥80%）且持仓必须当日；再决定是否加 17:00 全池 qfq cron。
-  验收：面板/流水能看出"哪些标的的 asof 是几天前"，不再用 max 掩盖。
-  注：面板展示已走 raw/NAV，不受此影响（见 `docs/ui-iteration-20261119.md` §13）。
+- [x] **T96 计划新鲜度**（2026-11-20 与面板 P1 同批）：不再用 `max(asof)` 放行，
+  改为逐只 K 线末根日期 + **今日**覆盖率（运行时计划/决策的既有契约是"定稿到
+  今天才做"，本次只修 max 掩盖，不放松成 T-1）：
+  - `freshness_of()`：`{required,fresh,total,coverage,oldest,stale,holdings_stale,per_symbol}`；
+    阈值 `FRESH_COVERAGE_MIN=0.80`，持仓**全部**必须新鲜；过线但个别候选陈旧
+    的直接剔出 prompt（`dropped`）。
+  - 覆盖率不达标：不动模型，`ai:plan` 记 `skipped=no-fresh-data`（面板流水可见
+    "计划跳过：数据覆盖不足 x/y，最旧 …"），下个 tick 重试。
+  - `ai:plan`/`ai:decide` 都把 `freshness` 写进 plan JSON / op_log；面板运维页
+    展示"最新计划 + 数据截至 + 当日覆盖 + 持仓陈旧"。
+  验收：`tests/test_freshness_t96.py`（覆盖率/持仓陈旧/缺失 bar/空池）；
+  既有 `test_tick_plan_waits_for_today_data` 继续通过（T-1 整池仍按不新鲜拒）。
+  未做：17:00 全池 qfq sync——先看覆盖率暴露后是否仍需要。
+
+- [x] **T97 面板 P1（任务视图）**（2026-11-20，与 T96 同批）：
+  - 顶部 `总览 / 交易 / 运维 / 控制台` 四 tab，hash 路由（`#/trading` 等），
+    `[data-tab]` 控制显隐；KPI/健康条常驻，不漏告警。
+  - 总览：P0 的曲线/KPI/今日卡/持仓/净值明细；交易：订单、**新意图队列**、
+    条件单；运维：**心跳卡 + 今日体检 + 最新计划/新鲜度** + 数据来源 + AI 流水；
+    控制台：方案、运行时刻、规则引擎、AI 问答、模型设置。
+  - 后端新增 `/api/intents`（limit 安全夹取）；`/api/overview` 增加
+    `health.checks`（四心跳状态）与 `plan`（最新计划 + freshness）。
+  - 验收：页面门禁加 tab/意图/运维断言；`/api/intents` 接口用例；
+    715 窄屏四 tab 无横向溢出。
+
 
 
 
