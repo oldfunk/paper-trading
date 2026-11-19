@@ -1611,7 +1611,12 @@ def _overview_payload(bridge) -> dict:
     elif days:
         estimated = True                 # 今日还没有可信价：不拿昨日价冒充
     pct = (today_pnl / base) if (today_pnl is not None and base) else None
-    health = hb.read_status(max_age_sec=300) or hb.probe()
+    snap = hb.read_status(max_age_sec=300) or {}
+    probe = hb.probe(thresholds={"rq_tick": hb.RQ_TICK_THRESHOLD,
+                                 "minute": hb.MINUTE_THRESHOLD})
+    health = {**probe, **snap,
+              "checks": {**(probe.get("checks") or {}),
+                         **(snap.get("checks") or {})}}
     return {
         "date": today,
         "status": st,
