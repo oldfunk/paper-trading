@@ -41,15 +41,20 @@ def _as_date(v) -> date:
 
 
 def _trading_days_between(a: date, b: date) -> list[date]:
-    """(a, b] 区间内的交易日（周末+本地日历缓存判断；仅用于质量检查）。"""
-    from paper_trading.utils.trading_calendar import is_trading_day
+    """(a, b] 区间内的交易日（周末+本地日历缓存判断；仅用于质量检查）。
+
+    只统计**日历缓存知道**的日期：缓存只留最近 `HISTORY_TAIL_DAYS` 天，
+    更早的日子它答不了“是不是交易日”，回退成工作日会把节假日（中秋
+    2026-09-25）报成 44 个标的的缺口。不知道就跳过——宁可少报，不报假警。
+    """
+    from paper_trading.utils.trading_calendar import calendar_knows, is_trading_day
 
     out: list[date] = []
     d, n = a, 0
     while d < b and n < _MAX_GAP_SCAN:
         d += timedelta(days=1)
         n += 1
-        if is_trading_day(d):
+        if calendar_knows(d) and is_trading_day(d):
             out.append(d)
     return out
 

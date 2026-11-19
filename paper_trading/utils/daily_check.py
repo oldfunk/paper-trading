@@ -36,17 +36,28 @@ def _ro(db_path) -> sqlite3.Connection:
 
 
 def latest_evidence(state_dir, today: str) -> tuple[Optional[dict], str]:
-    """读 `<state_dir>/evidence_<today>.json`（会话后置留痕）。"""
+    """读当天的会话留痕：优先 `<state_dir>/evidence_<today>.json`（最新一份
+    别名），没有就读当天带时刻的 `evidence_<today>_<HHMMSS>.json` 里最新的一份。
+
+    2026-11-19 起每跳一份证据文件（T94）：一天可能有多场会话，旧实现后一场
+    覆盖前一场。读取端保持"拿最近一份"的语义，同时不再在别名缺失时假装
+    "今天没有留痕"——那会把一次真实会话的证据降级成不存在。
+    """
     d = Path(str(state_dir))
     f = d / f"evidence_{today}.json"
-    if not f.exists():
-        cand = sorted(d.glob("evidence_*.json")) if d.is_dir() else []
-        return None, (f"今日无会话留痕（{f.name} 不存在）"
-                      + (f"；最近一份：{cand[-1].name}" if cand else "；目录里一份都没有"))
-    try:
-        return json.loads(f.read_text(encoding="utf-8")), f.name
-    except Exception as exc:                    # noqa: BLE001 - 坏了要说坏在哪
-        return None, f"{f.name} 解析失败：{type(exc).__name__}: {exc}"
+    if f.exists():
+        try:
+            return json.loads(f.read_text(encoding="utf-8")), f.name
+        except Exception as exc:                    # noqa: BLE001 - 坏了要说坏在哪
+            return None, f"{f.name} 解析失败：{type(exc).__name__}: {exc}"
+    cand = sorted(d.glob(f"evidence_{today}_*.json")) if d.is_dir() else []
+    if cand:
+        latest = cand[-1]
+        try:
+            return json.loads(latest.read_text(encoding="utf-8")), latest.name
+        except Exception as exc:                    # noqa: BLE001
+            return None, f"{latest.name} 解析失败：{type(exc).__name__}: {exc}"
+    return None, f"今日无会话留痕（{f.name} 不存在）"
 
 
 def today_buys(account_db, today: str) -> set:
