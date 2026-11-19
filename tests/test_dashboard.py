@@ -16,6 +16,10 @@ def test_dashboard_imports():
     assert "运行时刻" in d.PAGE and "/api/agent/runtime" in d.PAGE
     assert "/api/agent/schedule" not in d.PAGE  # 旧可编辑队列已从界面移除
     assert "写死" in d.PAGE and "16:30" in d.PAGE
+    # T95 P0：曲线/今日卡接口与容器；设计规范要求无 emoji
+    assert "perfchart" in d.PAGE and "/api/performance" in d.PAGE
+    assert "/api/overview" in d.PAGE and "今日 / 系统" in d.PAGE
+    assert "🔴" not in d.PAGE and "✅" not in d.PAGE
 
 
 def test_entry_modules_import():
