@@ -157,6 +157,8 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 .status-chip.bad{background:var(--red-bg);color:var(--red)}
 .status-chip.warn{background:#fff3e0;color:#b26a00}
 @media(max-width:900px){.hb-grid{grid-template-columns:repeat(2,1fr)}}
+#schemelist{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px}
+#schemelist label{white-space:normal}
 @media(max-width:1100px){.overview-grid{grid-template-columns:1fr}.market-row{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:720px){.app{padding:16px}.market-row{grid-template-columns:repeat(2,1fr)}.chart-wrap{height:220px}}
 </style>
@@ -636,9 +638,10 @@ function renderOpsPanels(){
     const labels=[["engine","引擎"],["rq_tick","rq 消费跳"],["minute","分钟采集"],["agent","AI agent"]];
     g.innerHTML=labels.map(([k,lab])=>{
       const v=ck[k]||{},st=v.state||"无记录";
+      const stTxt={"ok":"正常","not-due":"未到时段","stale":"停滞"}[st]||st;
       const bad=st==="stale"?"bad":(st==="ok"?"":(st==="not-due"?"":"warn"));
       const age=(v.age_sec!=null?Math.round(v.age_sec)+"s 前":"—");
-      return `<div class="hb ${bad}"><div class="k">${lab}</div><div class="v">${esc(st)}</div>`+
+      return `<div class="hb ${bad}"><div class="k">${lab}</div><div class="v">${esc(stTxt)}</div>`+
         `<div class="a">${age}${v.limit_sec?` / 阈值 ${Math.round(v.limit_sec)}s`:""}</div></div>`;
     }).join("");
   }
