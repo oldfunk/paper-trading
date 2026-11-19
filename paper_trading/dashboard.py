@@ -537,7 +537,7 @@ function renderToday(){
     ["意图",`执行 ${it.executed_today||0} / 未决 ${it.pending||0} / 拒绝 ${it.rejected_today||0}`,""],
     ["体检",ck?`${ck.green} 绿 / ${ck.warn} 黄 / ${ck.red} 红 · ${String(ck.at||"").slice(11,16)}`:"今日未体检",
       ck&&ck.red?"bad":(ck&&ck.warn?"":"ok")],
-    ["行情",`截至 ${(OV.status&&OV.status.data_asof)||"—"}`,""],
+    ["行情",`截至 ${OV.quote_asof||(OV.status&&OV.status.data_asof)||"—"}`,""],
   ];
   g.innerHTML=rows.map(r=>`<div class="today-row"><span class="lab">${r[0]}</span>`+
     `<span class="val ${r[2]}"${ck&&r[0]==="体检"&&((ck.red_ids||[]).length||(ck.warn_ids||[]).length)?` title="${esc([].concat(ck.red_ids||[],ck.warn_ids||[]).join("、"))}"`:""}>${r[1]}</span></div>`).join("");
@@ -571,18 +571,22 @@ async function refresh(){
   }catch(e){}
   const st=s.data;
   const pf=(PERF&&PERF.summary)||{};
+  const navTotal=(pf.total_value!=null)?pf.total_value:st.total_value;
+  const navCash=(pf.cash!=null)?pf.cash:st.cash;
+  const navMv=(pf.market_value!=null)?pf.market_value:st.market_value;
+  const asof=(OV&&OV.quote_asof)||st.data_asof||"无数据";
   const todayPnl=(OV&&OV.today_pnl!=null)?OV.today_pnl:pf.today_pnl;
   const todayPct=(OV&&OV.today_pnl_pct!=null)?OV.today_pnl_pct:pf.today_pnl_pct;
   const est=OV?!!OV.estimated:false;
   const expo=(pf.exposure!=null)?pf.exposure
-    :(st.total_value?st.market_value/st.total_value:null);
-  document.getElementById("clock").textContent="行情截至 "+(st.data_asof||"无数据")+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
+    :(navTotal?navMv/navTotal:null);
+  document.getElementById("clock").textContent="行情截至 "+asof+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
   document.getElementById("statusbar").innerHTML=`
-   <div class="status-item"><span class="status-label">行情截至</span><span class="status-value">${st.data_asof||"无数据"}</span></div>
+   <div class="status-item"><span class="status-label">行情截至</span><span class="status-value">${asof}</span></div>
    <div class="status-item"><span class="status-label">持仓</span><span class="status-value">${st.positions.length} 只</span></div>
    <div class="status-item"><span class="status-label">模式</span><span class="status-value">纸盘 · 只读面板</span></div>`;
   document.getElementById("cards").innerHTML=`
-   <div class="market-item"><div class="market-name">总资产 CNY</div><div class="market-value">${fmt(st.total_value,0)}</div><div class="kpi-sub">现金 ${fmt(st.cash,0)} + 市值 ${fmt(st.market_value,0)}</div></div>
+   <div class="market-item"><div class="market-name">总资产 CNY</div><div class="market-value">${fmt(navTotal,0)}</div><div class="kpi-sub">现金 ${fmt(navCash,0)} + 市值 ${fmt(navMv,0)}${PERF&&PERF.asof?" · 收盘 "+PERF.asof:""}</div></div>
    <div class="market-item"><div class="market-name">今日盈亏</div><div class="market-value ${cls(todayPnl)}">${todayPnl==null?"—":(todayPnl>=0?"+":"")+fmt(todayPnl)}</div><div class="kpi-sub ${cls(todayPnl)}">${todayPct==null?"—":pct(todayPct)}${est?'<span class="kpi-tag">盘中估算</span>':""}</div></div>
    <div class="market-item"><div class="market-name">累计收益</div><div class="market-value ${cls(pf.total_return)}">${pf.total_return==null?"—":(pf.total_return>=0?"+":"")+pct(pf.total_return)}</div><div class="kpi-sub ${cls(pf.total_pnl)}">${pf.total_pnl==null?"—":(pf.total_pnl>=0?"+":"")+fmt(pf.total_pnl)} · 自 ${(PERF&&PERF.series&&PERF.series[0])?PERF.series[0].date:"—"}</div></div>
    <div class="market-item"><div class="market-name">最大回撤</div><div class="market-value">${pf.mdd==null?"—":pct(pf.mdd)}</div><div class="kpi-sub">${pf.mdd_date?"发生于 "+pf.mdd_date:""}${pf.current_drawdown!=null?" · 当前 "+pct(pf.current_drawdown):""}</div></div>
@@ -609,7 +613,7 @@ async function refresh(){
     (st.positions||[]).map(p=>{const pn=(p.current_price-p.avg_cost)*p.total_volume;
     const live=(QUOTES||{})[p.symbol];
     const pxHtml=live&&live.price?`${fmt(live.price)} <span class="tag live">实时</span>`:`${fmt(p.current_price)}`;
-    const share=st.total_value?p.market_value/st.total_value:null;
+    const share=navTotal?p.market_value/navTotal:null;
     const vsPeak=(p.peak_price>0&&p.current_price>0)?(p.current_price/p.peak_price-1):null;
     const d=dayDiff(p.entry_day);
     return `<tr><td><b>${esc(p.symbol)}</b></td><td class="mut">${esc(NAMES[p.symbol]||"—")}</td>`+
@@ -1247,6 +1251,7 @@ def _perf_payload(account_db: str) -> dict:
 
     summary = {
         "total_return": None, "total_pnl": None,
+        "total_value": None, "cash": None, "market_value": None,
         "today_pnl": None, "today_pnl_pct": None,
         "mdd": None, "mdd_date": None, "current_drawdown": None,
         "vol_annual": None, "sharpe": None,
@@ -1257,6 +1262,9 @@ def _perf_payload(account_db: str) -> dict:
         last_tv, last_cash, last_mv = by_day[days[-1]]
         summary["total_return"] = round(last_tv / init - 1, 6)
         summary["total_pnl"] = round(last_tv - init, 4)
+        summary["total_value"] = round(last_tv, 4)
+        summary["cash"] = round(last_cash, 4)
+        summary["market_value"] = round(last_mv, 4)
         summary["exposure"] = round(last_mv / last_tv, 6) if last_tv else None
     if len(days) >= 2:
         navs = [by_day[d][0] for d in days]
@@ -1389,7 +1397,13 @@ def _overview_payload(bridge) -> dict:
 
     by_day = {d: tv for d, tv in navs}
     days = sorted(by_day)
+    raw, quote_asof = _raw_close_map(getattr(bridge, "data_db", None))
     live_total = float(st.get("total_value") or 0.0)
+    if raw:
+        mv = sum(float(p.get("total_volume") or 0) * raw[p["symbol"]]
+                 for p in (st.get("positions") or [])
+                 if p.get("symbol") in raw)
+        live_total = float(st.get("cash") or 0.0) + mv
     estimated = False
     today_pnl = None
     base = None
@@ -1414,25 +1428,75 @@ def _overview_payload(bridge) -> dict:
         "conditions": conds,
         "intents": intents,
         "checks": _today_checks(db, today),
+        "quote_asof": quote_asof,
         "health": {"healthy": health.get("healthy"),
                    "alerts": health.get("alerts") or [],
                    "checked_at": health.get("checked_at")},
     }
 
 
+def _raw_close_map(data_db) -> tuple[dict, str | None]:
+    """最新 raw 收盘（与 NAV/账本同口径：不复权成交价）+ 日期。
+
+    为什么面板不用 `status.current_price`：那条走 `daily_bars`（前复权），
+    2026-11-19 生产实测它只到 11-18（22 只），而 NAV 收盘（raw）已经是 11-19。
+    同一个页面里两套价会把"总资产"和"净值曲线"画成两个数。raw 与账本成交价
+    同源，市值才能与 `nav_history.market_value` 逐分对上（实测 49,620.0）。
+    """
+    p = getattr(data_db, "db_path", None) or getattr(data_db, "path", None)
+    if not p:
+        return {}, None
+    try:
+        conn = _ro(str(p))
+        try:
+            row = conn.execute(
+                "SELECT MAX(substr(timestamp,1,10)) FROM daily_bars_raw").fetchone()
+            day = row[0] if row else None
+            if not day:
+                return {}, None
+            m = {r[0]: float(r[1]) for r in conn.execute(
+                "SELECT symbol, close FROM daily_bars_raw"
+                " WHERE substr(timestamp,1,10)=?", (day,))}
+            return m, str(day)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}, None
+
+
+def _raw_closes(data_db, symbol: str, n: int = 10) -> list[float]:
+    """最近 n 根 raw 收盘（升序），供迷你走势用。"""
+    p = getattr(data_db, "db_path", None) or getattr(data_db, "path", None)
+    if not p:
+        return []
+    try:
+        conn = _ro(str(p))
+        try:
+            rows = conn.execute(
+                "SELECT close FROM daily_bars_raw WHERE symbol=?"
+                " ORDER BY timestamp DESC LIMIT ?", (symbol, int(n))).fetchall()
+            return [float(r[0]) for r in reversed(rows) if r[0] is not None]
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+
+
 def _positions_payload(bridge) -> list[dict]:
-    """持仓表数据：在现有字段上补 peak/entry_day/spark（旧字段保持不变）。"""
+    """持仓表数据：现价/市值/走势用 raw（与 NAV 同源），补 peak/entry_day。"""
     st = bridge.get_status()
+    raw, _ = _raw_close_map(getattr(bridge, "data_db", None))
     pos = {p.symbol: p for p in bridge.broker.get_all_positions()}
     for row in st["positions"]:
         p = pos.get(row["symbol"])
         row["peak_price"] = getattr(p, "peak_price", None)
         row["entry_day"] = getattr(p, "entry_day", None)
-        try:
-            bars = bridge.get_bars(row["symbol"], limit=10)
-            row["spark"] = [round(float(b.close), 4) for b in bars if b.close]
-        except Exception:                       # noqa: BLE001 - 画不了就不画
-            row["spark"] = []
+        px = raw.get(row["symbol"])
+        if px:
+            row["current_price"] = px
+            row["market_value"] = float(row["total_volume"]) * px
+        row["spark"] = _raw_closes(getattr(bridge, "data_db", None),
+                                   row["symbol"], 10)
     return st["positions"]
 
 

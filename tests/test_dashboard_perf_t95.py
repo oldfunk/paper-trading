@@ -178,6 +178,7 @@ def test_overview_counts_and_pnl(tmp_path, monkeypatch):
     assert out["today_pnl"] == pytest.approx(1000.0)
     assert out["estimated"] is False
     assert out["health"]["healthy"] is True
+    assert out.get("quote_asof") is None      # 测试 bridge 没有 data_db
 
 
 def test_overview_estimates_when_today_nav_missing(tmp_path, monkeypatch):
@@ -198,6 +199,31 @@ def test_overview_estimates_when_today_nav_missing(tmp_path, monkeypatch):
     out = d._overview_payload(bridge)
     assert out["today_pnl"] == pytest.approx(2000.0)   # live 97000 - last 95000
     assert out["estimated"] is True
+
+
+def test_positions_use_raw_prices_same_as_nav(tmp_path):
+    """现价/市值/走势必须走 raw（与 NAV 同源）：qfq 日线会晚一天，混用会
+    让 KPI 与曲线差出几百块（11-19 实测 96,071 vs 95,800）。"""
+    db = tmp_path / "data.db"
+    c = sqlite3.connect(str(db))
+    c.execute("CREATE TABLE daily_bars_raw (symbol TEXT, timestamp TEXT, close REAL)")
+    c.executemany("INSERT INTO daily_bars_raw VALUES (?,?,?)",
+                  [("000001", "2026-11-18T00:00:00", 100.0),
+                   ("000001", "2026-11-19T00:00:00", 110.0)])
+    c.commit()
+    c.close()
+    bridge = SimpleNamespace(
+        get_status=lambda: {"positions": [{
+            "symbol": "000001", "total_volume": 100, "available_volume": 100,
+            "avg_cost": 90.0, "current_price": 99.0, "market_value": 9900.0}],
+            "cash": 1000.0, "market_value": 9900.0, "total_value": 10900.0},
+        broker=SimpleNamespace(get_all_positions=lambda: []),
+        data_db=SimpleNamespace(db_path=str(db)))
+    rows = d._positions_payload(bridge)
+    assert rows[0]["current_price"] == 110.0
+    assert rows[0]["market_value"] == 11000.0
+    assert rows[0]["spark"] == [100.0, 110.0]
+    assert len(rows[0]["spark"]) == 2
 
 
 def test_performance_endpoint(tmp_path):
