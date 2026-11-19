@@ -452,6 +452,11 @@ function sparkSVG(vals){
   const up=v[v.length-1]>=v[0];
   return `<svg class="spark" viewBox="0 0 ${w} ${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${up?'var(--color-up)':'var(--color-down)'}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
+function niceStep(raw){
+  if(!(raw>0))return 1;
+  const p=Math.pow(10,Math.floor(Math.log10(raw))),n=raw/p;
+  return (n<=1?1:n<=2?2:n<=5?5:10)*p;
+}
 function drawPerf(){
   const svg=document.getElementById("perfchart");
   const wrap=document.getElementById("chartwrap");
@@ -485,7 +490,9 @@ function drawPerf(){
   const y=v=>P.t+(hi-v)/(hi-lo)*(H-P.t-P.b);
   const missSet=new Set(c.missing||[]);
   let g="";
-  for(let k=0;k<=3;k++){const v=lo+(hi-lo)*k/3,yy=y(v);
+  const step=niceStep((hi-lo)/3);
+  const start=Math.ceil(lo/step)*step;
+  for(let v=start;v<=hi+1e-9;v+=step){const yy=y(v);
     g+=`<line x1="${P.l}" y1="${yy}" x2="${W-P.r}" y2="${yy}" stroke="var(--divider-thin)" stroke-width="1"/>`;
     const lab=mode==="nav"?fmt(v,0):pct(v);
     g+=`<text x="${P.l-8}" y="${yy+4}" text-anchor="end" font-size="11" fill="var(--text-tertiary)">${lab}</text>`;}
