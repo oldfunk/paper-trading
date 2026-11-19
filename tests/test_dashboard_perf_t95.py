@@ -149,9 +149,23 @@ def _overview_db(path):
     c.execute("CREATE TABLE nav_history (id INTEGER PRIMARY KEY, timestamp TEXT,"
               " total_value REAL)")
     c.execute("INSERT INTO nav_history (timestamp,total_value) VALUES (?,?)",
-              ((date.today() - timedelta(days=1)).isoformat() + "T20:50:00", 95000.0))
+              ((date.today() - timedelta(days=1)).isoformat() + "T20:50:00", 11000.0))
     c.execute("INSERT INTO nav_history (timestamp,total_value) VALUES (?,?)",
-              (today + "T20:50:00", 96000.0))
+              (today + "T20:50:00", 12000.0))
+    c.commit()
+    c.close()
+
+
+def _mk_data_db(path, raw_day=None, raw_px=None, minute_day=None, minute_px=None):
+    c = sqlite3.connect(str(path))
+    c.execute("CREATE TABLE daily_bars_raw (symbol TEXT, timestamp TEXT, close REAL)")
+    if raw_day:
+        c.execute("INSERT INTO daily_bars_raw VALUES ('000001',?,?)",
+                  (raw_day + "T00:00:00", raw_px))
+    c.execute("CREATE TABLE minute_bars (symbol TEXT, ts TEXT, close REAL, period TEXT)")
+    if minute_day:
+        c.execute("INSERT INTO minute_bars VALUES ('000001',?,?,'5')",
+                  (minute_day + "T10:35", minute_px))
     c.commit()
     c.close()
 
@@ -181,7 +195,12 @@ def test_overview_counts_and_pnl(tmp_path, monkeypatch):
     assert out.get("quote_asof") is None      # 测试 bridge 没有 data_db
 
 
-def test_overview_estimates_when_today_nav_missing(tmp_path, monkeypatch):
+def test_overview_waits_for_today_price_instead_of_showing_zero(tmp_path, monkeypatch):
+    """开盘前/数据未更新：今日盈亏必须是"—"（None），不许拿昨日价算成 0。
+
+    2026-11-20 00:04 现网实测：旧逻辑返回 today_pnl=0.0 / estimated=true，
+    页面显示"0.00 / 0.00% 盘中估算"——看起来像今天不涨不跌，实际是没数据。
+    """
     db = tmp_path / "acct.db"
     _overview_db(db)
     c = sqlite3.connect(str(db))
@@ -194,11 +213,53 @@ def test_overview_estimates_when_today_nav_missing(tmp_path, monkeypatch):
                                                         "alerts": []})
     bridge = SimpleNamespace(
         get_status=lambda: {"total_value": 97000.0, "data_asof": "x",
-                            "positions": [], "cash": 0.0, "market_value": 97000.0},
+                            "positions": [{"symbol": "000001", "total_volume": 100,
+                                           "current_price": 99.0}],
+                            "cash": 1000.0, "market_value": 9900.0},
         broker=SimpleNamespace(db_path=str(db)))
     out = d._overview_payload(bridge)
-    assert out["today_pnl"] == pytest.approx(2000.0)   # live 97000 - last 95000
+    assert out["today_pnl"] is None and out["today_pnl_pct"] is None
+    assert out["estimated"] is True and out["prices_ready"] is False
+
+
+def test_overview_estimates_with_today_raw(tmp_path, monkeypatch):
+    """有今日价（raw/分钟）才估算：live = 现金 + 今日价×股数，对昨日 NAV。"""
+    db = tmp_path / "acct.db"
+    _overview_db(db)
+    c = sqlite3.connect(str(db))
+    c.execute("DELETE FROM nav_history WHERE timestamp LIKE ?",
+              (date.today().isoformat() + "%",))
+    c.commit()
+    c.close()
+    data = tmp_path / "data.db"
+    _mk_data_db(data, raw_day=date.today().isoformat(), raw_px=110.0)
+    from paper_trading.utils import heartbeat as hb
+    monkeypatch.setattr(hb, "read_status", lambda **kw: {"healthy": True,
+                                                        "alerts": []})
+    bridge = SimpleNamespace(
+        get_status=lambda: {"total_value": 97000.0, "data_asof": "x",
+                            "positions": [{"symbol": "000001", "total_volume": 100,
+                                           "current_price": 99.0}],
+                            "cash": 1000.0, "market_value": 9900.0},
+        broker=SimpleNamespace(db_path=str(db)),
+        data_db=SimpleNamespace(db_path=str(data)))
+    out = d._overview_payload(bridge)
+    assert out["prices_ready"] is True
+    assert out["today_pnl"] == pytest.approx(1000.0)   # 1000 + 100*110 - 11000
     assert out["estimated"] is True
+    assert out["quote_asof"] == date.today().isoformat()
+    assert out["live_total"] == pytest.approx(12000.0)
+    assert out["live_market_value"] == pytest.approx(11000.0)
+    assert out["cash"] == pytest.approx(1000.0)
+
+
+def test_limit_arg_clamps_bad_values():
+    """坏 limit 不许 500，也不许 -1（SQLite 里 = 不限制）把整表拉出来。"""
+    assert d._limit_arg({}) == 30
+    assert d._limit_arg({"limit": ["abc"]}) == 30
+    assert d._limit_arg({"limit": ["-1"]}) == 1
+    assert d._limit_arg({"limit": ["999999"]}) == 500
+    assert d._limit_arg({"limit": ["12"]}) == 12
 
 
 def test_positions_use_raw_prices_same_as_nav(tmp_path):
@@ -224,6 +285,73 @@ def test_positions_use_raw_prices_same_as_nav(tmp_path):
     assert rows[0]["market_value"] == 11000.0
     assert rows[0]["spark"] == [100.0, 110.0]
     assert len(rows[0]["spark"]) == 2
+    assert rows[0]["price_source"] == "收盘"
+    assert rows[0]["price_asof"] == "2026-11-19"
+
+
+def test_positions_prefer_today_minute_then_today_raw(tmp_path):
+    """盘中（raw 还没今天）用当日分钟线；收盘后 raw 今天优先于分钟。"""
+    today = date.today().isoformat()
+    yday = (date.today() - timedelta(days=1)).isoformat()
+    bridge_kw = dict(
+        get_status=lambda: {"positions": [{
+            "symbol": "000001", "total_volume": 100, "available_volume": 100,
+            "avg_cost": 90.0, "current_price": 99.0, "market_value": 9900.0}],
+            "cash": 1000.0, "market_value": 9900.0, "total_value": 10900.0},
+        broker=SimpleNamespace(get_all_positions=lambda: []))
+
+    m = tmp_path / "minute.db"
+    _mk_data_db(m, raw_day=yday, raw_px=100.0, minute_day=today, minute_px=108.0)
+    rows = d._positions_payload(SimpleNamespace(
+        data_db=SimpleNamespace(db_path=str(m)), **bridge_kw))
+    assert rows[0]["current_price"] == 108.0
+    assert rows[0]["price_source"] == "分钟"
+    assert rows[0]["price_time"] == "10:35"
+    assert rows[0]["market_value"] == 10800.0
+
+    r = tmp_path / "raw_today.db"
+    _mk_data_db(r, raw_day=today, raw_px=110.0, minute_day=today, minute_px=108.0)
+    rows = d._positions_payload(SimpleNamespace(
+        data_db=SimpleNamespace(db_path=str(r)), **bridge_kw))
+    assert rows[0]["current_price"] == 110.0
+    assert rows[0]["price_source"] == "收盘"
+    assert rows[0]["price_asof"] == today
+
+
+def test_intents_endpoint(tmp_path):
+    db = tmp_path / "acct.db"
+    c = sqlite3.connect(str(db))
+    c.execute("CREATE TABLE rq_intents (biz_id TEXT PRIMARY KEY, symbol TEXT,"
+              " side TEXT, volume INTEGER, rule_ref TEXT, status TEXT,"
+              " created_at TEXT, result TEXT)")
+    for i, (st, ref) in enumerate((("executed", "cond:7"), ("rejected", "engine"))):
+        c.execute("INSERT INTO rq_intents VALUES (?,?,?,?,?,?,?,?)",
+                  (f"i{i}", "000001", "buy", 100, ref, st,
+                   f"2026-11-20T09:3{i}:00", '{"reason":"x"}'))
+    c.commit()
+    c.close()
+
+    class H(d.Handler):
+        account_db = str(db)
+        data_db = str(tmp_path / "data.db")
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{srv.server_port}/api/intents?limit=1",
+                timeout=10) as r:
+            one = json.loads(r.read().decode())
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{srv.server_port}/api/intents?limit=abc",
+                timeout=10) as r:
+            bad = json.loads(r.read().decode())
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert one["ok"] and len(one["data"]) == 1
+    assert bad["ok"] and len(bad["data"]) == 2
 
 
 def test_performance_endpoint(tmp_path):
@@ -237,14 +365,21 @@ def test_performance_endpoint(tmp_path):
 
     srv = HTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    try:
-        import urllib.request
+    import urllib.request
+
+    def get_json(path):
         with urllib.request.urlopen(
-                f"http://127.0.0.1:{srv.server_port}/api/performance",
-                timeout=10) as r:
-            body = json.loads(r.read().decode())
+                f"http://127.0.0.1:{srv.server_port}{path}", timeout=10) as r:
+            return r.status, json.loads(r.read().decode())
+
+    try:
+        _st, body = get_json("/api/performance")
+        assert body["ok"] and body["data"]["summary"]["exposure"] == pytest.approx(1.0)
+        assert len(body["data"]["series"]) == 2
+        st, bad = get_json("/api/nav?limit=abc")
+        assert st == 200 and len(bad["data"]) == 2      # 坏值回默认，不 500
+        st, neg = get_json("/api/nav?limit=-1")
+        assert st == 200 and len(neg["data"]) == 1      # 负数夹到 1，不整表返回
     finally:
         srv.shutdown()
         srv.server_close()
-    assert body["ok"] and body["data"]["summary"]["exposure"] == pytest.approx(1.0)
-    assert len(body["data"]["series"]) == 2

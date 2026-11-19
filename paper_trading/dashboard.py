@@ -134,6 +134,31 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 .fold[open] summary{border-bottom:1px solid var(--divider)}
 .fold .scroll{padding:0 4px 4px}
 .empty{padding:36px 8px;text-align:center;color:var(--text-tertiary);font-size:13px}
+/* P1（T97）：任务视图 + 运维卡 */
+.tabs{display:flex;gap:4px;margin:-8px 0 20px;border-bottom:1px solid var(--divider-thin);overflow-x:auto}
+.tabs button{border:0;background:transparent;font:inherit;font-size:13px;color:var(--text-secondary);padding:9px 12px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
+.tabs button:hover{background:var(--bg-hover)}
+.tabs button.on{color:var(--text-primary);font-weight:600;border-bottom-color:var(--accent)}
+[data-tab]:not(button){display:none}
+[data-tab]:not(button).on{display:block}
+.overview-grid[data-tab].on{display:grid}
+.hb-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.hb{border:1px solid var(--divider-thin);border-radius:var(--radius-sm);padding:10px 12px}
+.hb .k{font-size:11px;color:var(--text-tertiary);letter-spacing:.04em}
+.hb .v{font-size:13px;font-weight:600;margin-top:2px}
+.hb .a{font-size:11px;color:var(--text-tertiary);margin-top:2px}
+.hb.bad{border-color:#e8b4b1}
+.hb.warn{border-color:#eed3a8}
+.plan-line{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--divider-thin);font-size:13px}
+.plan-line:last-child{border-bottom:none}
+.plan-line .lab{color:var(--text-tertiary);font-size:12px}
+.status-chip{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;background:var(--bg-tertiary);color:var(--text-secondary)}
+.status-chip.ok{background:var(--green-bg);color:var(--green)}
+.status-chip.bad{background:var(--red-bg);color:var(--red)}
+.status-chip.warn{background:#fff3e0;color:#b26a00}
+@media(max-width:900px){.hb-grid{grid-template-columns:repeat(2,1fr)}}
+#schemelist{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px}
+#schemelist label{white-space:normal}
 @media(max-width:1100px){.overview-grid{grid-template-columns:1fr}.market-row{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:720px){.app{padding:16px}.market-row{grid-template-columns:repeat(2,1fr)}.chart-wrap{height:220px}}
 </style>
@@ -149,11 +174,18 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </header>
 
+<nav class="tabs" id="tabs" role="tablist" aria-label="页面视图">
+  <button data-tab="overview" class="on" role="tab">总览</button>
+  <button data-tab="trading" role="tab">交易</button>
+  <button data-tab="ops" role="tab">运维</button>
+  <button data-tab="control" role="tab">控制台</button>
+</nav>
+
 <div class="market-row" id="cards"></div>
 <div class="status-bar" id="healthbar" style="display:none;border-color:#e0524d;color:#e0524d"></div>
 <div class="status-bar" id="statusbar"></div>
 
-<div class="overview-grid">
+<div class="overview-grid" data-tab="overview">
   <section class="card">
     <div class="card-head">
       <h2 class="section-title">收益曲线</h2>
@@ -175,22 +207,27 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </section>
 </div>
 
-<details class="fold" id="navfold">
+<details class="fold" id="navfold" data-tab="overview">
   <summary>净值明细 <span class="s" id="c-nav"></span></summary>
   <div class="scroll"><table id="nav"></table></div>
 </details>
 
-<section>
+<section data-tab="overview">
   <div class="section-header"><h2 class="section-title">当前持仓</h2><span class="section-count" id="c-pos"></span></div>
   <div class="scroll"><table id="pos"></table></div>
 </section>
 
-<section>
+<section data-tab="trading">
   <div class="section-header"><h2 class="section-title">订单记录</h2><span class="section-count" id="c-orders"></span></div>
   <div class="scroll"><table id="orders"></table></div>
 </section>
 
-<section>
+<section data-tab="trading">
+  <div class="section-header"><h2 class="section-title">意图队列</h2><span class="section-count" id="c-intents"></span></div>
+  <div class="scroll"><table id="intents"></table></div>
+</section>
+
+<section data-tab="control">
   <div class="section-header"><h2 class="section-title">投资方案</h2><span class="section-count" id="c-scheme"></span></div>
   <div class="ai-panel">
     <div class="s">三种方案只选其一。母价值需 Stock Dashboard 在同一台机器；自定义点行内“设置”写自然语言交易策略。切换只写本地文件，不进 git。</div>
@@ -206,7 +243,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="control">
   <div class="section-header"><h2 class="section-title">运行时刻</h2><span class="section-count" id="c-sched"></span></div>
   <div class="ai-panel">
     <div class="s">交易时段和 AI 窗口由代码写死，不再按面板队列跑：交易日 09:30–11:30、13:00–15:00；09:30–10:00 只执行前一交易日计划；16:30–18:30 数据定稿后做下一交易日计划；盘中每分钟检查异动，只有异动才调 AI；规则/条件单由引擎每分钟执行。</div>
@@ -216,7 +253,25 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">运行健康</h2><span class="section-count" id="c-health"></span></div>
+  <div class="card">
+    <div class="hb-grid" id="hbgrid"></div>
+    <div class="s" id="health-det"></div>
+  </div>
+</section>
+
+<section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">今日体检</h2><span class="section-count" id="c-checks"></span></div>
+  <div class="card"><div id="checksbox" class="s">加载中…</div></div>
+</section>
+
+<section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">最新计划与数据新鲜度</h2><span class="section-count" id="c-plan"></span></div>
+  <div class="card"><div id="planbox" class="s">加载中…</div></div>
+</section>
+
+<section data-tab="ops">
   <div class="section-header"><h2 class="section-title">数据来源</h2><span class="section-count" id="c-prov"></span></div>
   <div class="ai-panel">
     <div class="s" id="prov-sum">数据来源：加载中…</div>
@@ -224,7 +279,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="control">
   <div class="section-header"><h2 class="section-title">规则引擎</h2><span class="section-count" id="c-engine"></span></div>
   <div class="ai-panel">
     <div class="s" id="engine-sum">规则引擎：加载中…</div>
@@ -247,7 +302,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="trading">
   <div class="section-header"><h2 class="section-title">条件单</h2><span class="section-count" id="c-cond"></span></div>
   <div class="ai-panel">
     <div class="s">条件单 = 现在不成交、只挂条件。盘中引擎每分钟核对实时价，触发即过风控下单（AI 设计或人工添加均可）。</div>
@@ -271,7 +326,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="control">
   <div class="section-header"><h2 class="section-title">AI 问答</h2></div>
   <div class="ai-panel">
     <div class="ai-row">
@@ -284,12 +339,12 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
-<section>
+<section data-tab="ops">
   <div class="section-header"><h2 class="section-title">AI 操作流水</h2><span class="section-count" id="c-ops"></span></div>
   <div class="scroll"><table id="ops"></table></div>
 </section>
 
-<section>
+<section data-tab="control">
   <div class="section-header"><h2 class="section-title">模型设置</h2></div>
   <div class="ai-panel">
     <div class="s">先选厂商（接口地址自动填好），填 Key，拉模型列表选一个，保存即可。**本地接口（Ollama / LM Studio / vLLM / 局域网网关）不需要 Key，留空就行**。管理口令由浏览器自动保管，不用填也不用记；**只改模型名/厂商/Key 不需要口令，改接口地址才需要口令**（或填写 API Key 接管一次）。</div>
@@ -359,7 +414,6 @@ function rowsC(t,head,bodyArr,showN,emptyLabel){
    展示规范：股票一律写成 名称(代码)，如 贵州茅台(600519)；
    名称缺失时只写代码，不写“未知”等占位词。 */
 let NAMES={};                                   // {symbol: 真实名称}
-let QUOTES={};                                  // {symbol: 腾讯实时}（盘中才有）
 const sym=c=>NAMES[c]?`${NAMES[c]}(${c})`:c;
 const ACTION_CN={
   "run":"每日结算","cron-run":"每日结算（定时任务）","run:dry-run":"试运行（仅预览，不下单）",
@@ -434,14 +488,19 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="engine:buy"||a==="engine:sell"||a==="cond:buy"||a==="cond:sell"){
     const fee=(Number(r.commission)||0)+(Number(r.stamp_duty)||0)+(Number(r.transfer_fee)||0);
     return `成交价 ${fmt(r.filled_price)} 元，手续费 ${fmt(fee)} 元`;}
-  if(a==="ai:plan")return `计划#${r.plan_id??""}：${r.summary||""}（${r.n_actions??0}条动作、${r.n_conditions??0}条条件${r.n_conditions_rejected?`、${r.n_conditions_rejected}条解析未过`:""}，${r.plan_date?r.plan_date+"开盘": "下一交易日开盘"}执行）`;
+  if(a==="ai:plan"){
+    if(r.skipped==="no-fresh-data"){
+      const f=r.freshness||{};
+      return `计划跳过：数据覆盖不足（${f.fresh??"?"}/${f.total??"?"}，最旧 ${f.oldest||"未知"}；持仓陈旧 ${Object.keys(f.holdings_stale||{}).join("、")||"无"}）`;
+    }
+    return `计划#${r.plan_id??""}：${r.summary||""}（${r.n_actions??0}条动作、${r.n_conditions??0}条条件${r.n_conditions_rejected?`、${r.n_conditions_rejected}条解析未过`:""}，${r.plan_date?r.plan_date+"开盘": "下一交易日开盘"}执行）`;}
   if(a==="sync"){const u=r.updated||{};const ks=Object.keys(u);
     if(!ks.length)return "无更新";
     return ks.map(s=>`${sym(s)}${u[s]<0?"同步失败":`新增 ${u[s]} 根K线`}`).join("、");}
   if(a==="run"||a==="cron-run")return`产生信号 ${r.signals??0} 个，下单 ${r.orders??0} 笔`;
   if(a==="preview")return "风控检查通过";
   return "完成";}
-let PERF=null,OV=null,PERFMODE="nav";
+let PERF=null,OV=null,INTS=[],PERFMODE="nav";
 function dayDiff(iso){if(!iso)return null;const t=Date.parse(iso+"T00:00:00");
   return isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/86400000));}
 function sparkSVG(vals){
@@ -496,8 +555,9 @@ function drawPerf(){
     g+=`<line x1="${P.l}" y1="${yy}" x2="${W-P.r}" y2="${yy}" stroke="var(--divider-thin)" stroke-width="1"/>`;
     const lab=mode==="nav"?fmt(v,0):pct(v);
     g+=`<text x="${P.l-8}" y="${yy+4}" text-anchor="end" font-size="11" fill="var(--text-tertiary)">${lab}</text>`;}
-  if(mode==="nav"){const yy=y(PERF.initial_cash||100000);
-    g+=`<line x1="${P.l}" y1="${yy}" x2="${W-P.r}" y2="${yy}" stroke="var(--divider)" stroke-width="1" stroke-dasharray="4 4"/>`;}
+  if(mode==="nav"){const init=PERF.initial_cash||100000,yy=y(init);
+    g+=`<line x1="${P.l}" y1="${yy}" x2="${W-P.r}" y2="${yy}" stroke="var(--divider)" stroke-width="1" stroke-dasharray="4 4"/>`;
+    g+=`<text x="${W-P.r}" y="${Math.max(P.t+10,yy-5)}" text-anchor="end" font-size="11" fill="var(--text-tertiary)">初始资金 ${fmt(init,0)}</text>`;}
   const gapBetween=(a,b)=>{const d0=Date.parse(a),d1=Date.parse(b);
     for(const m of missSet){const t=Date.parse(m);if(t>d0&&t<d1)return true;}return false;};
   let solid="",dashed="";
@@ -544,10 +604,77 @@ function renderToday(){
     ["意图",`执行 ${it.executed_today||0} / 未决 ${it.pending||0} / 拒绝 ${it.rejected_today||0}`,""],
     ["体检",ck?`${ck.green} 绿 / ${ck.warn} 黄 / ${ck.red} 红 · ${String(ck.at||"").slice(11,16)}`:"今日未体检",
       ck&&ck.red?"bad":(ck&&ck.warn?"":"ok")],
-    ["行情",`截至 ${OV.quote_asof||(OV.status&&OV.status.data_asof)||"—"}`,""],
+    ["行情",`截至 ${OV.quote_asof||(OV.status&&OV.status.data_asof)||"—"}${OV.prices_ready===false?"（待今日行情）":""}`,""],
   ];
   g.innerHTML=rows.map(r=>`<div class="today-row"><span class="lab">${r[0]}</span>`+
     `<span class="val ${r[2]}"${ck&&r[0]==="体检"&&((ck.red_ids||[]).length||(ck.warn_ids||[]).length)?` title="${esc([].concat(ck.red_ids||[],ck.warn_ids||[]).join("、"))}"`:""}>${r[1]}</span></div>`).join("");
+}
+function chip(status){
+  const m={executed:["ok","已执行"],rejected:["bad","被拒"],expired:["","已过期"],
+           pending:["warn","待执行"],queued:["warn","排队"]};
+  const c=m[String(status)]||["",status||"—"];
+  return `<span class="status-chip ${c[0]}">${esc(c[1])}</span>`;
+}
+function renderIntents(){
+  const t=document.getElementById("intents"); if(!t)return;
+  document.getElementById("c-intents").textContent=(INTS||[]).length+" 条";
+  rowsC(t,[["时间"],["标的"],["方向"],["股数",1],["来源"],["状态"],["结果"]],(INTS||[]).map(r=>{
+    const d=new Date(r.created_at),buy=String(r.side).toUpperCase()==="BUY";
+    let why="";try{const o=JSON.parse(r.result||"{}");
+      if(o.order_id!=null)why=`成交 #${o.order_id}`+(o.price!=null?` @${o.price}`:"");
+      else if(o.reason==="FILLED")why="框架已成交（账本未落）";
+      else why=o.reason||o.why||o.error||o.fill_biz_id||"";
+    }catch(e){}
+    const ref=String(r.rule_ref||"");
+    const src=ref.startsWith("cond:")?"条件 #"+ref.slice(5):(ref?"规则/计划":"—");
+    return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><b>${esc(r.symbol||"")}</b></td>`+
+      `<td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td>`+
+      `<td class="num">${r.volume||0}</td><td class="mut">${esc(src)}</td><td>${chip(r.status)}</td>`+
+      `<td class="mut">${esc(String(why).slice(0,120))}</td></tr>`;
+  }),10,"暂无意图");
+}
+function renderOpsPanels(){
+  const h=(OV&&OV.health)||{},ck=h.checks||{};
+  const ch=document.getElementById("c-health");
+  if(ch)ch.textContent=Object.keys(ck).length?`${Object.values(ck).filter(x=>x&&x.state==="stale").length} 项异常`:"—";
+  const g=document.getElementById("hbgrid");
+  if(g){
+    const labels=[["engine","引擎"],["rq_tick","rq 消费跳"],["minute","分钟采集"],["agent","AI agent"]];
+    g.innerHTML=labels.map(([k,lab])=>{
+      const v=ck[k]||{},st=v.state||"无记录";
+      const stTxt={"ok":"正常","not-due":"未到时段","stale":"停滞"}[st]||st;
+      const bad=st==="stale"?"bad":(st==="ok"?"":(st==="not-due"?"":"warn"));
+      const age=(v.age_sec!=null?Math.round(v.age_sec)+"s 前":"—");
+      return `<div class="hb ${bad}"><div class="k">${lab}</div><div class="v">${esc(stTxt)}</div>`+
+        `<div class="a">${age}${v.limit_sec?` / 阈值 ${Math.round(v.limit_sec)}s`:""}</div></div>`;
+    }).join("");
+  }
+  const hd=document.getElementById("health-det");
+  if(hd)hd.textContent=h.healthy===false?("告警："+(h.alerts||[]).join("；")):("看门狗检查于 "+(h.checked_at||"—"));
+  const c=OV&&OV.checks;
+  document.getElementById("c-checks").textContent=c?`${c.green}/${c.warn}/${c.red}`:"未跑";
+  const cb=document.getElementById("checksbox");
+  if(cb)cb.innerHTML=c?`<div class="plan-line"><span class="lab">结果</span><span>${c.green} 绿 / ${c.warn} 黄 / ${c.red} 红 · ${esc(String(c.at||"").slice(11,16))}</span></div>`+
+    ((c.red_ids||[]).length?`<div class="plan-line"><span class="lab bad">红</span><span class="bad">${esc(c.red_ids.join("、"))}</span></div>`:"")+
+    ((c.warn_ids||[]).length?`<div class="plan-line"><span class="lab">黄</span><span class="mut">${esc(c.warn_ids.join("、"))}</span></div>`:"")
+    :"今日未体检（15:30 自动跑）";
+  const p=OV&&OV.plan;
+  document.getElementById("c-plan").textContent=p?("计划 #"+p.id):"无";
+  const pb=document.getElementById("planbox");
+  if(pb){
+    if(!p){pb.textContent="暂无计划记录";}
+    else{
+      const f=p.freshness||{};
+      const lines=[
+        ["计划",`#${p.id} · ${p.plan_date||"—"} · ${p.status||"—"}`],
+        ["数据截至",`${p.asof||"—"}${f.oldest?"（最旧 "+f.oldest+"）":""}`],
+        ["当日覆盖",f.total?`${f.fresh}/${f.total}（${(Number(f.coverage||0)*100).toFixed(0)}%）`:"无新鲜度记录（T96 之前）"],
+        ["摘要",p.summary||"—"],
+      ];
+      pb.innerHTML=lines.map(([a,b])=>`<div class="plan-line"><span class="lab">${a}</span><span>${esc(String(b))}</span></div>`).join("")
+        +(f.holdings_stale&&Object.keys(f.holdings_stale).length?`<div class="plan-line"><span class="lab bad">持仓陈旧</span><span class="bad">${esc(Object.entries(f.holdings_stale).map(([k,v])=>k+":"+v).join("、"))}</span></div>`:"");
+    }
+  }
 }
 document.getElementById("perfmodes").addEventListener("click",e=>{
   const b=e.target.closest("button[data-mode]");if(!b)return;
@@ -561,13 +688,14 @@ window.addEventListener("resize",()=>{clearTimeout(window.__ptResize);window.__p
 async function refresh(){
  try{
   const [s,ops,pos,ord,nav,nm,prov]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance"].map(get));
-  const [perfR,ovR]=await Promise.all([
+  const [perfR,ovR,intR]=await Promise.all([
     get("/api/performance").catch(()=>({ok:false})),
-    get("/api/overview").catch(()=>({ok:false}))]);
+    get("/api/overview").catch(()=>({ok:false})),
+    get("/api/intents?limit=100").catch(()=>({ok:false}))]);
   PERF=(perfR&&perfR.ok)?perfR.data:null;
   OV=(ovR&&ovR.ok)?ovR.data:null;
+  INTS=(intR&&intR.ok)?intR.data:[];
   NAMES=(nm&&nm.data)||{};
-  try{const qq=await get("/api/quotes");QUOTES=(qq&&qq.data)||{};}catch(e){QUOTES={};}
   // T22 看门狗红条：不健康才显示；恢复后后端状态翻回 healthy=true ⇒ 红条自动消失
   try{const hh=await get("/api/health");const h=(hh&&hh.data)||{};
     const bar=document.getElementById("healthbar");
@@ -579,29 +707,36 @@ async function refresh(){
   const st=s.data;
   const plist=(pos&&pos.data)||st.positions||[];
   const pf=(PERF&&PERF.summary)||{};
-  const navTotal=(pf.total_value!=null)?pf.total_value:st.total_value;
-  const navCash=(pf.cash!=null)?pf.cash:st.cash;
-  const navMv=(pf.market_value!=null)?pf.market_value:st.market_value;
+  const liveMode=!!(OV&&OV.estimated&&OV.prices_ready&&OV.live_total!=null);
+  const navTotal=liveMode?OV.live_total
+    :((pf.total_value!=null)?pf.total_value:st.total_value);
+  const navCash=liveMode?OV.cash
+    :((pf.cash!=null)?pf.cash:st.cash);
+  const navMv=liveMode?OV.live_market_value
+    :((pf.market_value!=null)?pf.market_value:st.market_value);
   const asof=(OV&&OV.quote_asof)||st.data_asof||"无数据";
-  const todayPnl=(OV&&OV.today_pnl!=null)?OV.today_pnl:pf.today_pnl;
-  const todayPct=(OV&&OV.today_pnl_pct!=null)?OV.today_pnl_pct:pf.today_pnl_pct;
-  const est=OV?!!OV.estimated:false;
-  const expo=(pf.exposure!=null)?pf.exposure
-    :(navTotal?navMv/navTotal:null);
+  const todayPnl=(OV&&OV.today_pnl!=null)?OV.today_pnl:null;
+  const todayPct=(OV&&OV.today_pnl!=null)?OV.today_pnl_pct:null;
+  const est=!!(OV&&OV.estimated&&OV.today_pnl!=null);
+  const expo=(navTotal?navMv/navTotal:null);
   document.getElementById("clock").textContent="行情截至 "+asof+" · 页面更新于 "+new Date().toLocaleTimeString("zh-CN");
   document.getElementById("statusbar").innerHTML=`
    <div class="status-item"><span class="status-label">行情截至</span><span class="status-value">${asof}</span></div>
    <div class="status-item"><span class="status-label">持仓</span><span class="status-value">${plist.length} 只</span></div>
    <div class="status-item"><span class="status-label">模式</span><span class="status-value">纸盘 · 只读面板</span></div>`;
   document.getElementById("cards").innerHTML=`
-   <div class="market-item"><div class="market-name">总资产 CNY</div><div class="market-value">${fmt(navTotal,0)}</div><div class="kpi-sub">现金 ${fmt(navCash,0)} + 市值 ${fmt(navMv,0)}${PERF&&PERF.asof?" · 收盘 "+PERF.asof:""}</div></div>
-   <div class="market-item"><div class="market-name">今日盈亏</div><div class="market-value ${cls(todayPnl)}">${todayPnl==null?"—":(todayPnl>=0?"+":"")+fmt(todayPnl)}</div><div class="kpi-sub ${cls(todayPnl)}">${todayPct==null?"—":pct(todayPct)}${est?'<span class="kpi-tag">盘中估算</span>':""}</div></div>
+   <div class="market-item"><div class="market-name">总资产 CNY</div><div class="market-value">${fmt(navTotal,0)}</div><div class="kpi-sub">现金 ${fmt(navCash,0)} + 市值 ${fmt(navMv,0)}${liveMode?" · 盘中价":(PERF&&PERF.asof?" · 收盘 "+PERF.asof:"")}</div></div>
+   <div class="market-item"><div class="market-name">今日盈亏</div><div class="market-value ${cls(todayPnl)}">${todayPnl==null?"—":(todayPnl>=0?"+":"")+fmt(todayPnl)}</div><div class="kpi-sub ${cls(todayPnl)}">${todayPnl==null?"待今日行情":pct(todayPct)}${est?'<span class="kpi-tag">盘中估算</span>':""}</div></div>
    <div class="market-item"><div class="market-name">累计收益</div><div class="market-value ${cls(pf.total_return)}">${pf.total_return==null?"—":(pf.total_return>=0?"+":"")+pct(pf.total_return)}</div><div class="kpi-sub ${cls(pf.total_pnl)}">${pf.total_pnl==null?"—":(pf.total_pnl>=0?"+":"")+fmt(pf.total_pnl)} · 自 ${(PERF&&PERF.series&&PERF.series[0])?PERF.series[0].date:"—"}</div></div>
    <div class="market-item"><div class="market-name">最大回撤</div><div class="market-value">${pf.mdd==null?"—":pct(pf.mdd)}</div><div class="kpi-sub">${pf.mdd_date?"发生于 "+pf.mdd_date:""}${pf.current_drawdown!=null?" · 当前 "+pct(pf.current_drawdown):""}</div></div>
    <div class="market-item"><div class="market-name">仓位</div><div class="market-value">${expo==null?"—":pct(expo)}</div><div class="kpi-sub">现金占比 ${expo==null?"—":pct(1-expo)}</div></div>`;
   drawPerf();
   renderToday();
-  document.getElementById("c-nav").textContent=(nav.data||[]).length+" 条记录";
+  renderIntents();
+  renderOpsPanels();
+  const navRows=(nav.data||[]);
+  const navDays=new Set(navRows.map(r=>String(r.timestamp).slice(0,10))).size;
+  document.getElementById("c-nav").textContent=`${navRows.length} 行 · ${navDays} 个交易日（同日多条保留）`;
   document.getElementById("c-ops").textContent=(ops.data||[]).length+" 条";
   document.getElementById("c-pos").textContent=(plist||[]).length+" 只股票";
   document.getElementById("c-orders").textContent=(ord.data||[]).length+" 笔";
@@ -619,8 +754,8 @@ async function refresh(){
     10,"暂无操作记录 —— AI 执行每日结算、买入、卖出后会出现在这里");
   rows(document.getElementById("pos"),[["代码"],["名称"],["股数",1],["可卖",1],["成本",1],["现价",1],["市值",1],["占比",1],["浮盈亏",1],["天数",1],["距峰值",1],["走势"]],
     (plist||[]).map(p=>{const pn=(p.current_price-p.avg_cost)*p.total_volume;
-    const live=(QUOTES||{})[p.symbol];
-    const pxHtml=live&&live.price?`${fmt(live.price)} <span class="tag live">实时</span>`:`${fmt(p.current_price)}`;
+    const pxHtml=`${fmt(p.current_price)}`+(p.price_source==="分钟"
+      ?` <span class="tag live">${esc(p.price_time||"分钟")}</span>`:"");
     const share=navTotal?p.market_value/navTotal:null;
     const vsPeak=(p.peak_price>0&&p.current_price>0)?(p.current_price/p.peak_price-1):null;
     const d=dayDiff(p.entry_day);
@@ -654,6 +789,27 @@ async function refresh(){
     }),12,"暂无来源数据");
  }catch(e){document.getElementById("clock").textContent="刷新失败: "+e}
 }
+/* ---- P1：任务视图（总览 / 交易 / 运维 / 控制台） ---- */
+const TAB_IDS=["overview","trading","ops","control"];
+function applyTab(tab){
+  const t=TAB_IDS.includes(tab)?tab:"overview";
+  document.querySelectorAll("#tabs button").forEach(b=>{
+    const on=b.dataset.tab===t;b.classList.toggle("on",on);
+    b.setAttribute("aria-selected",on?"true":"false");});
+  document.querySelectorAll("[data-tab]:not(button)").forEach(el=>el.classList.toggle("on",el.dataset.tab===t));
+  if(t==="overview"&&typeof drawPerf==="function")setTimeout(drawPerf,0);
+}
+function hashTab(){
+  const h=(location.hash||"").replace(/^#\/?/,"");
+  return TAB_IDS.includes(h)?h:"overview";
+}
+document.getElementById("tabs").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-tab]");if(!b)return;
+  location.hash="#/"+b.dataset.tab;
+});
+window.addEventListener("hashchange",()=>applyTab(hashTab()));
+applyTab(hashTab());
+
 refresh();setInterval(refresh,15000);
 
 /* ---- 模型设置与 AI 问答（口令浏览器自动保管，用户无感） ---- */
@@ -980,6 +1136,20 @@ def _ro(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{Path(db_path).resolve()}?mode=ro", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _limit_arg(q: dict, default: int = 30, maxv: int = 500) -> int:
+    """查询参数 limit 的安全解析：坏值回默认，负数/超大值夹到 1..maxv。
+
+    旧实现 `int(q.get("limit"))`：`?limit=abc` 直接 500；`?limit=-1` 在 SQLite
+    里等于"不限制"，一次请求能把整张 op_log 拉出来。面板是只读页，但错误输入
+    不该变成 500 或大响应。
+    """
+    try:
+        v = int(q.get("limit", [str(default)])[0])
+    except (TypeError, ValueError, IndexError):
+        v = default
+    return max(1, min(v, int(maxv)))
 
 
 def _takeover_token(body: dict, secrets_path) -> str:
@@ -1356,6 +1526,7 @@ def _overview_payload(bridge) -> dict:
     conds = {"armed": 0, "queued_rq": 0, "filled_today": 0, "created_today": 0}
     intents = {"executed_today": 0, "rejected_today": 0, "pending": 0}
     navs: list[tuple[str, float]] = []
+    plan = None
     try:
         conn = _ro(db)
         try:
@@ -1398,6 +1569,19 @@ def _overview_payload(bridge) -> dict:
             if "nav_history" in tabs:
                 navs = [(str(r[0])[:10], float(r[1])) for r in conn.execute(
                     "SELECT timestamp, total_value FROM nav_history ORDER BY id")]
+            if "agent_plans" in tabs:
+                row = conn.execute(
+                    "SELECT id, plan_date, status, plan_json FROM agent_plans"
+                    " ORDER BY id DESC LIMIT 1").fetchone()
+                if row:
+                    try:
+                        pj = json.loads(row["plan_json"] or "{}")
+                    except ValueError:
+                        pj = {}
+                    plan = {"id": row["id"], "plan_date": row["plan_date"],
+                            "status": row["status"], "asof": pj.get("asof"),
+                            "summary": str(pj.get("summary") or "")[:160],
+                            "freshness": pj.get("freshness")}
         finally:
             conn.close()
     except sqlite3.Error:
@@ -1405,13 +1589,20 @@ def _overview_payload(bridge) -> dict:
 
     by_day = {d: tv for d, tv in navs}
     days = sorted(by_day)
-    raw, quote_asof = _raw_close_map(getattr(bridge, "data_db", None))
-    live_total = float(st.get("total_value") or 0.0)
-    if raw:
-        mv = sum(float(p.get("total_volume") or 0) * raw[p["symbol"]]
-                 for p in (st.get("positions") or [])
-                 if p.get("symbol") in raw)
-        live_total = float(st.get("cash") or 0.0) + mv
+    positions = st.get("positions") or []
+    prices = _display_price_map(getattr(bridge, "data_db", None), today)
+    mv = 0.0
+    missing: list[str] = []
+    for p in positions:
+        info = prices.get(p.get("symbol"))
+        px = info["price"] if info else float(p.get("current_price") or 0.0)
+        mv += float(p.get("total_volume") or 0) * px
+        if not info or info["asof"] != today:
+            missing.append(p.get("symbol"))
+    live_total = float(st.get("cash") or 0.0) + mv
+    prices_ready = not missing
+    quote_asof = max((prices[p["symbol"]]["asof"] for p in positions
+                      if p.get("symbol") in prices), default=None)
     estimated = False
     today_pnl = None
     base = None
@@ -1419,57 +1610,93 @@ def _overview_payload(bridge) -> dict:
         prev = by_day[days[-2]] if len(days) >= 2 else None
         today_pnl = (by_day[days[-1]] - prev) if prev is not None else 0.0
         base = prev if prev else by_day[days[-1]]
-    elif days:
+    elif days and prices_ready:
         last = by_day[days[-1]]
         base = last
         today_pnl = live_total - last
         estimated = True
+    elif days:
+        estimated = True                 # 今日还没有可信价：不拿昨日价冒充
     pct = (today_pnl / base) if (today_pnl is not None and base) else None
-    health = hb.read_status(max_age_sec=300) or hb.probe()
+    snap = hb.read_status(max_age_sec=300) or {}
+    probe = hb.probe(thresholds={"rq_tick": hb.RQ_TICK_THRESHOLD,
+                                 "minute": hb.MINUTE_THRESHOLD})
+    health = {**probe, **snap,
+              "checks": {**(probe.get("checks") or {}),
+                         **(snap.get("checks") or {})}}
     return {
         "date": today,
         "status": st,
         "today_pnl": None if today_pnl is None else round(today_pnl, 4),
         "today_pnl_pct": None if pct is None else round(pct, 6),
         "estimated": estimated,
+        "live_total": round(live_total, 4),
+        "live_market_value": round(mv, 4),
+        "cash": round(float(st.get("cash") or 0.0), 4),
         "fills": fills,
         "conditions": conds,
         "intents": intents,
         "checks": _today_checks(db, today),
+        "plan": plan,
         "quote_asof": quote_asof,
+        "prices_ready": prices_ready,
         "health": {"healthy": health.get("healthy"),
                    "alerts": health.get("alerts") or [],
-                   "checked_at": health.get("checked_at")},
+                   "checked_at": health.get("checked_at"),
+                   "checks": health.get("checks") or {}},
     }
 
 
-def _raw_close_map(data_db) -> tuple[dict, str | None]:
-    """最新 raw 收盘（与 NAV/账本同口径：不复权成交价）+ 日期。
+def _display_price_map(data_db, today: str) -> dict:
+    """持仓展示价（优先级）：今日 raw 收盘 > 今日分钟线 > 最近 raw 收盘。
 
-    为什么面板不用 `status.current_price`：那条走 `daily_bars`（前复权），
-    2026-11-19 生产实测它只到 11-18（22 只），而 NAV 收盘（raw）已经是 11-19。
-    同一个页面里两套价会把"总资产"和"净值曲线"画成两个数。raw 与账本成交价
-    同源，市值才能与 `nav_history.market_value` 逐分对上（实测 49,620.0）。
+    只用于**展示**，不回流到撮合/风控/账本：
+    - 收盘后（15:40 raw 落库）用当日 raw，与 NAV 同源；
+    - 盘中 raw 还没今天，用当日分钟线（每 15 分钟更新），标注"分钟 HH:MM"；
+    - 开盘前只有上一交易日 raw，标注"收盘"。
+    这样"现价 / 市值 / 今日盈亏"在任意时点都能互相对上；不会再出现
+    "价格是实时的、市值是昨天的"这种半截数据。
     """
     p = getattr(data_db, "db_path", None) or getattr(data_db, "path", None)
+    out: dict[str, dict] = {}
     if not p:
-        return {}, None
+        return out
     try:
         conn = _ro(str(p))
         try:
-            row = conn.execute(
-                "SELECT MAX(substr(timestamp,1,10)) FROM daily_bars_raw").fetchone()
-            day = row[0] if row else None
-            if not day:
-                return {}, None
-            m = {r[0]: float(r[1]) for r in conn.execute(
-                "SELECT symbol, close FROM daily_bars_raw"
-                " WHERE substr(timestamp,1,10)=?", (day,))}
-            return m, str(day)
+            tabs = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            latest = None
+            if "daily_bars_raw" in tabs:
+                row = conn.execute(
+                    "SELECT MAX(substr(timestamp,1,10)) FROM daily_bars_raw").fetchone()
+                latest = row[0] if row else None
+                if latest:
+                    for r in conn.execute(
+                            "SELECT symbol, close FROM daily_bars_raw"
+                            " WHERE substr(timestamp,1,10)=?", (latest,)):
+                        if r[1] is None:
+                            continue
+                        out[r[0]] = {"price": float(r[1]), "asof": latest,
+                                     "source": "收盘", "time": ""}
+            if "minute_bars" in tabs:
+                rows = conn.execute(
+                    "SELECT symbol, ts, close FROM minute_bars"
+                    " WHERE substr(ts,1,10)=? ORDER BY ts", (today,)).fetchall()
+                for r in rows:
+                    if r[2] is None:
+                        continue
+                    sym = r[0]
+                    cur = out.get(sym)
+                    if cur and cur["asof"] == today and cur["source"] == "收盘":
+                        continue                     # 今日 raw 优先于分钟
+                    out[sym] = {"price": float(r[2]), "asof": today,
+                                "source": "分钟", "time": str(r[1])[11:16]}
         finally:
             conn.close()
     except sqlite3.Error:
-        return {}, None
+        pass
+    return out
 
 
 def _raw_closes(data_db, symbol: str, n: int = 10) -> list[float]:
@@ -1491,18 +1718,26 @@ def _raw_closes(data_db, symbol: str, n: int = 10) -> list[float]:
 
 
 def _positions_payload(bridge) -> list[dict]:
-    """持仓表数据：现价/市值/走势用 raw（与 NAV 同源），补 peak/entry_day。"""
+    """持仓表数据：现价/市值/走势用展示价（今日 raw > 分钟 > 最近 raw）。"""
     st = bridge.get_status()
-    raw, _ = _raw_close_map(getattr(bridge, "data_db", None))
+    today = datetime.now().date().isoformat()
+    prices = _display_price_map(getattr(bridge, "data_db", None), today)
     pos = {p.symbol: p for p in bridge.broker.get_all_positions()}
     for row in st["positions"]:
         p = pos.get(row["symbol"])
         row["peak_price"] = getattr(p, "peak_price", None)
         row["entry_day"] = getattr(p, "entry_day", None)
-        px = raw.get(row["symbol"])
-        if px:
-            row["current_price"] = px
-            row["market_value"] = float(row["total_volume"]) * px
+        info = prices.get(row["symbol"])
+        if info:
+            row["current_price"] = info["price"]
+            row["market_value"] = float(row["total_volume"]) * info["price"]
+            row["price_asof"] = info["asof"]
+            row["price_source"] = info["source"]
+            row["price_time"] = info["time"]
+        else:
+            row["price_asof"] = None
+            row["price_source"] = "日线"
+            row["price_time"] = ""
         row["spark"] = _raw_closes(getattr(bridge, "data_db", None),
                                    row["symbol"], 10)
     return st["positions"]
@@ -1689,13 +1924,31 @@ class Handler(BaseHTTPRequestHandler):
                                 "error": str(e)[:120]})
             elif u.path == "/api/engine":
                 self._json({"ok": True, "data": _engine_view(self._bridge())})
+            elif u.path == "/api/intents":
+                q = parse_qs(u.query)
+                limit = _limit_arg(q, 50, 500)
+                status = (q.get("status") or [None])[0]
+                conn = _ro(self.account_db)
+                try:
+                    sql = ("SELECT biz_id, symbol, side, volume, rule_ref, status,"
+                           " created_at, result FROM rq_intents")
+                    args: list = []
+                    if status:
+                        sql += " WHERE status=?"
+                        args.append(status)
+                    sql += " ORDER BY created_at DESC LIMIT ?"
+                    args.append(limit)
+                    self._json({"ok": True,
+                                "data": [dict(r) for r in conn.execute(sql, args)]})
+                finally:
+                    conn.close()
             elif u.path == "/api/cond":
                 from paper_trading.engine.conditional import ConditionalOrders
 
                 q = parse_qs(u.query)
                 co = ConditionalOrders(self.account_db)
                 self._json({"ok": True, "data": {
-                    "orders": co.list_all(int(q.get("limit", ["60"])[0] or 60),
+                    "orders": co.list_all(_limit_arg(q, 60),
                                           q.get("status", [None])[0]),
                     "armed": len(co.pending()),
                     "triggers": _engine_triggers(self.account_db)}})
@@ -1709,7 +1962,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(r, code=200)
             elif u.path in ("/api/nav", "/api/ops", "/api/orders", "/api/fills"):
                 q = parse_qs(u.query)
-                limit = int(q.get("limit", ["30"])[0])
+                limit = _limit_arg(q, 30)
                 conn = _ro(self.account_db)
                 try:
                     # 表名/列名只取自下方固定映射（用户输入仅决定走哪条分支），
