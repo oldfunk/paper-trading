@@ -672,6 +672,7 @@ function renderOpsPanels(){
         ["摘要",p.summary||"—"],
       ];
       pb.innerHTML=lines.map(([a,b])=>`<div class="plan-line"><span class="lab">${a}</span><span>${esc(String(b))}</span></div>`).join("")
+        +((p.actions_rejected||[]).length?`<div class="plan-line"><span class="lab bad">整备拒绝</span><span class="bad">${esc(p.actions_rejected.map(x=>`${x.symbol}：${x.reason}`).join("；"))}</span></div>`:"")
         +(f.holdings_stale&&Object.keys(f.holdings_stale).length?`<div class="plan-line"><span class="lab bad">持仓陈旧</span><span class="bad">${esc(Object.entries(f.holdings_stale).map(([k,v])=>k+":"+v).join("、"))}</span></div>`:"");
     }
   }
@@ -1581,7 +1582,12 @@ def _overview_payload(bridge) -> dict:
                     plan = {"id": row["id"], "plan_date": row["plan_date"],
                             "status": row["status"], "asof": pj.get("asof"),
                             "summary": str(pj.get("summary") or "")[:160],
-                            "freshness": pj.get("freshness")}
+                            "freshness": pj.get("freshness"),
+                            "actions_rejected": [
+                                {"symbol": a.get("symbol"),
+                                 "reason": str(a.get("reject_reason") or "")[:120]}
+                                for a in (pj.get("actions_rejected") or [])
+                                if isinstance(a, dict)][:6]}
         finally:
             conn.close()
     except sqlite3.Error:

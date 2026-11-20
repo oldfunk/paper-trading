@@ -22,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -323,7 +323,21 @@ def check_cond_loop(account_db, today: str, *, executor: str = "rqalpha") -> dic
         rows = [dict(r) for r in c.execute(
             "SELECT biz_id, rule_ref, status FROM rq_intents"
             " WHERE substr(created_at,1,10)=? AND rule_ref LIKE 'cond:%'", (today,))]
+        # T92（2026-11-20）：僵尸条件单——触发后入了队列、意图已过期，条件单
+        # 却一直停在 queued_rq。今天没有新触发时也必须报，不能报"无条件触发"绿。
+        cutoff = (datetime.fromisoformat(today) - timedelta(days=3)).date().isoformat()
+        zombies = [dict(r) for r in c.execute(
+            "SELECT id, symbol, created_at FROM conditional_orders"
+            " WHERE status='queued_rq' AND substr(created_at,1,10) < ?"
+            " ORDER BY id", (cutoff,))]
         if not rows:
+            if zombies:
+                return item(
+                    "cond_loop", "条件单闭环", "warn",
+                    f"{today} 无条件触发，但有 {len(zombies)} 条 queued_rq 超过 3 天"
+                    f"未落定：{[z['id'] for z in zombies][:6]}——"
+                    "意图多半已跨日过期而条件单没跟着收口",
+                    on_red="查 expire_stale 是否落定条件单（T92）/expire_due 是否被跳过")
             return item("cond_loop", "条件单闭环", "green", f"{today} 无条件触发")
         ids = set()
         for r in rows:
@@ -346,6 +360,11 @@ def check_cond_loop(account_db, today: str, *, executor: str = "rqalpha") -> dic
                     f"{detail}——已成交的条件单仍非 filled：{stuck}"
                     f"（会在下一交易日重复触发买入；面板也会一直显示待触发）",
                     on_red="查 rq 队列闭环（queue.apply_outcomes）与条件状态白名单")
+    if zombies:
+        return item("cond_loop", "条件单闭环", "warn",
+                    f"{detail}；另有 {len(zombies)} 条 queued_rq 超过 3 天未落定："
+                    f"{[z['id'] for z in zombies][:6]}",
+                    on_red="查 expire_stale 是否落定条件单（T92）/expire_due 是否被跳过")
     return item("cond_loop", "条件单闭环", "green", detail)
 
 

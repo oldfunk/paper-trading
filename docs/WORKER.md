@@ -1586,26 +1586,20 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 > 已在，但**装配是硬编码**（`cli.py:196`、`main.py:50`），无注册表/无参数注入/
 > 无自定义加载契约；规则引擎+队列模式已让系统无计划独立成交（11-16 实证）。
 
-- [ ] **T87 策略契约与注册表**：`BaseStrategy` 明确 `params_schema`（类型/默认/
-  范围）+ `name` 唯一性；新增 `paper_trading/strategy/registry.py`：
-  `build(spec)` 按 `{class, params}` 构造，未知类/参数越界 **fail-closed**
-  （返回错误并留痕，不许静默用默认值）。验收：单测覆盖正常/未知类/坏参数。
-- [ ] **T88 配置注入与默认装配**：`strategy.local.yaml` 支持
-  `strategies: [{name, class, params, enabled}]`；`cli.TradingBridge` 与
-  `main.py` 不再硬编码 `MACrossStrategy`，改为注册表装配；空配置 ⇒ 内置默认
-  （MA5/20）；坏配置 ⇒ 启动即失败并写 `op_log[strategy:config]`。
-  验收：配置优先级（local > 默认）、禁用策略不产生信号。
-- [ ] **T89 自定义策略加载契约**：允许 `class: mypkg.MyStrategy`（仅限已安装
-  包/`PAPER_TRADING_STRATEGY_PATH` 白名单目录）；导入失败/非 BaseStrategy 子类
-  ⇒ 拒绝并留痕；文档写明"自定义策略不得直接下单"（只产 `Signal`，执行仍走风控+
-  队列）。验收：临时模块加载成功 + 三类坏输入被拒。
-- [ ] **T90 内置基础策略集与"无 AI 也能决策"**：除 MA 交叉外补一个不依赖母库的
-  基础组合（例：`Breakout` 20 日高突破 + `StopLoss` 已有规则、`RSI` 区间），
-  全部只吃本地 `daily_bars_raw`；给出"断网 + 无 LLM key"的独立运行日配置样例。
-  验收：离线 dry-run 一日产生可解释信号。
-- [ ] **T91 文档与回归**：`docs/strategy-contract.md`（契约/参数表/示例/禁用与
-  回滚）；`tests/test_strategy_registry_t87.py`；CI 门禁含新增测试；
-  文档写明"策略只做判定，L1 执行与钱类口径不变"。
+- [x] **T87 策略契约与注册表**（2026-11-20）：`BaseStrategy.params_schema` + 
+  `strategy/registry.py`（`build`/`build_all`/`build_from_config`/`load_specs`），
+  未知类/未知参数/类型/越界/构造失败/重名全部 `StrategyConfigError`。
+- [x] **T88 配置注入与默认装配**（2026-11-20）：`config.yaml strategy.strategies`
+  + `strategy.local.yaml` 优先；`TradingBridge` / `main.py` 改注册表装配；
+  空配置回 MA5/20；坏配置启动失败并写 `op_log[strategy:config]`。
+- [x] **T89 自定义策略加载契约**（2026-11-20）：`pkg.Module.Class` 仅限已安装包
+  或 `PAPER_TRADING_STRATEGY_PATH` 白名单；非子类/导入失败/越界目录拒绝；
+  文档写明"不得直接下单"（`docs/strategy-contract.md`）。
+- [x] **T90 内置基础策略集**（2026-11-20）：新增 `breakout`（20 日高突破 /
+  10 日低跌破）与 `rsi_zone`（RSI 穿越 30/70），只吃本地日线；文档给离线
+  dry-run 样例（`--scheme general run --dry-run`，无母库/无 LLM）。
+- [x] **T91 文档与回归**（2026-11-20）：`docs/strategy-contract.md` + 
+  `tests/test_strategy_registry_t87.py`（18 条）；全量套件含新增用例。
 
 ## Batch 22 追加 · 11-18 事故派生（2026-11-19）
 
@@ -1613,13 +1607,11 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 > `docs/incident-2026-11-18.md`。以下两项是复盘时暴露、但**不属于**当日
 > 止血范围的结构缺口。
 
-- [ ] **T92 条件单僵尸收口**：`queue.expire_stale` 清跨日意图时不落定对应
-  条件单 ⇒ 该单永久停在 `queued_rq`（面板"已交框架"常亮），而
-  `daily_check.check_cond_loop` 只看当天 `executed` 的意图，看不见它们。
-  修：`expire_stale` 命中 `rule_ref=cond:<id>` 时同步把条件单标
-  `expired`（或 `cancelled`，二者择一并写进面板/文档）；`cond_loop`
-  增加"`queued_rq` 超过 N 个交易日"判别。验收：造一条过期 `queued_rq`
-  条件单，`expire_stale` 后状态落定且 daily-check 不再漏报。
+- [x] **T92 条件单僵尸收口**（2026-11-20）：`queue.expire_stale` 命中
+  `rule_ref=cond:<id>` 时同步把 `queued_rq` 条件单标 `expired`，detail 写
+  `expired_why/expired_on`；`daily_check.check_cond_loop` 增加"`queued_rq`
+  创建超过 3 天"的 warn（无今日触发也报）。验收：`test_cond_expire_t92.py`
+  5 条（过期落定/armed 不动/非 cond 不动/僵尸 warn/无僵尸 green）。
 - [x] **T93 "活着但没干活"探针**（`bb7ff9d`）：11-18 每跳都以 0 退出、心跳正常，
   而 `InitPositionError` 在 `rq_tick.log` 刷了 142 次、全日 0 成交——现有
   `engine_crash` 只扫 `engine.log` 且只认 `crashed` 关键词。已加 daily-check

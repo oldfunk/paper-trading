@@ -32,7 +32,6 @@ from paper_trading.data.db_manager import DataDBManager
 from paper_trading.models import Order, OrderType, TradingConfig
 from paper_trading.portfolio.portfolio import Portfolio
 from paper_trading.risk.risk_manager import RiskManager
-from paper_trading.strategy.ma_cross_strategy import MACrossStrategy
 from paper_trading.utils import get_logger
 
 
@@ -193,12 +192,27 @@ class TradingBridge:
         self.risk = RiskManager(
             db_path=self.account_db_path,
             **(risk_kwargs or {}))
-        self.strategy = MACrossStrategy(
-            short_window=int(strat_kwargs.get("short_window", 5)),
-            long_window=int(strat_kwargs.get("long_window", 20)),
-            buy_volume=int(strat_kwargs.get("buy_volume", 100)),
-            sell_volume=int(strat_kwargs.get("sell_volume", 100)),
+        from paper_trading.strategy.registry import (
+            StrategyConfigError as _StrategyConfigError,
         )
+        from paper_trading.strategy.registry import build_from_config as _build_strategy
+
+        try:
+            self.strategy = _build_strategy(
+                self.config_path, root=_root,
+                defaults={"short_window": strat_kwargs.get("short_window", 5),
+                          "long_window": strat_kwargs.get("long_window", 20),
+                          "buy_volume": strat_kwargs.get("buy_volume", 100),
+                          "sell_volume": strat_kwargs.get("sell_volume", 100)})
+        except _StrategyConfigError as exc:
+            # T88：坏策略配置启动即失败，但先把原因写进账本（cron 无人值守可审计）
+            try:
+                self.broker.log_operation(
+                    "strategy:config", {"config": str(self.config_path)},
+                    False, {"error": str(exc)}, None, None)
+            except Exception:               # noqa: BLE001 - 留痕失败不掩盖原错误
+                pass
+            raise
         self.config = config or TradingConfig()
         self.stock_pool = stock_pool
         self.secrets_path = secrets_path
