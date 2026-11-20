@@ -217,6 +217,17 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   <div class="scroll"><table id="pos"></table></div>
 </section>
 
+<section data-tab="overview">
+  <div class="section-header"><h2 class="section-title">今日分时</h2><span class="section-count" id="c-intraday"></span></div>
+  <div class="card">
+    <div class="chart-wrap" id="intradaywrap" style="height:220px">
+      <svg id="intradaychart" role="img" aria-label="今日分时权益"></svg>
+      <div class="chart-tip" id="intradaytip"></div>
+    </div>
+    <div class="s" id="intraday-note"></div>
+  </div>
+</section>
+
 <section data-tab="trading">
   <div class="section-header"><h2 class="section-title">订单记录</h2><span class="section-count" id="c-orders"></span></div>
   <div class="scroll"><table id="orders"></table></div>
@@ -500,7 +511,7 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="run"||a==="cron-run")return`产生信号 ${r.signals??0} 个，下单 ${r.orders??0} 笔`;
   if(a==="preview")return "风控检查通过";
   return "完成";}
-let PERF=null,OV=null,INTS=[],PERFMODE="nav";
+let PERF=null,OV=null,INTS=[],INTRA=null,PERFMODE="nav";
 function dayDiff(iso){if(!iso)return null;const t=Date.parse(iso+"T00:00:00");
   return isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/86400000));}
 function sparkSVG(vals){
@@ -684,6 +695,62 @@ function renderOpsPanels(){
     }
   }
 }
+function drawIntraday(){
+  const svg=document.getElementById("intradaychart");
+  const wrap=document.getElementById("intradaywrap");
+  const tip=document.getElementById("intradaytip");
+  const note=document.getElementById("intraday-note");
+  const cnt=document.getElementById("c-intraday");
+  if(!svg||!wrap)return;
+  const S=(INTRA&&INTRA.series)||[];
+  if(!INTRA||!INTRA.available||S.length<2){
+    svg.innerHTML='<text x="50%" y="48%" text-anchor="middle" fill="var(--text-tertiary)" font-size="13">今日无分时（非交易日/分钟线未到）</text>';
+    if(cnt)cnt.textContent="—";
+    if(note)note.textContent=INTRA?(INTRA.note||""):"";
+    if(tip)tip.style.display="none";
+    return;
+  }
+  const W=Math.max(320,wrap.clientWidth||800),H=Math.max(180,wrap.clientHeight||220);
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  const P={l:64,r:14,t:12,b:24};
+  const t0=Date.parse(S[0].ts),t1=Date.parse(S[S.length-1].ts),span=Math.max(1,t1-t0);
+  const x=ts=>P.l+(Date.parse(ts)-t0)/span*(W-P.l-P.r);
+  const vals=S.map(p=>Number(p.total));
+  let lo=Math.min(...vals),hi=Math.max(...vals);
+  if(hi-lo<1e-9)hi=lo+1;
+  const pad=(hi-lo)*0.10;lo-=pad;hi+=pad;
+  const y=v=>P.t+(hi-v)/(hi-lo)*(H-P.t-P.b);
+  let g="";
+  for(let k=0;k<=2;k++){const v=lo+(hi-lo)*k/2,yy=y(v);
+    g+=`<line x1="${P.l}" y1="${yy}" x2="${W-P.r}" y2="${yy}" stroke="var(--divider-thin)"/>`+
+       `<text x="${P.l-8}" y="${yy+4}" text-anchor="end" font-size="11" fill="var(--text-tertiary)">${fmt(v,0)}</text>`;}
+  const pts=S.map(p=>`${x(p.ts)},${y(p.total)}`).join(" ");
+  const area=`${x(S[0].ts)},${y(lo)} ${pts} ${x(S[S.length-1].ts)},${y(lo)}`;
+  const xlabs=[0,Math.floor((S.length-1)/2),S.length-1].filter((v,i,a)=>a.indexOf(v)===i)
+    .map(i=>`<text x="${x(S[i].ts)}" y="${H-6}" text-anchor="middle" font-size="11" fill="var(--text-tertiary)">${S[i].ts.slice(11,16)}</text>`).join("");
+  svg.innerHTML=`<defs><linearGradient id="ig" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".16"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>`+
+    g+`<polygon points="${area}" fill="url(#ig)"/>`+
+    `<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>`+
+    `<circle cx="${x(S[0].ts)}" cy="${y(S[0].total)}" r="2.8" fill="var(--accent)"/>`+
+    `<circle cx="${x(S[S.length-1].ts)}" cy="${y(S[S.length-1].total)}" r="2.8" fill="var(--accent)"/>`+
+    xlabs+`<rect id="ihit" x="${P.l}" y="${P.t}" width="${W-P.l-P.r}" height="${H-P.t-P.b}" fill="transparent"/>`;
+  if(cnt)cnt.textContent=`${S.length} 点 · ${INTRA.fills||0} 笔成交`;
+  if(note){
+    let t=INTRA.note||"";
+    if(INTRA.reconstruction_ok===false)t+="（反推出现负仓位/负现金，需核账）";
+    note.textContent=t;
+  }
+  const hit=svg.querySelector("#ihit");
+  hit.addEventListener("mousemove",ev=>{
+    const r=svg.getBoundingClientRect(),px=(ev.clientX-r.left)*(W/r.width);
+    let best=0,bd=1e9;for(let i=0;i<S.length;i++){const dx=Math.abs(x(S[i].ts)-px);if(dx<bd){bd=dx;best=i;}}
+    const p=S[best];
+    tip.style.display="block";
+    tip.innerHTML=`<b>${p.ts.slice(11,16)}</b><br>总资产 ${fmt(p.total)}<br>现金 ${fmt(p.cash)}<br>市值 ${fmt(p.mv)}`;
+    const left=Math.min(W-170,Math.max(0,x(p.ts)+12));tip.style.left=(left/W*100)+"%";tip.style.top="10px";
+  });
+  hit.addEventListener("mouseleave",()=>{tip.style.display="none";});
+}
 document.getElementById("perfmodes").addEventListener("click",e=>{
   const b=e.target.closest("button[data-mode]");if(!b)return;
   PERFMODE=b.dataset.mode;
@@ -696,13 +763,15 @@ window.addEventListener("resize",()=>{clearTimeout(window.__ptResize);window.__p
 async function refresh(){
  try{
   const [s,ops,pos,ord,nav,nm,prov]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance"].map(get));
-  const [perfR,ovR,intR]=await Promise.all([
+  const [perfR,ovR,intR,intraR]=await Promise.all([
     get("/api/performance").catch(()=>({ok:false})),
     get("/api/overview").catch(()=>({ok:false})),
-    get("/api/intents?limit=100").catch(()=>({ok:false}))]);
+    get("/api/intents?limit=100").catch(()=>({ok:false})),
+    get("/api/intraday").catch(()=>({ok:false}))]);
   PERF=(perfR&&perfR.ok)?perfR.data:null;
   OV=(ovR&&ovR.ok)?ovR.data:null;
   INTS=(intR&&intR.ok)?intR.data:[];
+  INTRA=(intraR&&intraR.ok)?intraR.data:null;
   NAMES=(nm&&nm.data)||{};
   // T22 看门狗红条：不健康才显示；恢复后后端状态翻回 healthy=true ⇒ 红条自动消失
   try{const hh=await get("/api/health");const h=(hh&&hh.data)||{};
@@ -742,6 +811,7 @@ async function refresh(){
   renderToday();
   renderIntents();
   renderOpsPanels();
+  drawIntraday();
   const navRows=(nav.data||[]);
   const navDays=new Set(navRows.map(r=>String(r.timestamp).slice(0,10))).size;
   document.getElementById("c-nav").textContent=`${navRows.length} 行 · ${navDays} 个交易日（同日多条保留）`;
@@ -805,7 +875,7 @@ function applyTab(tab){
     const on=b.dataset.tab===t;b.classList.toggle("on",on);
     b.setAttribute("aria-selected",on?"true":"false");});
   document.querySelectorAll("[data-tab]:not(button)").forEach(el=>el.classList.toggle("on",el.dataset.tab===t));
-  if(t==="overview"&&typeof drawPerf==="function")setTimeout(drawPerf,0);
+  if(t==="overview"&&typeof drawPerf==="function")setTimeout(()=>{drawPerf();drawIntraday();},0);
 }
 function hashTab(){
   const h=(location.hash||"").replace(/^#\/?/,"");
@@ -1448,6 +1518,131 @@ def _fifo_realized(fills: list[dict]) -> dict:
     }
 
 
+def _intraday_payload(account_db: str, data_db, day: str | None = None) -> dict:
+    """当日分时权益（按成交时间线 + 分钟线重建）。
+
+    口径：从**当前账本**反推目标日开盘（先反推目标日之后的成交，再反推当日
+    成交），然后按当日分钟线给持仓估值；成交在时间戳 ≤ 当前 bar 时生效。
+    这不是逐笔撮合，只用于看“今天钱怎么走的”；`reconstruction_ok=false` 时
+    说明反推出现负仓位/负现金，图仍画但需人工核账。
+    """
+    day = str(day or date.today().isoformat())[:10]
+    conn = _ro(account_db)
+    try:
+        cash = float(conn.execute("SELECT cash FROM account LIMIT 1").fetchone()[0])
+        pos = {str(r["symbol"]): int(r["total_volume"] or 0)
+               for r in conn.execute("SELECT symbol, total_volume FROM positions")}
+        fills = [dict(r) for r in conn.execute(
+            "SELECT fill_id, symbol, direction, volume, price, commission,"
+            " stamp_duty, transfer_fee, timestamp FROM fills ORDER BY fill_id")]
+    finally:
+        conn.close()
+
+    def _fee(f: dict) -> float:
+        return sum(float(f.get(k) or 0.0) for k in
+                   ("commission", "stamp_duty", "transfer_fee"))
+
+    def _forward(f: dict, p: dict, c: float):
+        vol, px = int(f["volume"] or 0), float(f["price"] or 0)
+        sym = str(f["symbol"])
+        if int(f["direction"]) == 1:
+            p[sym] = p.get(sym, 0) + vol
+            c -= px * vol + _fee(f)
+        else:
+            p[sym] = p.get(sym, 0) - vol
+            c += px * vol - _fee(f)
+        return p, c
+
+    def _backward(f: dict, p: dict, c: float):
+        vol, px = int(f["volume"] or 0), float(f["price"] or 0)
+        sym = str(f["symbol"])
+        if int(f["direction"]) == 1:
+            p[sym] = p.get(sym, 0) - vol
+            c += px * vol + _fee(f)
+        else:
+            p[sym] = p.get(sym, 0) + vol
+            c -= px * vol - _fee(f)
+        return p, c
+
+    end_pos, end_cash = dict(pos), cash
+    for f in reversed(fills):
+        if str(f["timestamp"])[:10] > day:
+            end_pos, end_cash = _backward(f, end_pos, end_cash)
+    start_pos, start_cash = dict(end_pos), end_cash
+    day_fills = [f for f in fills if str(f["timestamp"])[:10] == day]
+    for f in reversed(day_fills):
+        start_pos, start_cash = _backward(f, start_pos, start_cash)
+
+    try:
+        dconn = _ro(str(data_db))
+        try:
+            p5 = dconn.execute(
+                "SELECT symbol, ts, close FROM minute_bars"
+                " WHERE substr(ts,1,10)=? AND period='5' ORDER BY ts",
+                (day,)).fetchall()
+            rows = p5 or dconn.execute(
+                "SELECT symbol, ts, close FROM minute_bars"
+                " WHERE substr(ts,1,10)=? ORDER BY ts", (day,)).fetchall()
+            bars: dict[str, dict[str, float]] = {}
+            for r in rows:
+                if r["close"] is None:
+                    continue
+                bars.setdefault(str(r["ts"]), {})[str(r["symbol"])] = float(r["close"])
+            prior: dict[str, float] = {}
+            row = dconn.execute(
+                "SELECT MAX(substr(timestamp,1,10)) FROM daily_bars_raw"
+                " WHERE substr(timestamp,1,10) < ?", (day,)).fetchone()
+            if row and row[0]:
+                prior = {str(r["symbol"]): float(r["close"]) for r in dconn.execute(
+                    "SELECT symbol, close FROM daily_bars_raw"
+                    " WHERE substr(timestamp,1,10)=? AND close IS NOT NULL", (row[0],))}
+        finally:
+            dconn.close()
+    except sqlite3.Error:
+        bars, prior = {}, {}
+
+    if not bars:
+        return {"date": day, "available": False, "series": [],
+                "fills": len(day_fills),
+                "note": "当日无分钟线（非交易日/采集未到）；分时不可用"}
+
+    stamps = sorted(bars)
+    first_px = dict(bars[stamps[0]])
+    start_prices = {**first_px, **prior}          # 09:30 优先昨收，缺则首根
+    cur_pos, cur_cash = dict(start_pos), start_cash
+    day_fills_sorted = sorted(day_fills, key=lambda f: str(f["timestamp"]))
+
+    def _value(p: dict, c: float, px_map: dict) -> tuple[float, float]:
+        mv = sum(float(v) * float(px_map.get(s, last_price.get(s, 0.0)))
+                 for s, v in p.items() if v > 0)
+        return mv, c + mv
+
+    last_price = dict(start_prices)
+    start_mv = sum(float(v) * float(start_prices.get(s, 0.0))
+                   for s, v in cur_pos.items() if v > 0)
+    series = [{"ts": f"{day}T09:30", "total": round(cur_cash + start_mv, 4),
+               "cash": round(cur_cash, 4), "mv": round(start_mv, 4)}]
+    fi = 0
+    for ts in stamps:
+        while (fi < len(day_fills_sorted)
+               and str(day_fills_sorted[fi]["timestamp"])[:16] <= ts[:16]):
+            cur_pos, cur_cash = _forward(day_fills_sorted[fi], cur_pos, cur_cash)
+            fi += 1
+        px_map = bars[ts]
+        last_price.update(px_map)
+        mv, total = _value(cur_pos, cur_cash, px_map)
+        series.append({"ts": ts, "total": round(total, 4),
+                       "cash": round(cur_cash, 4), "mv": round(mv, 4)})
+
+    ok = (all(v >= 0 for v in start_pos.values())
+          and all(v >= 0 for v in cur_pos.values()) and start_cash >= 0)
+    return {"date": day, "available": True, "series": series,
+            "fills": len(day_fills), "reconstruction_ok": bool(ok),
+            "start": {"cash": round(start_cash, 4),
+                      "positions": {k: v for k, v in start_pos.items() if v}},
+            "note": "按当前账本反推当日开盘；分钟线估值，非逐笔撮合"}
+
+
 def _perf_payload(account_db: str) -> dict:
     """净值曲线 + 面板指标（只读；唯一口径在服务端，前端只负责画）。
 
@@ -1923,6 +2118,11 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/performance":
                 # 收益曲线 + KPI 指标：只读 account db，不构造 bridge（快）
                 self._json({"ok": True, "data": _perf_payload(self.account_db)})
+            elif u.path == "/api/intraday":
+                q = parse_qs(u.query)
+                day = (q.get("date") or [None])[0]
+                self._json({"ok": True, "data": _intraday_payload(
+                    self.account_db, self.data_db, day)})
             elif u.path == "/api/overview":
                 # 今日计数 / 健康 / 体检摘要：一次请求供"今日/系统"卡
                 self._json({"ok": True, "data": _overview_payload(self._bridge())})
