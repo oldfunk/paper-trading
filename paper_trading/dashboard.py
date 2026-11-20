@@ -218,7 +218,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 </section>
 
 <section data-tab="overview">
-  <div class="section-header"><h2 class="section-title">今日分时</h2><span class="section-count" id="c-intraday"></span></div>
+  <div class="section-header"><h2 class="section-title">分时</h2><span class="section-count" id="c-intraday"></span></div>
   <div class="card">
     <div class="chart-wrap" id="intradaywrap" style="height:220px">
       <svg id="intradaychart" role="img" aria-label="今日分时权益"></svg>
@@ -734,9 +734,9 @@ function drawIntraday(){
     `<circle cx="${x(S[0].ts)}" cy="${y(S[0].total)}" r="2.8" fill="var(--accent)"/>`+
     `<circle cx="${x(S[S.length-1].ts)}" cy="${y(S[S.length-1].total)}" r="2.8" fill="var(--accent)"/>`+
     xlabs+`<rect id="ihit" x="${P.l}" y="${P.t}" width="${W-P.l-P.r}" height="${H-P.t-P.b}" fill="transparent"/>`;
-  if(cnt)cnt.textContent=`${S.length} 点 · ${INTRA.fills||0} 笔成交`;
+  if(cnt)cnt.textContent=`${INTRA.date.slice(5)} · ${S.length} 点 · ${INTRA.fills||0} 笔成交`;
   if(note){
-    let t=INTRA.note||"";
+    let t=(INTRA.fallback?`今日无分钟线，显示最近交易日 ${INTRA.date}；`:"")+(INTRA.note||"");
     if(INTRA.reconstruction_ok===false)t+="（反推出现负仓位/负现金，需核账）";
     note.textContent=t;
   }
@@ -1526,7 +1526,9 @@ def _intraday_payload(account_db: str, data_db, day: str | None = None) -> dict:
     这不是逐笔撮合，只用于看“今天钱怎么走的”；`reconstruction_ok=false` 时
     说明反推出现负仓位/负现金，图仍画但需人工核账。
     """
+    explicit = day is not None
     day = str(day or date.today().isoformat())[:10]
+    requested = day
     conn = _ro(account_db)
     try:
         cash = float(conn.execute("SELECT cash FROM account LIMIT 1").fetchone()[0])
@@ -1602,6 +1604,24 @@ def _intraday_payload(account_db: str, data_db, day: str | None = None) -> dict:
         bars, prior = {}, {}
 
     if not bars:
+        if not explicit:
+            latest = None
+            try:
+                lc = _ro(str(data_db))
+                try:
+                    row = lc.execute(
+                        "SELECT MAX(substr(ts,1,10)) FROM minute_bars"
+                        " WHERE substr(ts,1,10) <= ?", (day,)).fetchone()
+                    latest = row[0] if row else None
+                finally:
+                    lc.close()
+            except sqlite3.Error:
+                latest = None
+            if latest and latest < day:
+                out = _intraday_payload(account_db, data_db, latest)
+                out["fallback"] = True
+                out["requested_date"] = day
+                return out
         return {"date": day, "available": False, "series": [],
                 "fills": len(day_fills),
                 "note": "当日无分钟线（非交易日/采集未到）；分时不可用"}
