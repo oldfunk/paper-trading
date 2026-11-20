@@ -29,6 +29,8 @@ def test_dashboard_imports():
     assert "/api/intents" in d.PAGE and "意图队列" in d.PAGE
     assert "运行健康" in d.PAGE and "最新计划与数据新鲜度" in d.PAGE
     assert "intradaychart" in d.PAGE and "/api/intraday" in d.PAGE
+    assert "/api/export.csv?type=nav" in d.PAGE
+    assert "/api/export.csv?type=positions" in d.PAGE
     assert "已实现" in d.PAGE
     assert "🔴" not in d.PAGE and "✅" not in d.PAGE
 

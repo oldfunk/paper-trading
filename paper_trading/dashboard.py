@@ -134,6 +134,9 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 .fold[open] summary{border-bottom:1px solid var(--divider)}
 .fold .scroll{padding:0 4px 4px}
 .empty{padding:36px 8px;text-align:center;color:var(--text-tertiary);font-size:13px}
+/* CSV 导出：与 section 标题同一行，轻量按钮，不抢结果信息 */
+.csv-btn{font-size:11px;color:var(--accent);text-decoration:none;border:1px solid var(--divider);border-radius:3px;padding:1px 6px;margin-left:8px;white-space:nowrap}
+.csv-btn:hover{background:var(--accent-soft)}
 /* P1（T97）：任务视图 + 运维卡 */
 .tabs{display:flex;gap:4px;margin:-8px 0 20px;border-bottom:1px solid var(--divider-thin);overflow-x:auto}
 .tabs button{border:0;background:transparent;font:inherit;font-size:13px;color:var(--text-secondary);padding:9px 12px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
@@ -189,6 +192,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   <section class="card">
     <div class="card-head">
       <h2 class="section-title">收益曲线</h2>
+      <a class="csv-btn" href="/api/export.csv?type=performance">导出 CSV</a>
       <div class="seg" id="perfmodes" role="tablist" aria-label="曲线口径">
         <button data-mode="nav" class="on" role="tab" aria-selected="true">总资产</button>
         <button data-mode="ret" role="tab" aria-selected="false">累计收益率</button>
@@ -207,17 +211,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </section>
 </div>
 
-<details class="fold" id="navfold" data-tab="overview">
-  <summary>净值明细 <span class="s" id="c-nav"></span></summary>
-  <div class="scroll"><table id="nav"></table></div>
-</details>
-
-<section data-tab="overview">
-  <div class="section-header"><h2 class="section-title">当前持仓</h2><span class="section-count" id="c-pos"></span></div>
-  <div class="scroll"><table id="pos"></table></div>
-</section>
-
-<section data-tab="overview">
+<section data-tab="overview" style="margin-bottom:16px">
   <div class="section-header"><h2 class="section-title">分时</h2><span class="section-count" id="c-intraday"></span></div>
   <div class="card">
     <div class="chart-wrap" id="intradaywrap" style="height:220px">
@@ -228,13 +222,23 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   </div>
 </section>
 
+<details class="fold" id="navfold" data-tab="overview">
+  <summary>净值明细 <span class="s" id="c-nav"></span><a class="csv-btn" href="/api/export.csv?type=nav" onclick="event.stopPropagation()">CSV</a></summary>
+  <div class="scroll"><table id="nav"></table></div>
+</details>
+
+<section data-tab="overview">
+  <div class="section-header"><h2 class="section-title">当前持仓</h2><span class="section-count" id="c-pos"></span><a class="csv-btn" href="/api/export.csv?type=positions">CSV</a></div>
+  <div class="scroll"><table id="pos"></table></div>
+</section>
+
 <section data-tab="trading">
-  <div class="section-header"><h2 class="section-title">订单记录</h2><span class="section-count" id="c-orders"></span></div>
+  <div class="section-header"><h2 class="section-title">订单记录</h2><span class="section-count" id="c-orders"></span><a class="csv-btn" href="/api/export.csv?type=orders">CSV</a></div>
   <div class="scroll"><table id="orders"></table></div>
 </section>
 
 <section data-tab="trading">
-  <div class="section-header"><h2 class="section-title">意图队列</h2><span class="section-count" id="c-intents"></span></div>
+  <div class="section-header"><h2 class="section-title">意图队列</h2><span class="section-count" id="c-intents"></span><a class="csv-btn" href="/api/export.csv?type=intents">CSV</a></div>
   <div class="scroll"><table id="intents"></table></div>
 </section>
 
@@ -314,7 +318,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 </section>
 
 <section data-tab="trading">
-  <div class="section-header"><h2 class="section-title">条件单</h2><span class="section-count" id="c-cond"></span></div>
+  <div class="section-header"><h2 class="section-title">条件单</h2><span class="section-count" id="c-cond"></span><a class="csv-btn" href="/api/export.csv?type=cond">CSV</a></div>
   <div class="ai-panel">
     <div class="s">条件单 = 现在不成交、只挂条件。盘中引擎每分钟核对实时价，触发即过风控下单（AI 设计或人工添加均可）。</div>
     <div class="ai-row">
@@ -1230,6 +1234,59 @@ def _limit_arg(q: dict, default: int = 30, maxv: int = 500) -> int:
     return max(1, min(v, int(maxv)))
 
 
+_EXPORT_SQL = {
+    "nav": ("nav", "SELECT id, timestamp, cash, market_value, total_value,"
+                   " available_cash, pnl, pnl_pct FROM nav_history ORDER BY id"),
+    "positions": ("positions", "SELECT symbol, total_volume, available_volume,"
+                               " avg_cost, peak_price, entry_day, last_update"
+                               " FROM positions ORDER BY symbol"),
+    "orders": ("orders", "SELECT order_id, symbol, direction, volume, limit_price,"
+                         " filled_price, filled_volume, status, commission,"
+                         " stamp_duty, transfer_fee, created_at, filled_at"
+                         " FROM orders ORDER BY order_id"),
+    "fills": ("fills", "SELECT fill_id, order_id, symbol, direction, volume, price,"
+                       " commission, stamp_duty, transfer_fee, timestamp"
+                       " FROM fills ORDER BY fill_id"),
+    "intents": ("intents", "SELECT biz_id, symbol, side, volume, rule_ref, status,"
+                           " created_at, result FROM rq_intents"
+                           " ORDER BY created_at"),
+    "cond": ("conditional_orders", "SELECT id, symbol, side, cond_type, cond_value,"
+                                   " volume, value, expiry, status, filled_at,"
+                                   " filled_price, created_at FROM conditional_orders"
+                                   " ORDER BY id"),
+}
+
+
+def _export_csv(account_db: str, kind: str, limit: int = 5000) -> tuple[str, str]:
+    """只读导出 CSV：返回 (filename, text)。`kind=performance` 用净值指标。"""
+    import csv
+    import io
+
+    kind = str(kind or "nav")
+    if kind == "performance":
+        perf = _perf_payload(account_db)
+        cols = ["date", "total_value", "ret", "drawdown"]
+        rows = [[p["date"], p["total_value"], p["ret"], p["drawdown"]]
+                for p in perf["series"]]
+    else:
+        spec = _EXPORT_SQL.get(kind)
+        if not spec:
+            raise ValueError(f"未知导出类型：{kind}（可选 {sorted(_EXPORT_SQL)} + performance）")
+        conn = _ro(account_db)
+        try:
+            cur = conn.execute(spec[1] + " LIMIT ?", (int(limit),))
+            cols = [d[0] for d in cur.description]
+            rows = [list(r) for r in cur.fetchall()]
+        finally:
+            conn.close()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(cols)
+    w.writerows(rows)
+    stamp = datetime.now().strftime("%Y%m%d")
+    return f"paper_trading_{kind}_{stamp}.csv", buf.getvalue()
+
+
 def _takeover_token(body: dict, secrets_path) -> str:
     """凭 Key 接管：body.api_key 与已存一致时返回可存的口令，否则空串。
     供换浏览器/首次使用场景（与 llm/config 的接管规则一致）。"""
@@ -2044,11 +2101,14 @@ class Handler(BaseHTTPRequestHandler):
     account_db = "paper_account.db"
     secrets_path = None
 
-    def _send(self, code: int, body: bytes, ctype: str) -> None:
+    def _send(self, code: int, body: bytes, ctype: str,
+              extra_headers: dict | None = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -2138,6 +2198,19 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/performance":
                 # 收益曲线 + KPI 指标：只读 account db，不构造 bridge（快）
                 self._json({"ok": True, "data": _perf_payload(self.account_db)})
+            elif u.path == "/api/export.csv":
+                q = parse_qs(u.query)
+                kind = (q.get("type") or ["nav"])[0]
+                limit = _limit_arg(q, 5000, 20000)
+                try:
+                    filename, text = _export_csv(self.account_db, kind, limit)
+                except ValueError as exc:
+                    self._json({"ok": False, "error": str(exc)}, code=400)
+                    return
+                self._send(200, ("\ufeff" + text).encode("utf-8"),
+                           "text/csv; charset=utf-8",
+                           {"Content-Disposition":
+                            f'attachment; filename="{filename}"'})
             elif u.path == "/api/intraday":
                 q = parse_qs(u.query)
                 day = (q.get("date") or [None])[0]

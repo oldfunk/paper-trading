@@ -398,6 +398,43 @@ def test_perf_payload_exposes_realized_pnl(tmp_path, cal):
     assert s["closed_trades"] == 1 and s["win_rate"] == 1.0
 
 
+def test_export_csv_endpoints(tmp_path):
+    db = tmp_path / "acct.db"
+    _mk_db(db, [("2026-11-19T20:50:00", 97000.0, 97000.0)])
+    import urllib.error
+    import urllib.request
+
+    class H(d.Handler):
+        account_db = str(db)
+        data_db = str(tmp_path / "data.db")
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    try:
+        with urllib.request.urlopen(base + "/api/export.csv?type=nav", timeout=10) as r:
+            raw = r.read()
+            ctype = r.headers.get("Content-Type", "")
+            disp = r.headers.get("Content-Disposition", "")
+        assert ctype.startswith("text/csv") and "attachment" in disp
+        assert raw.startswith(b"\xef\xbb\xbf")            # Excel 中文 BOM
+        text = raw.decode("utf-8-sig")
+        assert text.splitlines()[0].startswith("id,timestamp,cash")
+        assert "2026-11-19T20:50:00" in text
+        with urllib.request.urlopen(
+                base + "/api/export.csv?type=performance", timeout=10) as r:
+            perf = r.read().decode("utf-8-sig")
+        assert perf.splitlines()[0] == "date,total_value,ret,drawdown"
+        try:
+            urllib.request.urlopen(base + "/api/export.csv?type=nope", timeout=10)
+            raise AssertionError("未知类型应 400")
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def test_performance_endpoint(tmp_path):
     db = tmp_path / "acct.db"
     _mk_db(db, [("2026-11-18T20:50:00", 96000.0, 96000.0),

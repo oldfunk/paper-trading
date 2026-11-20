@@ -399,6 +399,29 @@ fresh/total / 最旧日期 / 持仓陈旧`。旧计划没有 freshness 字段时
 标题显示点数与当日成交笔数。当前 11-21 是周六，生产接口应返回
 `available=false`；下个交易日 09:35 起会有数据。
 
+> 2026-11-21 布局调整：分时是图表，已上移到主收益曲线之后、净值明细/持仓之前。
+
+---
+
+## 18. P2 第三项：CSV 导出（2026-11-21）
+
+`GET /api/export.csv?type=...&limit=...`（只读）：
+
+| type | 内容 |
+|---|---|
+| `performance` | 收益曲线序列（date,total_value,ret,drawdown） |
+| `nav` | `nav_history` 全列 |
+| `positions` | 当前持仓 |
+| `orders` / `fills` | 订单 / 成交 |
+| `intents` | 意图队列 |
+| `cond` | 条件单 |
+
+- UTF-8 BOM（Excel 中文不乱码）+ `Content-Disposition: attachment`；
+- limit 默认 5000、最大 20000；未知 type 返回 400；
+- 页面在收益曲线、净值明细、持仓、订单、意图、条件单标题行加统一的
+  `CSV` 小按钮（与 section 标题同排，不抢结果信息）。
+
+
 
 
 
