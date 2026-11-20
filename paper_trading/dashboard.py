@@ -602,6 +602,13 @@ function renderToday(){
     ["今日成交",`${f.n||0} 笔（买 ${f.buy||0} / 卖 ${f.sell||0}）`,""],
     ["条件单",`${cd.armed||0} 挂 / ${cd.queued_rq||0} 已交框架 / 今日 ${cd.filled_today||0} 成交`,""],
     ["意图",`执行 ${it.executed_today||0} / 未决 ${it.pending||0} / 拒绝 ${it.rejected_today||0}`,""],
+    ["已实现", (() => {
+      const pf=(PERF&&PERF.summary)||{};
+      if(pf.realized_pnl==null)return "—";
+      const wr=pf.win_rate==null?"—":`${(pf.win_rate*100).toFixed(0)}%`;
+      const un=Object.values(pf.unmatched_sell_volume||{}).reduce((a,b)=>a+b,0);
+      return `${pf.realized_pnl>=0?"+":""}${fmt(pf.realized_pnl)}（${pf.win_trades||0}胜/${pf.lose_trades||0}负 · 胜率 ${wr}）· 费 ${fmt(pf.fees_total||0)}${un?` · 未匹配卖出 ${un}`:""}`;
+    })(), cls(((PERF&&PERF.summary)||{}).realized_pnl)],
     ["体检",ck?`${ck.green} 绿 / ${ck.warn} 黄 / ${ck.red} 红 · ${String(ck.at||"").slice(11,16)}`:"今日未体检",
       ck&&ck.red?"bad":(ck&&ck.warn?"":"ok")],
     ["行情",`截至 ${OV.quote_asof||(OV.status&&OV.status.data_asof)||"—"}${OV.prices_ready===false?"（待今日行情）":""}`,""],
@@ -1382,7 +1389,63 @@ def _data_provenance(bridge, symbols: list) -> dict:
 
 #: 面板指标口径（单测见 tests/test_dashboard_perf_t95.py）
 _PERF_DEFINITIONS = ("收盘 NAV 序列；同日多条取最后一条；缺日不补；"
-                     "收益率相对初始资金（无出入金）；波动/夏普按 252 日年化，rf=0")
+                     "收益率相对初始资金（无出入金）；波动/夏普按 252 日年化，rf=0；"
+                     "已实现盈亏按 FIFO 含费用")
+
+
+def _fifo_realized(fills: list[dict]) -> dict:
+    """按成交顺序 FIFO 计算已实现盈亏（含买卖费用）。
+
+    卖出来自历史重建（reset/旧线）而买入手数不足时，只累计**匹配部分**，
+    未匹配量单独报 `unmatched_sell_volume`——不拿 0 成本硬算，避免虚增收益。
+    """
+    from collections import defaultdict, deque
+
+    lots: dict[str, deque] = defaultdict(deque)
+    realized = fees = 0.0
+    wins = losses = 0
+    unmatched: dict[str, int] = {}
+    for f in fills or []:
+        try:
+            vol, px = int(f.get("volume") or 0), float(f.get("price") or 0)
+            direction = int(f.get("direction") or 0)
+        except (TypeError, ValueError):
+            continue
+        if vol <= 0:
+            continue
+        fee = sum(float(f.get(k) or 0.0) for k in
+                  ("commission", "stamp_duty", "transfer_fee"))
+        fees += fee
+        sym = str(f.get("symbol") or "")
+        if direction == 1:
+            lots[sym].append([vol, (px * vol + fee) / vol])
+            continue
+        left, sell_unit = vol, (px * vol - fee) / vol
+        pnl = 0.0
+        while left > 0 and lots[sym]:
+            lot = lots[sym][0]
+            take = min(left, lot[0])
+            pnl += (sell_unit - lot[1]) * take
+            lot[0] -= take
+            left -= take
+            if lot[0] == 0:
+                lots[sym].popleft()
+        if vol - left > 0:
+            realized += pnl
+            wins += 1 if pnl > 0 else 0
+            losses += 1 if pnl < 0 else 0
+        if left > 0:
+            unmatched[sym] = unmatched.get(sym, 0) + left
+    closed = wins + losses
+    return {
+        "realized_pnl": round(realized, 4),
+        "fees_total": round(fees, 4),
+        "win_trades": wins,
+        "lose_trades": losses,
+        "closed_trades": closed,
+        "win_rate": round(wins / closed, 4) if closed else None,
+        "unmatched_sell_volume": unmatched,
+    }
 
 
 def _perf_payload(account_db: str) -> dict:
@@ -1394,6 +1457,7 @@ def _perf_payload(account_db: str) -> dict:
     """
     init = 100_000.0
     rows: list[tuple] = []
+    fills: list[dict] = []
     try:
         conn = _ro(account_db)
         try:
@@ -1409,10 +1473,16 @@ def _perf_payload(account_db: str) -> dict:
                         for r in conn.execute(
                             "SELECT timestamp, total_value, cash, market_value"
                             " FROM nav_history ORDER BY id")]
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                            " AND name='fills'").fetchone():
+                fills = [dict(r) for r in conn.execute(
+                    "SELECT fill_id, symbol, direction, volume, price, commission,"
+                    " stamp_duty, transfer_fee FROM fills ORDER BY fill_id")]
         finally:
             conn.close()
     except sqlite3.Error:
         rows = []
+        fills = []
 
     by_day: dict[str, tuple] = {}
     for d, tv, cash, mv in rows:
@@ -1435,8 +1505,13 @@ def _perf_payload(account_db: str) -> dict:
         "mdd": None, "mdd_date": None, "current_drawdown": None,
         "vol_annual": None, "sharpe": None,
         "win_days": None, "lose_days": None, "exposure": None,
+        "realized_pnl": None, "fees_total": None, "win_trades": None,
+        "lose_trades": None, "closed_trades": None, "win_rate": None,
+        "unmatched_sell_volume": {},
         "estimated": False,
     }
+    if fills:
+        summary.update(_fifo_realized(fills))
     if days:
         last_tv, last_cash, last_mv = by_day[days[-1]]
         summary["total_return"] = round(last_tv / init - 1, 6)

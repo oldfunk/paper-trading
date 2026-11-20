@@ -354,6 +354,50 @@ def test_intents_endpoint(tmp_path):
     assert bad["ok"] and len(bad["data"]) == 2
 
 
+def test_fifo_realized_includes_fees_and_win_rate():
+    fills = [
+        {"symbol": "A", "direction": 1, "volume": 100, "price": 10.0,
+         "commission": 5.0, "stamp_duty": 0.0, "transfer_fee": 0.0},
+        {"symbol": "A", "direction": 1, "volume": 100, "price": 12.0,
+         "commission": 5.0, "stamp_duty": 0.0, "transfer_fee": 0.0},
+        {"symbol": "A", "direction": -1, "volume": 150, "price": 15.0,
+         "commission": 5.0, "stamp_duty": 0.0, "transfer_fee": 0.0},
+    ]
+    out = d._fifo_realized(fills)
+    assert out["realized_pnl"] == pytest.approx(637.5)
+    assert out["fees_total"] == pytest.approx(15.0)
+    assert (out["win_trades"], out["lose_trades"], out["closed_trades"]) == (1, 0, 1)
+    assert out["win_rate"] == 1.0
+    assert out["unmatched_sell_volume"] == {}
+
+
+def test_fifo_unmatched_sells_are_not_counted_as_profit():
+    """历史重建的卖出没有买入成本时，宁可报未匹配，不拿 0 成本虚增收益。"""
+    out = d._fifo_realized([
+        {"symbol": "A", "direction": -1, "volume": 100, "price": 10.0,
+         "commission": 5.0, "stamp_duty": 0.0, "transfer_fee": 0.0},
+    ])
+    assert out["realized_pnl"] == 0.0
+    assert out["unmatched_sell_volume"] == {"A": 100}
+    assert out["closed_trades"] == 0
+
+
+def test_perf_payload_exposes_realized_pnl(tmp_path, cal):
+    db = tmp_path / "a.db"
+    _mk_db(db, [("2026-11-19T20:50:00", 97000.0, 97000.0)])
+    c = sqlite3.connect(str(db))
+    c.execute("CREATE TABLE fills (fill_id INTEGER PRIMARY KEY, symbol TEXT,"
+              " direction INTEGER, volume INTEGER, price REAL, commission REAL,"
+              " stamp_duty REAL, transfer_fee REAL, timestamp TEXT)")
+    c.execute("INSERT INTO fills VALUES (1,'A',1,100,10,5,0,0,'2026-11-18')")
+    c.execute("INSERT INTO fills VALUES (2,'A',-1,100,12,5,0,0,'2026-11-19')")
+    c.commit()
+    c.close()
+    s = d._perf_payload(str(db))["summary"]
+    assert s["realized_pnl"] == pytest.approx(190.0)   # 1200-5 - (1000+5)
+    assert s["closed_trades"] == 1 and s["win_rate"] == 1.0
+
+
 def test_performance_endpoint(tmp_path):
     db = tmp_path / "acct.db"
     _mk_db(db, [("2026-11-18T20:50:00", 96000.0, 96000.0),

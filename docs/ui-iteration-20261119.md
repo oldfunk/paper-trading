@@ -356,6 +356,24 @@ fresh/total / 最旧日期 / 持仓陈旧`。旧计划没有 freshness 字段时
   `ai:plan` 落 `skipped=no-fresh-data`（流水可见），下个 tick 重试。
 - 过线但个别候选陈旧会被剔出 prompt（`dropped`），不再把旧价喂给 LLM。
 
+---
+
+## 16. P2 第一项：已实现盈亏（2026-11-21）
+
+`/api/performance.summary` 追加 FIFO 口径：
+
+| 字段 | 口径 |
+|---|---|
+| `realized_pnl` | 按成交顺序 FIFO，买入成本含买入费用、卖出收入扣卖出费用 |
+| `fees_total` | 全部成交三项费用合计 |
+| `closed_trades` / `win_trades` / `lose_trades` / `win_rate` | 有匹配成本的卖出笔数；盈亏为 0 不计胜负 |
+| `unmatched_sell_volume` | 历史重建卖出没有对应买入时**只报量、不算收益**，不拿 0 成本虚增 |
+
+面板"今日/系统"卡新增"已实现"行：金额（红涨绿跌）+ 胜/负 + 胜率 + 费用；
+有未匹配卖出时显式追加。生产实测（11-20 收盘后）：已实现 **−3,100.10**、
+费用 **242.81**、3 胜 / 10 负、无未匹配卖出。
+
+
 
 
 
