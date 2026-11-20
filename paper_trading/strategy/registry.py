@@ -257,8 +257,12 @@ def build_all(specs: list[dict]) -> BaseStrategy:
 def default_specs(defaults: Optional[dict] = None) -> list[dict]:
     """无 strategies 配置时的内置默认（MA5/20），参数来自 config 的 strategy 段。"""
     d = dict(defaults or {})
-    params = {k: int(d[k]) for k in ("short_window", "long_window",
-                                     "buy_volume", "sell_volume") if k in d}
+    try:
+        params = {k: int(d[k]) for k in ("short_window", "long_window",
+                                         "buy_volume", "sell_volume") if k in d}
+    except (TypeError, ValueError) as exc:
+        raise StrategyConfigError(
+            f"config strategy 段参数不是整数：{exc}") from exc
     return [{"name": "ma_cross", "class": "ma_cross", "params": params,
              "enabled": True}]
 

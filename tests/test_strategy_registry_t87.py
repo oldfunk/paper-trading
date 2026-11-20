@@ -167,6 +167,31 @@ def test_rsi_buys_on_cross_above_oversold():
 
 
 # ---------- T88：Bridge 装配（坏配置停线 + 留痕） ----------
+def test_bridge_offline_breakout_produces_signal(tmp_path):
+    """T90 验收：本地日线 + breakout 配置，经 Bridge 装配后只靠策略出信号。"""
+    from paper_trading.data.db_manager import DataDBManager
+
+    data = DataDBManager(str(tmp_path / "data.db"))
+    closes = [10.0] * 10 + [10.6]
+    data.upsert_bars([Bar(symbol="600519",
+                          timestamp=datetime(2026, 1, 1) + timedelta(days=i),
+                          open=c, high=c, low=c, close=c, volume=1000)
+                      for i, c in enumerate(closes)])
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("strategy:\n  strategies:\n"
+                   "    - {name: bo, class: breakout, params: {high_window: 10}}\n",
+                   encoding="utf-8")
+    import paper_trading.cli as cli
+
+    b = cli.TradingBridge(data_db=str(tmp_path / "data.db"),
+                          account_db=str(tmp_path / "a.db"),
+                          config_path=str(cfg))
+    bars = {"600519": data.get_bars("600519", limit=30)}
+    sig = b.strategy.generate_signals(bars)
+    assert sig["600519"].direction == SignalType.BUY
+    assert "突破" in sig["600519"].reason
+
+
 def test_bridge_uses_strategy_config_and_logs_bad_config(tmp_path):
     import sqlite3
 
