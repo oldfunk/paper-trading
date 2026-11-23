@@ -249,6 +249,11 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 </section>
 
 <section data-tab="trading">
+  <div class="section-header"><h2 class="section-title">成交记录</h2><span class="section-count" id="c-fills"></span><a class="csv-btn" href="/api/export.csv?type=fills">CSV</a></div>
+  <div class="scroll"><table id="fills"></table></div>
+</section>
+
+<section data-tab="trading">
   <div class="section-header"><h2 class="section-title">意图队列</h2><span class="section-count" id="c-intents"></span><a class="csv-btn" href="/api/export.csv?type=intents">CSV</a></div>
   <div class="scroll"><table id="intents"></table></div>
 </section>
@@ -302,6 +307,14 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   <div class="ai-panel">
     <div class="s" id="prov-sum">数据来源：加载中…</div>
     <div class="scroll"><table id="prov"></table></div>
+  </div>
+</section>
+
+<section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">母项目契约</h2><span class="section-count" id="c-contract"></span></div>
+  <div class="ai-panel">
+    <div class="s" id="contract-sum">契约探针：加载中…</div>
+    <div class="scroll"><table id="contract"></table></div>
   </div>
 </section>
 
@@ -823,7 +836,7 @@ window.addEventListener("resize",()=>{clearTimeout(window.__ptResize);window.__p
 
 async function refresh(){
  try{
-  const [s,ops,pos,ord,nav,nm,prov]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance"].map(get));
+  const [s,ops,pos,ord,nav,nm,prov,fl,ct]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance","/api/fills?limit=30","/api/contract"].map(get));
   const [perfR,ovR,intR,intraR,benchR,sectR]=await Promise.all([
     get("/api/performance").catch(()=>({ok:false})),
     get("/api/overview").catch(()=>({ok:false})),
@@ -920,6 +933,31 @@ async function refresh(){
     const stt=r.status=="filled"?`<span class="ok">已成交</span>`:`<span class="bad">已拒绝</span>`;
     return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td><td><b>${esc(sym(r.symbol))}</b></td><td class="num">${r.volume}</td><td class="num">${fmt(r.filled_price||r.limit_price)}</td><td>${stt}</td><td class="num">${fmt(fee)}</td></tr>`}),
     10,"暂无订单");
+  const fillRows=(fl&&fl.data)||[];
+  document.getElementById("c-fills").textContent=`${fillRows.length} 笔`;
+  rowsC(document.getElementById("fills"),[["时间"],["方向"],["股票"],["股数",1],["价格",1],["佣金",1],["印花税",1],["过户费",1]],
+    fillRows.map(r=>{const d=new Date(r.timestamp);const buy=r.direction==1;
+    return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td><td><b>${esc(sym(r.symbol))}</b></td><td class="num">${r.volume}</td><td class="num">${fmt(r.price)}</td><td class="num">${fmt(r.commission)}</td><td class="num">${fmt(r.stamp_duty)}</td><td class="num">${fmt(r.transfer_fee)}</td></tr>`}),
+    10,"暂无成交");
+  const ctD=(ct&&ct.data)||{};
+  const cparts=ctD.parts||{};
+  const ctOk=!!(ct&&ct.ok);
+  document.getElementById("c-contract").textContent=ctOk?(ctD.ok?"形状 OK":(ctD.available?"形状异常":"母库不可用")):"不可用";
+  document.getElementById("contract-sum").textContent=ctOk?
+    `${ctD.available?"母库可读":"母库不可读"} · ${ctD.stale?"有 stale":"新鲜"} · ${Object.keys(cparts).length} 组契约${ctD.error?" · "+esc(String(ctD.error).slice(0,80)):""}${ctD.today?" · 核对 "+ctD.today:""}`
+    :"契约探针请求失败（/api/contract）";
+  rowsC(document.getElementById("contract"),[["接口"],["形状"],["截至"],["统计"],["问题"]],
+    Object.entries(cparts).map(([k,v])=>{
+      const stTxt=v.ok?(v.stale?'<span class="mut">stale</span>':'<span class="ok">OK</span>'):'<span class="bad">异常</span>';
+      const shape=v.shape||{};
+      let sum="";
+      if(k==="strategy")sum=`${shape.parsed||0}/${shape.rows||0} 条 · ${Object.entries(shape.signals||{}).map(([a,b])=>a+" "+b).join(" / ")}`;
+      else if(k==="sector")sum=`覆盖 ${((Number(shape.coverage)||0)*100).toFixed(1)}% · ${shape.with_sector||0}/${shape.rows||0}${shape.fresh_rows?` · 今日更新 ${shape.fresh_rows}`:""}`;
+      else if(k==="benchmark")sum=Object.entries(shape.per_code||{}).map(([c,p])=>`${c} ${p.asof||"—"}${p.stale?" stale":""}`).join(" · ");
+      const issues=[...(v.errors||[]),...(v.warnings||[])].map(e=>e.code).slice(0,3).join(" / ");
+      return `<tr><td><b>${esc(k)}</b></td><td>${stTxt}</td><td class="mut">${esc(v.asof||"—")}</td><td class="mut">${esc(sum)}</td><td class="mut">${esc(issues||"—")}</td></tr>`;
+    }),
+    5,"暂无探针结果");
   const provIf=(prov&&prov.data&&prov.data.interfaces)||{};
   document.getElementById("c-prov").textContent=Object.keys(provIf).length+" 个接口";
   document.getElementById("prov-sum").textContent=
@@ -1628,6 +1666,26 @@ def _walkforward_payload(bridge, grid: str, symbols, days: int, cash: float,
 
 
 _PROV_CACHE: dict = {"ts": 0.0, "data": None}
+_CONTRACT_CACHE: dict = {"ts": 0.0, "data": None}
+
+
+def _contract_payload(ttl: float = 30.0) -> dict:
+    """母项目接口契约探针（只读；策略/行业/基准形状+新鲜度），30s 缓存。"""
+    import time
+
+    now = time.time()
+    if _CONTRACT_CACHE["data"] is not None and now - _CONTRACT_CACHE["ts"] < ttl:
+        return _CONTRACT_CACHE["data"]
+    from paper_trading.integration.probes import probe_all
+
+    try:
+        data = probe_all()
+    except Exception as exc:                # noqa: BLE001 - 探针失败不拖垮面板
+        data = {"ok": False, "available": False, "parts": {},
+                "error": f"{type(exc).__name__}: {exc}"}
+    _CONTRACT_CACHE.update(ts=now, data=data)
+    return data
+
 
 
 def _data_provenance(bridge, symbols: list) -> dict:
@@ -2389,6 +2447,9 @@ class Handler(BaseHTTPRequestHandler):
                 syms = list(b.stock_pool) + [p.symbol for p in
                                              b.broker.get_all_positions()]
                 self._json({"ok": True, "data": _data_provenance(b, syms)})
+            elif u.path == "/api/contract":
+                # 母项目接口契约探针（只读；30s 缓存）
+                self._json({"ok": True, "data": _contract_payload()})
             elif u.path == "/api/performance":
                 # 收益曲线 + KPI 指标：只读 account db，不构造 bridge（快）
                 self._json({"ok": True, "data": _perf_payload(self.account_db)})
@@ -2552,6 +2613,12 @@ class Handler(BaseHTTPRequestHandler):
                     # limit 走参数化，因此此处 f-string 无注入面
                     table = {"nav": "nav_history", "ops": "op_log",
                              "orders": "orders", "fills": "fills"}[u.path.split("/")[2]]
+                    if not conn.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type='table'"
+                            " AND name=?", (table,)).fetchone():
+                        self._json({"ok": True, "data": [],
+                                    "unavailable": f"{table} 表不存在"})
+                        return
                     order_col = {"nav_history": "id", "op_log": "id",
                                  "orders": "order_id", "fills": "fill_id"}[table]
                     rows = conn.execute(
