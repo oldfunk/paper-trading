@@ -120,6 +120,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 .cov{font-size:11px;color:var(--text-tertiary);margin-top:6px;display:flex;gap:8px;flex-wrap:wrap}
 .cov .badge{border:1px solid var(--divider);border-radius:3px;padding:0 5px}
 .cov.warn .badge{border-color:#e8b4b1;color:var(--red)}
+.cov .badge.b{border-color:var(--divider);color:var(--text-tertiary)}
 .today-grid{display:flex;flex-direction:column}
 .today-row{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--divider-thin);font-size:13px}
 .today-row:last-child{border-bottom:none}
@@ -545,11 +546,11 @@ function drawPerf(){
   if(cov){
     cov.className="cov"+(miss?" warn":"");
     const bBadge=BENCH?(BENCH.available
-      ?`<span class="badge" title="${esc(BENCH.note||"")}">${esc(BENCH.name||"沪深300")} ${esc(BENCH.asof||"")}${BENCH.stale?" · stale":""}</span>`
-      :`<span class="badge" title="${esc(BENCH.reason||"")}">基准不可用</span>`):"";
+      ?`<span class="badge b" title="${esc(BENCH.note||"")}">${esc(BENCH.name||"沪深300")} ${esc(BENCH.asof||"")}${BENCH.stale?" · stale":""}</span>`
+      :`<span class="badge b" title="${esc(BENCH.reason||"")}">基准不可用</span>`):"";
     cov.innerHTML=`<span class="badge">${c.present||S.length}/${c.expected||S.length} 交易日</span>`+
       (miss?`<span class="badge" title="${esc((c.missing||[]).slice(0,5).join("、"))}">缺 ${miss} 日</span>`:"")+
-      bBadge+(BM.length?`<span class="badge">虚线：沪深300</span>`:"")+
+      bBadge+(BM.length?`<span class="badge b">虚线：沪深300</span>`:"")+
       `<span>${esc((PERF&&PERF.definitions)||"")}</span>`;
   }
   if(S.length<2){
