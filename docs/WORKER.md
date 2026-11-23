@@ -1741,7 +1741,17 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   `available=false`，不抛异常、不写母库。
   契约文档 `docs/mother-interface.md` §6；面板取舍
   `docs/panel-information-architecture.md`。
-  验收：`tests/test_mother_probe_t104.py` 8 条。
+  验收：`tests/test_mother_probe_t104.py` 9 条。
+
+- [x] **T105 CSI300 基准曲线（I1）**（2026-11-24）：
+  `GET /api/benchmark` 只读母库 `benchmark_daily.sh000300`；与 NAV 按**首个共同
+  交易日**归一化，返回组合/基准/超额序列、基准 MDD、`asof/stale`；共同日 <2 或
+  母库不可用 → `available=false`，不画假线。
+  面板：累计收益率模式叠加沪深300虚线（tertiary `5 4`）；覆盖度徽标显示基准
+  `asof/stale`；累计收益卡显示“超额 vs 沪深300”；悬浮显示基准/超额。
+  验收：`tests/test_dashboard_benchmark_t105.py` 4 条；全量 **1009 passed /
+  13 skipped**；生产实测 `sh000300` asof 2026-11-23、28 个共同交易日、
+  组合 −2.29% vs 基准 −8.81%、**超额 +6.52pp**、基准 MDD 9.25%、0 console error。
 
 
 
