@@ -31,6 +31,7 @@ def test_dashboard_imports():
     assert "intradaychart" in d.PAGE and "/api/intraday" in d.PAGE
     assert "/api/export.csv?type=nav" in d.PAGE
     assert "/api/export.csv?type=positions" in d.PAGE
+    assert "/api/benchmark" in d.PAGE and "沪深300" in d.PAGE
     assert "已实现" in d.PAGE
     assert "🔴" not in d.PAGE and "✅" not in d.PAGE
 

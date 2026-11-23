@@ -515,7 +515,7 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="run"||a==="cron-run")return`产生信号 ${r.signals??0} 个，下单 ${r.orders??0} 笔`;
   if(a==="preview")return "风控检查通过";
   return "完成";}
-let PERF=null,OV=null,INTS=[],INTRA=null,PERFMODE="nav";
+let PERF=null,OV=null,INTS=[],INTRA=null,BENCH=null,PERFMODE="nav";
 function dayDiff(iso){if(!iso)return null;const t=Date.parse(iso+"T00:00:00");
   return isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/86400000));}
 function sparkSVG(vals){
@@ -540,10 +540,16 @@ function drawPerf(){
   const S=(PERF&&PERF.series)||[];
   const c=(PERF&&PERF.coverage)||{};
   const miss=(c.missing||[]).length;
+  const BM=(BENCH&&BENCH.available&&BENCH.series)||[];
+  const bMap={},bEx={};BM.forEach(p=>{bMap[p.date]=p.benchmark;bEx[p.date]=p.excess;});
   if(cov){
     cov.className="cov"+(miss?" warn":"");
+    const bBadge=BENCH?(BENCH.available
+      ?`<span class="badge" title="${esc(BENCH.note||"")}">${esc(BENCH.name||"沪深300")} ${esc(BENCH.asof||"")}${BENCH.stale?" · stale":""}</span>`
+      :`<span class="badge" title="${esc(BENCH.reason||"")}">基准不可用</span>`):"";
     cov.innerHTML=`<span class="badge">${c.present||S.length}/${c.expected||S.length} 交易日</span>`+
       (miss?`<span class="badge" title="${esc((c.missing||[]).slice(0,5).join("、"))}">缺 ${miss} 日</span>`:"")+
+      bBadge+(BM.length?`<span class="badge">虚线：沪深300</span>`:"")+
       `<span>${esc((PERF&&PERF.definitions)||"")}</span>`;
   }
   if(S.length<2){
@@ -557,6 +563,7 @@ function drawPerf(){
   const t0=Date.parse(S[0].date),t1=Date.parse(S[S.length-1].date),span=Math.max(1,t1-t0);
   const x=i=>P.l+(Date.parse(S[i].date)-t0)/span*(W-P.l-P.r);
   let lo=Math.min(...vals),hi=Math.max(...vals);
+  if(mode==="ret"&&BM.length){for(const p of BM){lo=Math.min(lo,p.benchmark);hi=Math.max(hi,p.benchmark);}}
   if(mode==="nav"){const init=PERF.initial_cash||100000;lo=Math.min(lo,init);hi=Math.max(hi,init);}
   if(mode==="dd"){lo=Math.min(lo,-0.0001);hi=0;}
   if(hi-lo<1e-9)hi=lo+1;
@@ -581,6 +588,8 @@ function drawPerf(){
   const base=(mode==="dd")?0:lo;
   const area=`${x(0)},${y(base)} `+S.map((_,i)=>`${x(i)},${y(vals[i])}`).join(" ")+` ${x(S.length-1)},${y(base)}`;
   const dots=S.length<=60?S.map((_,i)=>`<circle cx="${x(i)}" cy="${y(vals[i])}" r="2.6" fill="var(--accent)"/>`).join(""):"";
+  let bpts=[];
+  if(mode==="ret"){for(let i=0;i<S.length;i++){const v=bMap[S[i].date];if(v!==undefined)bpts.push(`${x(i)},${y(v)}`);}}
   const xlabs=[0,Math.floor((S.length-1)/2),S.length-1].filter((v,i,a)=>a.indexOf(v)===i)
     .map(i=>`<text x="${x(i)}" y="${H-6}" text-anchor="middle" font-size="11" fill="var(--text-tertiary)">${S[i].date.slice(5)}</text>`).join("");
   svg.innerHTML=`<defs><linearGradient id="pg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".16"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>`+
@@ -588,6 +597,7 @@ function drawPerf(){
     (mode==="dd"?`<polygon points="${area}" fill="var(--red-bg)"/>`:`<polygon points="${area}" fill="url(#pg)"/>`)+
     `<polyline points="${solid}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`+
     (dashed?`<polyline points="${dashed}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-dasharray="4 4" opacity=".75"/>`:"")+
+    (bpts.length?`<polyline points="${bpts.join(" ")}" fill="none" stroke="var(--text-tertiary)" stroke-width="1.6" stroke-dasharray="5 4" stroke-linejoin="round" opacity=".9"/>`:"")+
     dots+xlabs+
     `<rect id="perfhit" x="${P.l}" y="${P.t}" width="${W-P.l-P.r}" height="${H-P.t-P.b}" fill="transparent"/>`;
   const hit=svg.querySelector("#perfhit");
@@ -597,7 +607,8 @@ function drawPerf(){
     const e=S[best],d=best>0?(e.total_value/S[best-1].total_value-1):null;
     tip.style.display="block";
     tip.innerHTML=`<b>${e.date}</b><br>总资产 ${fmt(e.total_value)}<br>累计 ${(e.ret>=0?"+":"")+pct(e.ret)}`+
-      (d==null?"":`<br>当日 ${(d>=0?"+":"")+pct(d)}`)+`<br>回撤 ${pct(e.drawdown)}`;
+      (d==null?"":`<br>当日 ${(d>=0?"+":"")+pct(d)}`)+`<br>回撤 ${pct(e.drawdown)}`+
+      (bEx[e.date]==null?"":`<br>沪深300 ${(bMap[e.date]>=0?"+":"")+pct(bMap[e.date])} · 超额 ${(bEx[e.date]>=0?"+":"")+pct(bEx[e.date])}`);
     const left=Math.min(W-200,Math.max(0,x(best)+14));
     tip.style.left=(left/W*100)+"%";tip.style.top="10px";
   });
@@ -767,15 +778,17 @@ window.addEventListener("resize",()=>{clearTimeout(window.__ptResize);window.__p
 async function refresh(){
  try{
   const [s,ops,pos,ord,nav,nm,prov]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance"].map(get));
-  const [perfR,ovR,intR,intraR]=await Promise.all([
+  const [perfR,ovR,intR,intraR,benchR]=await Promise.all([
     get("/api/performance").catch(()=>({ok:false})),
     get("/api/overview").catch(()=>({ok:false})),
     get("/api/intents?limit=100").catch(()=>({ok:false})),
-    get("/api/intraday").catch(()=>({ok:false}))]);
+    get("/api/intraday").catch(()=>({ok:false})),
+    get("/api/benchmark").catch(()=>({ok:false}))]);
   PERF=(perfR&&perfR.ok)?perfR.data:null;
   OV=(ovR&&ovR.ok)?ovR.data:null;
   INTS=(intR&&intR.ok)?intR.data:[];
   INTRA=(intraR&&intraR.ok)?intraR.data:null;
+  BENCH=(benchR&&benchR.ok)?benchR.data:null;
   NAMES=(nm&&nm.data)||{};
   // T22 看门狗红条：不健康才显示；恢复后后端状态翻回 healthy=true ⇒ 红条自动消失
   try{const hh=await get("/api/health");const h=(hh&&hh.data)||{};
@@ -788,6 +801,8 @@ async function refresh(){
   const st=s.data;
   const plist=(pos&&pos.data)||st.positions||[];
   const pf=(PERF&&PERF.summary)||{};
+  const bx=(BENCH&&BENCH.available&&BENCH.summary&&BENCH.summary.excess!=null)?BENCH.summary.excess:null;
+  const bxTxt=(bx==null)?"":` · 超额 ${(bx>=0?"+":"")+pct(bx)} vs 沪深300`;
   const liveMode=!!(OV&&OV.estimated&&OV.prices_ready&&OV.live_total!=null);
   const navTotal=liveMode?OV.live_total
     :((pf.total_value!=null)?pf.total_value:st.total_value);
@@ -808,7 +823,7 @@ async function refresh(){
   document.getElementById("cards").innerHTML=`
    <div class="market-item"><div class="market-name">总资产 CNY</div><div class="market-value">${fmt(navTotal,0)}</div><div class="kpi-sub">现金 ${fmt(navCash,0)} + 市值 ${fmt(navMv,0)}${liveMode?" · 盘中价":(PERF&&PERF.asof?" · 收盘 "+PERF.asof:"")}</div></div>
    <div class="market-item"><div class="market-name">今日盈亏</div><div class="market-value ${cls(todayPnl)}">${todayPnl==null?"—":(todayPnl>=0?"+":"")+fmt(todayPnl)}</div><div class="kpi-sub ${cls(todayPnl)}">${todayPnl==null?"待今日行情":pct(todayPct)}${est?'<span class="kpi-tag">盘中估算</span>':""}</div></div>
-   <div class="market-item"><div class="market-name">累计收益</div><div class="market-value ${cls(pf.total_return)}">${pf.total_return==null?"—":(pf.total_return>=0?"+":"")+pct(pf.total_return)}</div><div class="kpi-sub ${cls(pf.total_pnl)}">${pf.total_pnl==null?"—":(pf.total_pnl>=0?"+":"")+fmt(pf.total_pnl)} · 自 ${(PERF&&PERF.series&&PERF.series[0])?PERF.series[0].date:"—"}</div></div>
+   <div class="market-item"><div class="market-name">累计收益</div><div class="market-value ${cls(pf.total_return)}">${pf.total_return==null?"—":(pf.total_return>=0?"+":"")+pct(pf.total_return)}</div><div class="kpi-sub ${cls(pf.total_pnl)}">${pf.total_pnl==null?"—":(pf.total_pnl>=0?"+":"")+fmt(pf.total_pnl)} · 自 ${(PERF&&PERF.series&&PERF.series[0])?PERF.series[0].date:"—"}${bxTxt}</div></div>
    <div class="market-item"><div class="market-name">最大回撤</div><div class="market-value">${pf.mdd==null?"—":pct(pf.mdd)}</div><div class="kpi-sub">${pf.mdd_date?"发生于 "+pf.mdd_date:""}${pf.current_drawdown!=null?" · 当前 "+pct(pf.current_drawdown):""}</div></div>
    <div class="market-item"><div class="market-name">仓位</div><div class="market-value">${expo==null?"—":pct(expo)}</div><div class="kpi-sub">现金占比 ${expo==null?"—":pct(1-expo)}</div></div>`;
   drawPerf();
@@ -1218,6 +1233,74 @@ def _ro(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{Path(db_path).resolve()}?mode=ro", uri=True, timeout=5)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+_BENCH_CODE = "sh000300"
+_BENCH_NAME = "沪深300"
+
+
+def _benchmark_payload(account_db: str, code: str = _BENCH_CODE,
+                       days: int = 260, today: str | None = None,
+                       mother=None) -> dict:
+    """基准曲线（服务端对齐 + 归一化）：只读母库，不写任何账本。
+
+    口径：
+    - 组合与基准都从**首个共同交易日**归一化，超额 = 组合累计 - 基准累计；
+    - 基准只认价格指数（不复权），`stale` 由 `asof` 与今天计算，缺数据显式不可用；
+    - 共同交易日 <2 时返回 `available=false`，不画假线。
+    """
+    perf = _perf_payload(account_db)
+    from paper_trading.integration import mother as m
+
+    blk = (m.benchmark([code], days=days, mother=mother) or {}).get(code) or {}
+    out = {"code": code, "name": _BENCH_NAME, "available": False,
+           "asof": blk.get("asof"), "stale": False, "source": blk.get("source"),
+           "series": [], "summary": {}, "note": ""}
+    if not blk.get("available"):
+        out["reason"] = blk.get("note") or "母库 benchmark_daily 不可用"
+        return out
+    bench: dict[str, float] = {}
+    for r in (blk.get("data") or []):
+        try:
+            bench[str(r["date"])[:10]] = float(r["close"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    nav = {p["date"]: float(p["total_value"]) for p in perf["series"]}
+    common = sorted(set(nav) & set(bench))
+    if len(common) < 2:
+        out["reason"] = f"与 NAV 的共同交易日不足（{len(common)} 天）"
+        return out
+
+    base_n, base_b = nav[common[0]], bench[common[0]]
+    series: list[dict] = []
+    peak_b: float | None = None
+    mdd_b = 0.0
+    for d in common:
+        pr = nav[d] / base_n - 1
+        br = bench[d] / base_b - 1
+        peak_b = bench[d] if peak_b is None else max(peak_b, bench[d])
+        mdd_b = max(mdd_b, 1 - bench[d] / peak_b)
+        series.append({"date": d, "portfolio": round(pr, 6),
+                       "benchmark": round(br, 6), "excess": round(pr - br, 6)})
+    today_s = str(today or date.today().isoformat())[:10]
+    asof = blk.get("asof")
+    out.update({
+        "available": True,
+        "asof": asof,
+        "stale": m._stale(asof, 3, today_s) if asof else True,
+        "window": {"start": common[0], "end": common[-1], "days": len(common)},
+        "series": series,
+        "summary": {
+            "portfolio_return": series[-1]["portfolio"],
+            "benchmark_return": series[-1]["benchmark"],
+            "excess": series[-1]["excess"],
+            "benchmark_mdd": round(mdd_b, 6),
+            "benchmark_asof": asof,
+            "missing_nav_days": len(set(nav) - set(bench)),
+        },
+        "note": "按首个共同交易日归一化；指数为价格指数、不复权",
+    })
+    return out
 
 
 def _limit_arg(q: dict, default: int = 30, maxv: int = 500) -> int:
@@ -2216,6 +2299,9 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/performance":
                 # 收益曲线 + KPI 指标：只读 account db，不构造 bridge（快）
                 self._json({"ok": True, "data": _perf_payload(self.account_db)})
+            elif u.path == "/api/benchmark":
+                # CSI300 基准：只读母库 benchmark_daily；缺数据显式 unavailable
+                self._json({"ok": True, "data": _benchmark_payload(self.account_db)})
             elif u.path == "/api/export.csv":
                 q = parse_qs(u.query)
                 kind = (q.get("type") or ["nav"])[0]
