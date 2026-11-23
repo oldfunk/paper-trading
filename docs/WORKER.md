@@ -1785,6 +1785,8 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   验收：`test_m3_verify_t46.py` 新增退役用例；`gh api` 返回
   `force=false / del=false / admins=true`；tag ruleset active；
   全量 **1017 passed / 13 skipped**。
+  生产 daily-check（11-24 03:44）：`ok=true`，`parity_trace=skip`（退役生效），
+  其余 warn 为盘前无成交/无 NAV/无分钟线/母库参照滞后。
 
 
 
