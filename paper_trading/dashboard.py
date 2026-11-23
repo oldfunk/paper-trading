@@ -233,6 +233,16 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   <div class="scroll"><table id="pos"></table></div>
 </section>
 
+<section data-tab="overview">
+  <div class="section-header"><h2 class="section-title">行业分布</h2><span class="section-count" id="c-sectors"></span></div>
+  <div class="card">
+    <div class="chart-wrap" id="sectorwrap" style="height:240px">
+      <svg id="sectorchart" role="img" aria-label="持仓行业分布"></svg>
+    </div>
+    <div class="s" id="sector-note"></div>
+  </div>
+</section>
+
 <section data-tab="trading">
   <div class="section-header"><h2 class="section-title">订单记录</h2><span class="section-count" id="c-orders"></span><a class="csv-btn" href="/api/export.csv?type=orders">CSV</a></div>
   <div class="scroll"><table id="orders"></table></div>
@@ -516,7 +526,7 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="run"||a==="cron-run")return`产生信号 ${r.signals??0} 个，下单 ${r.orders??0} 笔`;
   if(a==="preview")return "风控检查通过";
   return "完成";}
-let PERF=null,OV=null,INTS=[],INTRA=null,BENCH=null,PERFMODE="nav";
+let PERF=null,OV=null,INTS=[],INTRA=null,BENCH=null,SECT=null,PERFMODE="nav";
 function dayDiff(iso){if(!iso)return null;const t=Date.parse(iso+"T00:00:00");
   return isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/86400000));}
 function sparkSVG(vals){
@@ -531,6 +541,41 @@ function niceStep(raw){
   if(!(raw>0))return 1;
   const p=Math.pow(10,Math.floor(Math.log10(raw))),n=raw/p;
   return (n<=1?1:n<=2?2:n<=5?5:10)*p;
+}
+function drawSectors(){
+  const svg=document.getElementById("sectorchart");
+  const wrap=document.getElementById("sectorwrap");
+  const cnt=document.getElementById("c-sectors");
+  const note=document.getElementById("sector-note");
+  if(!svg||!wrap)return;
+  if(!SECT||!SECT.available){
+    svg.innerHTML='<text x="50%" y="48%" text-anchor="middle" fill="var(--text-tertiary)" font-size="13">行业数据不可用（母库 stock_snapshot 不可读）</text>';
+    if(cnt)cnt.textContent="—";
+    if(note)note.textContent=(SECT&&SECT.note)||"";
+    return;
+  }
+  let rows=(SECT.sectors||[]).slice();
+  if(rows.length>8){
+    const head=rows.slice(0,8),rest=rows.slice(8);
+    head.push({sector:"其他",market_value:rest.reduce((a,b)=>a+b.market_value,0),
+               weight:rest.reduce((a,b)=>a+b.weight,0),n:rest.reduce((a,b)=>a+b.n,0)});
+    rows=head;
+  }
+  const W=Math.max(320,wrap.clientWidth||800),H=Math.max(140,rows.length*30+10);
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  const labelW=100,rightW=96,barW=Math.max(40,W-labelW-rightW);
+  let g="";
+  rows.forEach((r,i)=>{
+    const y=6+i*30,unknown=(r.sector==="未知"||r.sector==="其他");
+    const w=Math.max(1,(r.weight||0)*barW);
+    g+=`<text x="0" y="${y+13}" font-size="12" fill="var(--text-secondary)">${esc(r.sector)}</text>`;
+    g+=`<rect x="${labelW}" y="${y+3}" width="${barW}" height="10" rx="2" fill="var(--divider-thin)"/>`;
+    g+=`<rect x="${labelW}" y="${y+3}" width="${w}" height="10" rx="2" fill="${unknown?"var(--text-tertiary)":"var(--accent)"}" opacity="${unknown?".55":".85"}"/>`;
+    g+=`<text x="${W}" y="${y+13}" text-anchor="end" font-size="11" fill="var(--text-tertiary)">${pct(r.weight)} · ${fmt(r.market_value,0)}</text>`;
+  });
+  svg.innerHTML=g;
+  if(cnt)cnt.textContent=`${rows.length} 个行业 · 覆盖 ${SECT.coverage.with_sector}/${SECT.coverage.total}`;
+  if(note)note.textContent=`${SECT.asof?`行业快照 ${SECT.asof}${SECT.stale?"（stale）":""}`:""}${SECT.note?" · "+SECT.note:""}`;
 }
 function drawPerf(){
   const svg=document.getElementById("perfchart");
@@ -774,22 +819,24 @@ document.getElementById("perfmodes").addEventListener("click",e=>{
     const on=x===b;x.classList.toggle("on",on);x.setAttribute("aria-selected",on?"true":"false");});
   drawPerf();
 });
-window.addEventListener("resize",()=>{clearTimeout(window.__ptResize);window.__ptResize=setTimeout(drawPerf,120);});
+window.addEventListener("resize",()=>{clearTimeout(window.__ptResize);window.__ptResize=setTimeout(()=>{drawPerf();drawIntraday();drawSectors();},120);});
 
 async function refresh(){
  try{
   const [s,ops,pos,ord,nav,nm,prov]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance"].map(get));
-  const [perfR,ovR,intR,intraR,benchR]=await Promise.all([
+  const [perfR,ovR,intR,intraR,benchR,sectR]=await Promise.all([
     get("/api/performance").catch(()=>({ok:false})),
     get("/api/overview").catch(()=>({ok:false})),
     get("/api/intents?limit=100").catch(()=>({ok:false})),
     get("/api/intraday").catch(()=>({ok:false})),
-    get("/api/benchmark").catch(()=>({ok:false}))]);
+    get("/api/benchmark").catch(()=>({ok:false})),
+    get("/api/sectors").catch(()=>({ok:false}))]);
   PERF=(perfR&&perfR.ok)?perfR.data:null;
   OV=(ovR&&ovR.ok)?ovR.data:null;
   INTS=(intR&&intR.ok)?intR.data:[];
   INTRA=(intraR&&intraR.ok)?intraR.data:null;
   BENCH=(benchR&&benchR.ok)?benchR.data:null;
+  SECT=(sectR&&sectR.ok)?sectR.data:null;
   NAMES=(nm&&nm.data)||{};
   // T22 看门狗红条：不健康才显示；恢复后后端状态翻回 healthy=true ⇒ 红条自动消失
   try{const hh=await get("/api/health");const h=(hh&&hh.data)||{};
@@ -832,6 +879,7 @@ async function refresh(){
   renderIntents();
   renderOpsPanels();
   drawIntraday();
+  drawSectors();
   const navRows=(nav.data||[]);
   const navDays=new Set(navRows.map(r=>String(r.timestamp).slice(0,10))).size;
   document.getElementById("c-nav").textContent=`${navRows.length} 行 · ${navDays} 个交易日（同日多条保留）`;
@@ -895,7 +943,7 @@ function applyTab(tab){
     const on=b.dataset.tab===t;b.classList.toggle("on",on);
     b.setAttribute("aria-selected",on?"true":"false");});
   document.querySelectorAll("[data-tab]:not(button)").forEach(el=>el.classList.toggle("on",el.dataset.tab===t));
-  if(t==="overview"&&typeof drawPerf==="function")setTimeout(()=>{drawPerf();drawIntraday();},0);
+  if(t==="overview"&&typeof drawPerf==="function")setTimeout(()=>{drawPerf();drawIntraday();drawSectors();},0);
 }
 function hashTab(){
   const h=(location.hash||"").replace(/^#\/?/,"");
@@ -2198,6 +2246,50 @@ def _positions_payload(bridge) -> list[dict]:
     return st["positions"]
 
 
+def _aggregate_sectors(rows, sector_map: dict) -> dict:
+    """持仓市值按行业聚合；无行业归“未知”，未知排最后。"""
+    total = 0.0
+    with_sector = 0
+    agg: dict[str, dict] = {}
+    for r in rows or []:
+        try:
+            mv = float(r.get("market_value") or 0.0)
+        except (TypeError, ValueError):
+            mv = 0.0
+        sym = str(r.get("symbol") or "")
+        total += mv
+        sec = (sector_map or {}).get(sym)
+        key = str(sec) if sec else "未知"
+        if sec:
+            with_sector += 1
+        a = agg.setdefault(key, {"market_value": 0.0, "n": 0})
+        a["market_value"] += mv
+        a["n"] += 1
+    items = [{"sector": k, "market_value": round(v["market_value"], 2),
+              "weight": round(v["market_value"] / total, 6) if total else 0.0,
+              "n": v["n"]} for k, v in agg.items()]
+    items.sort(key=lambda x: (x["sector"] == "未知", -x["market_value"]))
+    return {"total_mv": round(total, 2), "sectors": items,
+            "coverage": {"with_sector": with_sector, "total": len(rows or [])}}
+
+
+def _sector_payload(bridge, mother=None) -> dict:
+    """行业分布（服务端聚合）：持仓市值 + 母库 sector，NULL 归“未知”。"""
+    rows = _positions_payload(bridge)
+    from paper_trading.integration import mother as m
+
+    blk = m.sectors([r.get("symbol") for r in rows], mother=mother)
+    out = {"available": bool(blk.get("available")), "asof": blk.get("asof"),
+           "stale": bool(blk.get("stale")), "source": blk.get("source"),
+           "note": blk.get("note") or ""}
+    if not out["available"]:
+        out.update({"total_mv": 0.0, "sectors": [],
+                    "coverage": {"with_sector": 0, "total": len(rows)}})
+        return out
+    out.update(_aggregate_sectors(rows, blk.get("data") or {}))
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     data_db = "data.db"
     account_db = "paper_account.db"
@@ -2303,6 +2395,9 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/benchmark":
                 # CSI300 基准：只读母库 benchmark_daily；缺数据显式 unavailable
                 self._json({"ok": True, "data": _benchmark_payload(self.account_db)})
+            elif u.path == "/api/sectors":
+                # 行业分布：持仓市值 + 母库 stock_snapshot.sector（只读）
+                self._json({"ok": True, "data": _sector_payload(self._bridge())})
             elif u.path == "/api/export.csv":
                 q = parse_qs(u.query)
                 kind = (q.get("type") or ["nav"])[0]

@@ -690,6 +690,50 @@ def dividend(codes: Iterable[str], mother: Optional[Path] = None,
             pass
 
 
+def sectors(codes: Iterable[str], mother: Optional[Path] = None,
+            ttl: float = TTL_FUNDAMENTAL) -> dict:
+    """母库行业字段：`stock_snapshot(code, sector, snapshot_date)`（只读）。
+
+    返回单个 block：`data={code: sector|None}`，`asof` 取这些 code 的最大
+    `snapshot_date`。缺失（无行或 NULL）保持 `None`，由调用方按“未知”展示——
+    **不回退上一个行业、不猜**。
+    """
+    codes = sorted({str(c).strip() for c in (codes or []) if str(c).strip()})
+    if not codes:
+        return unavailable("无代码")
+    conn = _conn(mother)
+    if conn is None or not _has(conn, "stock_snapshot",
+                                ("code", "sector", "snapshot_date")):
+        if conn is not None:
+            conn.close()
+        return unavailable("母库无 stock_snapshot(code,sector,snapshot_date) 或不可读")
+    try:
+        q = ",".join("?" * len(codes))
+
+        def _fetch():
+            return [dict(r) for r in conn.execute(
+                f"SELECT code, sector, snapshot_date FROM stock_snapshot"
+                f" WHERE code IN ({q})", codes).fetchall()]
+
+        try:
+            rows = _cached(f"sector:{_dbkey(conn)}:{','.join(codes)}", ttl, _fetch)
+        except Exception:                   # noqa: BLE001
+            rows = []
+    finally:
+        conn.close()
+    data: dict[str, Optional[str]] = {c: None for c in codes}
+    asof = ""
+    for r in rows:
+        c = str(r.get("code") or "")
+        if c in data:
+            data[c] = (str(r["sector"]) if r.get("sector") else None)
+        asof = max(asof, _as_date(r.get("snapshot_date")))
+    missing = sum(1 for v in data.values() if not v)
+    note = f"{missing} 只无行业记录（按未知展示）" if missing else ""
+    return block(data, mother_source("stock_snapshot"), asof=asof or None,
+                 note=note, max_age_days=3)
+
+
 def benchmark(codes: Iterable[str], days: int = 60,
               mother: Optional[Path] = None,
               ttl: float = TTL_QUOTES) -> dict:
