@@ -935,10 +935,11 @@ async function refresh(){
     10,"暂无订单");
   const fillRows=(fl&&fl.data)||[];
   document.getElementById("c-fills").textContent=`${fillRows.length} 笔`;
-  rowsC(document.getElementById("fills"),[["时间"],["方向"],["股票"],["股数",1],["价格",1],["佣金",1],["印花税",1],["过户费",1]],
+  rowsC(document.getElementById("fills"),[["时间"],["方向"],["股票"],["股数",1],["价格",1],["费用",1]],
     fillRows.map(r=>{const d=new Date(r.timestamp);const buy=r.direction==1;
-    return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td><td><b>${esc(sym(r.symbol))}</b></td><td class="num">${r.volume}</td><td class="num">${fmt(r.price)}</td><td class="num">${fmt(r.commission)}</td><td class="num">${fmt(r.stamp_duty)}</td><td class="num">${fmt(r.transfer_fee)}</td></tr>`}),
-    10,"暂无成交");
+    const fee=(Number(r.commission)+Number(r.stamp_duty)+Number(r.transfer_fee));
+    return `<tr><td class="mut">${d.toLocaleString("zh-CN")}</td><td><span class="tag ${buy?"buy":"sell"}">${buy?"买入":"卖出"}</span></td><td><b>${esc(sym(r.symbol))}</b></td><td class="num">${r.volume}</td><td class="num">${fmt(r.price)}</td><td class="num">${fmt(fee)}</td></tr>`}),
+    6,"暂无成交");
   const ctD=(ct&&ct.data)||{};
   const cparts=ctD.parts||{};
   const ctOk=!!(ct&&ct.ok);
