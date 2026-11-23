@@ -134,6 +134,7 @@ python -m paper_trading.cli data contract --json
 
 **边界**：探针不建表、不写母库、不缓存长期结果；母库不可读时三组都返回
 `available=false`，不抛异常、不阻断交易链。
+面板运维页“母项目契约”卡调用同一探针（`/api/contract`，30 秒缓存）。
 
 
 ## 7. 性能约束（Pi 实机）
