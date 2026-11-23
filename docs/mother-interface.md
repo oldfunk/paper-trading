@@ -78,7 +78,7 @@ AI 上下文里的 `data_provenance` 汇总每个接口的 `source/asof/stale`�
   `close_qfq` 为 NULL 的老数据逐行降级 `close_adj`（后复权）→ 不复权，并通过
   `adj` 标注。`data compare` 输出的 `mother.adj` 反映当前口径（`qfq`/`hfq`/`raw`）。
 
-## 5.2 母库 Issue 台账与验收（#4–#8）
+## 5.2 母库 Issue 台账与验收（#4–#11）
 
 | 现象（v0.7.1 观测） | 母库 Issue | 验收（2026-10-27 母方交付） |
 |---|---|---|
@@ -87,6 +87,8 @@ AI 上下文里的 `data_provenance` 汇总每个接口的 `source/asof/stale`�
 | `trading_calendar` 空；`market_index` 停在 2026-07-03；`market_state_daily` 未落库 | #6 | ⚠️ 部分：`trading_calendar` 3949 行但**只有历史**（max=2026-10-26，无未来交易日），子项目仅在覆盖今天/未来时采用，否则回退 akshare（v0.7.4 防 fail-closed 停摆）；`market_index` 已更新至 2026-10-27 ✅。**请母方补未来交易日（≥3 个月）** |
 | `kline_daily` 仅 959/5527 只（如 000858 缺失） | #7 | ⏳ 覆盖仍 959 只（母方回填进行中）；子项目逐标的回退本地，不阻断 |
 | 最小数据契约汇总（qfq/基准/日历/主键/覆盖度） | #8 | ✅ P0/P1 项已交付；P2（覆盖度视图）随回填推进 |
+| `benchmark_daily` 只在周六刷新，`sh000300` 停在 11-13；`sector` 缺契约 | #10 | ✅ 2026-11-24 关闭：每交易日 15:30 后刷新；`sh000300`/`000001`/`399001`/`399006` 到 11-23，`sh000922` 11-20（stale）；sector 全表 5247/5527，NULL 不回退；探针 `data contract` 验收 |
+| 子项目 v0.10.1 vendor 通知（:8081 方案切换免口令 + intents 降级） | #11 | ✅ 2026-11-24 关闭：gate 母 1522 / vendor 996；:8081 三条验收通过 |
 
 验收方式：Pi 上 `PAPER_TRADING_MOTHER_DIR=/home/pi/stock-dashboard venv/bin/python -m pytest tests/test_mother_contract.py -q`
 （含 `close_qfq` 近 30 天非空、基准代码、日历有 `is_open=1` 行三项数据级校验）。

@@ -4,6 +4,9 @@
 
 Local event-driven paper trading framework for A-share markets. Pure local operation, no third-party broker API required.
 
+**当前执行队列**：`docs/iteration-plan-20261124.md`；里程碑与进度真相源：`docs/ROADMAP.md`；
+交付证据：`docs/WORKER.md`；母库长线：`docs/TODO-p5-p7.md`；文档地图：`docs/README.md`。
+
 ## Hard Rules
 
 0. **立项约束优先（2026-10-27 对质后立，见 `docs/founding-mandate.md`）**：

@@ -1,7 +1,7 @@
 # Paper Trading Framework
 
 [![tests](https://github.com/oldfunk/paper-trading/actions/workflows/test.yml/badge.svg)](https://github.com/oldfunk/paper-trading/actions/workflows/test.yml)
-[![release](https://img.shields.io/github/v/release/oldfunk/paper-trading)](https://github.com/oldfunk/paper-trading/releases/tag/v0.1.0)
+[![release](https://img.shields.io/github/v/release/oldfunk/paper-trading)](https://github.com/oldfunk/paper-trading/releases)
 [![license](https://img.shields.io/github/license/oldfunk/paper-trading)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.13-blue)](requirements.txt)
 
@@ -28,6 +28,8 @@
 - **LLM 万能接入**：OpenAI 兼容接口 + 主流厂商预设 + 手填模型名，只咨询不交易
 - **盘中实时**：腾讯行情同源，面板现价盘中实时展示（NAV/结算永远收盘口径）
 - **只读集成**：[Stock Dashboard](https://github.com/oldfunk/stock-dashboard) 在同一台机器时，全市场候选池/代码表/基本面/论点自动可用，缺席静默回退
+- **面板 P2**：收益曲线（总资产/收益率/回撤）、今日分时、FIFO 已实现盈亏/胜率/费用、CSV 导出；CSI300 基准与行业分布数据已就绪（母项目 issue #10），实现见 `docs/iteration-plan-20261124.md`
+- **接口探针**：`data contract` 只读检测母项目价值策略/行业/基准字段的**形状与新鲜度**，格式漂移显式报错（exit 3），不静默降级
 
 ## 目录结构
 
@@ -296,6 +298,8 @@ python -m paper_trading.cli agent tick --json
 # 交易日历（同步“未来交易日”优先：只留最近 45 天 + 未来全部；失败回退周末+手填 holidays）
 python -m paper_trading.cli calendar sync --json
 python -m paper_trading.cli calendar status --json
+# 母项目接口探针（只读：价值策略/行业/基准的形状与新鲜度；形状漂移 exit 3）
+python -m paper_trading.cli data contract --json
 # 旧版 AI 定时队列（已停用，仅兼容查看/导出）
 python -m paper_trading.cli agent schedule list --json
 # 事件驱动复盘：只有异动/回撤才调 LLM，产出条件单（不直接下单）

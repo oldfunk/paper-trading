@@ -121,7 +121,18 @@ python -m paper_trading.cli \
 - `--dry-run` 只出信号 + 风控预览，不落单；
 - 策略只看 `daily_bars`/本地行情；离线日建议用 `breakout` 或 `ma_cross`。
 
-## 5. 回归与回滚
+## 5. 母项目价值策略输入（2026-11-24）
+
+本文件的策略注册表（内置/自定义）是**子项目自己的执行策略**；母项目的价值策略
+是另一条输入，走只读契约：
+
+- 位置：`screening_result.ai_trade_strategy`（JSON 字符串，`signal/buy_zone/stop_loss`），
+  详见 `docs/mother-interface.md` §6；
+- 子项目消费点：`agent/mother_strategy.py`（买入闸门/AVOID 强制离场/计划整备）；
+- 探针：`python -m paper_trading.cli data contract --json`，形状漂移 exit 3；
+- 边界：母项目供数、子项目只读；不把母策略写进本文件的注册表，也不反向写母库。
+
+## 6. 回归与回滚
 
 - 单测：`tests/test_strategy_registry_t87.py`（正常/未知类/坏参数/重复名/
   禁用/自定义白名单/内置信号/Bridge 装配与留痕）；

@@ -11,6 +11,9 @@
 - [x] P5.3 AI 决策落库 `agent_decisions`（decision_date/plan_id/actions_json/basis/result）供回放与审计
 - [x] P5.4 决策回放/对照：CLI `agent replay --date`（AI 决策 vs 规则信号，只读不下单）
 - [ ] P5.5 AI 成绩校准：`analysis_outcome` 有 verdict 后接入（**等母库回填**，覆盖度低则 `unavailable`）
+  - 2026-11-24 实测：926 行、最新 `analysis_date=2026-11-19`；`verdict` 有 **766 条为空**，
+    有效约 160 条；signal 分布 AVOID 474 / HOLD 362 / BUY 90。可先做**离线校准**
+    （只用有 verdict 的样本），持续校准仍等母库回填。
 
 ## P6 — 母库数据补全适配与监控
 
@@ -27,6 +30,11 @@
 - [x] P7.2 面板“数据来源”面板（`/api/data-provenance`，source/asof/stale 可视化）
 - [x] P7.3 母库 Issue 提交（接口级）：qfq 缺失、`trading_calendar` 空、`market_state_daily` 未落库（#4–#7）
 - [ ] P7.4 契约测试纳入母项目 CI（接缝测试位）—— **母项目侧**，子项目不越界
+- [x] P7.5 **母项目接口探针（2026-11-24）**：`python -m paper_trading.cli data contract --json`
+  只读检测 `screening_result.ai_trade_strategy` / `stock_snapshot.sector` /
+  `benchmark_daily` 的形状、取值与新鲜度；形状漂移 exit 3，母库不可读
+  `available=false`。契约见 `docs/mother-interface.md` §6，计划见
+  `docs/iteration-plan-20261124.md` I1/I2。
 
 ## “切到母库策略”验证路径
 
@@ -41,6 +49,11 @@
 - #6 `trading_calendar` 未回填、`market_index` 过期、`market_state_daily` 未落库 → ⚠️ 部分（日历有历史无未来，market_index 已新鲜；待母方补未来交易日）
 - #7 `kline_daily` 覆盖不全（959/5527，如 000858 缺失）→ ⏳ 回填进行中，子项目逐标的回退
 - #8 最小数据契约汇总（qfq/基准/日历/主键/instrument/覆盖度）→ **✅ P0/P1 已交付；验收见 v0.7.3/v0.7.4**
+- #10 基准指数新鲜度 + `stock_snapshot.sector` 契约（2026-11-21 提交）→ **✅ 已交付并关闭（2026-11-24）**：
+  每交易日 15:30 后刷新 `benchmark_daily`；`sh000300` 到 11-23、`sh000922` 11-20（stale）；
+  sector 5247/5527；探针 `data contract` 验收通过。
+- #11 子项目 v0.10.1 vendor 通知（2026-11-24）→ **✅ 生产验证通过并关闭**：
+  :8081 内置方案切换免口令、`/api/intents` 降级；gate 母 1522 / vendor 996。
 
 ## 执行侧验证结果（2026-10-27，Pi）
 
