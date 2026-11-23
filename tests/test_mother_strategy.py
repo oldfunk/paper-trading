@@ -6,6 +6,7 @@
    真实事故形状（601899 HOLD、区间 8-12、现价 23.88）必须被杀掉。
 """
 
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -132,7 +133,9 @@ def test_ref_text_marks_missing_and_failed():
 def test_mother_block_only_for_mother_scheme():
     t = AgentTrader.__new__(AgentTrader)
     t.bridge = SimpleNamespace(scheme=SimpleNamespace(source="mother"))
-    t._mother_refs = lambda: (REFS, "2026-11-19")
+    # asof 必须用今天：闸门按 real today 判过期，写死 11-19 会变成定时炸弹
+    # （同 test_bar_source 周末假红那类问题）。
+    t._mother_refs = lambda: (REFS, date.today().isoformat())
     assert t._mother_block("601899", 23.88)
     assert t._mother_block("002558", 18.27) is None
 

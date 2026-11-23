@@ -1676,6 +1676,37 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   - 验收：页面门禁加 tab/意图/运维断言；`/api/intents` 接口用例；
     715 窄屏四 tab 无横向溢出。
 
+- [x] **T98 面板 P2：已实现盈亏 + 交易统计**（2026-11-21，`aae502f`）：
+  `/api/performance` 增加 FIFO 口径 `realized_pnl/fees_total/closed_trades/
+  win_trades/lose_trades/win_rate/unmatched_sell_volume`；历史重建卖出没有
+  匹配买入时只报量、不算收益（不拿 0 成本虚增）。生产 11-20：已实现
+  −3,100.10、费用 242.81、3 胜/10 负、无未匹配。验收：
+  `tests/test_dashboard_perf_t95.py`。
+
+- [x] **T99 面板 P2：今日分时**（2026-11-21，`0bffba9`+`cee7130`）：
+  `GET /api/intraday` 从当前账本反推目标日开盘（先反推目标日之后成交，再反推
+  当日成交），09:30 用上一交易日 raw 收盘估值，之后按 5 分钟线逐点，成交时间
+  ≤ 当前 bar 时生效；`reconstruction_ok=false` 显式"需核账"；无分钟线
+  `available=false`，默认请求周末自动回退最近交易日并返回 `fallback`。
+  面板总览新增分时卡（纯 SVG + 悬浮），2026-11-21 布局调整：上移到主收益曲线
+  之后、净值明细/持仓之前。验收：`tests/test_intraday_t98.py`；生产 11-20
+  49 点、起点 95,800.39、终点 95,470.19，与收盘 NAV 一致。
+
+- [x] **T100 面板 P2：CSV 导出**（2026-11-21，`2d7d6e8`）：
+  `GET /api/export.csv?type=performance|nav|positions|orders|fills|intents|cond`
+  （只读，UTF-8 BOM + attachment，limit 默认 5000/最大 20000，未知 type 400）；
+  收益曲线/净值/持仓/订单/意图/条件单标题行统一 `CSV` 小按钮。验收：
+  `test_dashboard_perf_t95.py::test_export_csv_endpoints` + 页面门禁。
+
+- [x] **T101 执行顺序修复（11-23 计划 #28 事故）**（2026-11-23）：
+  `hold` 条目占满单轮处理上限，导致计划里的 `sell 000426 400` 和
+  `buy 600519 100` 被静默丢弃；同计划挂的 `buy 000426` 条件单反而成交，
+  方向与计划相反。修复：① 执行前固定排序 卖 → 买 → hold（全方案，上限语义
+  不变）；② `_arm_conditions` 拒绝"同批卖出动作 + 同标的买入条件"的冲突。
+  复盘见 `docs/incident-2026-11-23.md`；验收：`tests/test_agent.py` 两条新增
+  （交易不被 hold 挤掉 / 冲突条件落 rejected）。
+
+
 
 
 

@@ -510,6 +510,14 @@ class AgentTrader:
                     skipped.append({"symbol": sym, "side": side,
                                     "why": "与直接动作重复，避免双重下单"})
                     continue
+                if side == "buy" and (sym, "sell") in direct:
+                    # 计划自相矛盾（2026-11-23 计划 #28）：同一批里计划卖 000426，
+                    # 却又挂"跌到 18.5 买 000426"的条件单。当日卖单被上限丢掉后
+                    # 买单照常触发，方向和计划完全相反。离场优先必须前置到挂单时。
+                    arm_rejected.append(
+                        {"id": 0, "symbol": sym,
+                         "why": "与同批卖出动作冲突（离场优先，不挂买入条件）"})
+                    continue
                 if (sym, side) in seen:
                     skipped.append({"symbol": sym, "side": side,
                                     "why": "同方向条件单已存在，避免双重下单"})
@@ -1223,15 +1231,19 @@ class AgentTrader:
                         and str(a.get("action", "")).lower() == "hold"
                         and str(a.get("symbol")) in _forced)
             ]
-        if self._is_mother() and all_actions:
-            # 卖出优先：执行层的单轮笔数上限是按顺序扣的，卖单必须在前，
-            # 否则 AVOID 强制离场会被前面的买单挤掉（计划自洽 ≠ 执行自洽）。
-            all_actions = ([a for a in all_actions
-                            if isinstance(a, dict)
-                            and str(a.get("action", "")).lower() == "sell"]
-                           + [a for a in all_actions
-                              if not (isinstance(a, dict)
-                                      and str(a.get("action", "")).lower() == "sell")])
+        if all_actions:
+            # 交易优先 + 卖出优先（2026-11-23 事故）：执行层的单轮处理上限
+            # （`n_cap`，含审计噪音）和日内笔数上限都是**按顺序扣**的。
+            # 计划里 hold 条目多（AI 普遍给"7 hold + 3 交易"）时，若原序执行，
+            # 后面的买卖单会被前面的 hold 挤掉——11-23 计划 #28 的
+            # `sell 000426 400` 就是这样被静默丢弃（只剩"仅审计"），而同计划挂的
+            # `buy 000426` 条件单反而成交了。
+            # 排序固定为：卖 → 买 → 其他（hold）；同类保持模型原序。
+            _rank = {"sell": 0, "buy": 1}
+            all_actions = sorted(
+                all_actions,
+                key=lambda a: _rank.get(str(a.get("action", "")).lower(), 2)
+                if isinstance(a, dict) else 3)
         n_cap = self.cfg.max_orders_per_run + 5
         for idx, a in enumerate(all_actions):
             if idx >= n_cap:
