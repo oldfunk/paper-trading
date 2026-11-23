@@ -455,6 +455,31 @@ fresh/total / 最旧日期 / 持仓陈旧`。旧计划没有 freshness 字段时
 - 生产实测：28 个共同交易日、组合 −2.29% vs 基准 −8.81%、超额 **+6.52pp**、
   基准 MDD 9.25%、0 console error、800px 无横向溢出。
 
+---
+
+## 20. P2 第五项：行业分布（2026-11-24）
+
+`GET /api/sectors`（只读母库 `stock_snapshot`，持仓来自本地面板 `/api/positions` 同一价格口径）：
+
+```json
+{"available":true,"asof":"2026-11-23","stale":false,
+ "total_mv":90420.0,"coverage":{"with_sector":8,"total":8},
+ "sectors":[{"sector":"有色金属","market_value":46414.0,
+             "weight":0.513316,"n":3}]}
+```
+
+口径：
+- 持仓市值按 `sector` 聚合；`NULL`/无行 → **“未知”**，不回退上一行业；
+- 未知桶排最后；>8 个行业合并“其他”；
+- 母库 `stock_snapshot` 不可读 → `available=false` + 空列表，不伪造；
+- 各桶市值之和 = 持仓总市值（生产 90,420）。
+
+面板：持仓表之后新增纯 SVG 行业条形（权重 + 市值），标题显示
+“N 个行业 · 覆盖 x/y”，脚注显示行业快照 asof/stale。
+生产实测：6 个行业、覆盖 8/8；有色金属 51.33%、基础化工 15.54%、
+生物制药 10.93%、酒店旅游 10.25%、金融 9.57%、农药化肥 2.38%；
+800px 无页面横向溢出、0 console error。
+
 
 
 

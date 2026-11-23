@@ -30,6 +30,7 @@
 | `screening_detail` | `screening_result` | `run_id, run_date` | `local:config`（手填池，无评分） | 含 `score_detail/reason/strategy_tags` |
 | `thesis` | `watchlist_thesis` | `code` | 无 → `unavailable` | 论点/卖出条件 |
 | `outcomes` | `analysis_outcome` | `stock_code` | 无 → `unavailable` | AI 结论追踪；覆盖度低时给 `note` |
+| `sectors` | `stock_snapshot` | `code, sector, snapshot_date` | 无 → `unavailable` | 行业分布；NULL/缺行保持 None（按“未知”），不回退 |
 | `regime` | `market_index` | `index_code, date` | 无 → `unavailable` | 大盘指数状态 |
 
 此外，`paper_trading/integration/analysis.py` 仍读这些表（保留兼容）：

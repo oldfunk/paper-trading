@@ -1753,6 +1753,16 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   13 skipped**；生产实测 `sh000300` asof 2026-11-23、28 个共同交易日、
   组合 −2.29% vs 基准 −8.81%、**超额 +6.52pp**、基准 MDD 9.25%、0 console error。
 
+- [x] **T106 行业分布（I2）**（2026-11-24）：
+  `GET /api/sectors`：持仓市值按行业聚合（未知排最后），返回总市值/权重/覆盖度；
+  `integration.mother.sectors` 只读 `stock_snapshot(code,sector,snapshot_date)`，
+  NULL/缺行保持 None（按“未知”），母库不可用 `available=false`。
+  面板：持仓之后新增纯 SVG 行业条形（>8 个合并“其他”），显示 asof/stale + 覆盖 x/y。
+  验收：`tests/test_sector_t106.py` 4 条；全量 **1013 passed / 13 skipped**；
+  生产实测 6 个行业、覆盖 **8/8**、合计 **90,420** = 持仓市值；有色金属 51.33%、
+  基础化工 15.54%、生物制药 10.93%、酒店旅游 10.25%、金融 9.57%、农药化肥 2.38%；
+  800px 无页面横向溢出、0 console error。
+
 
 
 
