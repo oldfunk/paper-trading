@@ -1773,6 +1773,19 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   生产实测 contract 3 组 OK（asof 11-23）、fills 30 笔、800px 页面无溢出、
   contract 表 687/687 无内滚、fills 721/721、深色主题正常。
 
+- [x] **T108 可靠性与发布治理（I4 部分）**（2026-11-24）：
+  - **影子对账退役**：`m3_verify.SHADOW_PARITY_ENABLED=False`；缺 `parity:diff`
+    由每日 warn 改 **skip**（双轨交叉验证由 `intent_chain` 意图↔账本、
+    `action_funnel` 动作终态承担）。要恢复双轨：改 True + 装 15:45 cron。
+  - **GitHub 保护**：`main` 禁强推/禁删（`enforce_admins=true`，普通 push 不受影响）；
+    `v*` tag ruleset（deletion / non_fast_forward / update，active）。
+  - **部署抗中断**：本次不改母项目 `deploy.sh`（母侧发布工具）；操作口径改为
+    “gate 输出落远程文件可续读”，待母侧排期再改脚本。
+  - **未做（用户决定）**：母项目上游只读 / MERGE_GUIDE 禁止反向推条款。
+  验收：`test_m3_verify_t46.py` 新增退役用例；`gh api` 返回
+  `force=false / del=false / admins=true`；tag ruleset active；
+  全量 **1017 passed / 13 skipped**。
+
 
 
 

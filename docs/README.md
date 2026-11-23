@@ -12,6 +12,7 @@
 | `WORKER.md` | 任务箱与交付证据（T 编号、验收、测试数） |
 | `TODO-p5-p7.md` | 母库长线与 P5/P6/P7 状态 |
 | `TODO-mother-integration.md` | 母库接入细项（多数已结，保留历史） |
+| `release-v0.11.0-checklist.md` | v0.11.0 发布检查单（前置 3 个干净收盘链、证据表、回滚） |
 
 ## 2. 契约与设计
 
