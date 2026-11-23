@@ -952,8 +952,12 @@ async function refresh(){
       const shape=v.shape||{};
       let sum="";
       if(k==="strategy")sum=`${shape.parsed||0}/${shape.rows||0} 条 · ${Object.entries(shape.signals||{}).map(([a,b])=>a+" "+b).join(" / ")}`;
-      else if(k==="sector")sum=`覆盖 ${((Number(shape.coverage)||0)*100).toFixed(1)}% · ${shape.with_sector||0}/${shape.rows||0}${shape.fresh_rows?` · 今日更新 ${shape.fresh_rows}`:""}`;
-      else if(k==="benchmark")sum=Object.entries(shape.per_code||{}).map(([c,p])=>`${c} ${p.asof||"—"}${p.stale?" stale":""}`).join(" · ");
+      else if(k==="sector")sum=`覆盖 ${((Number(shape.coverage)||0)*100).toFixed(1)}% · ${shape.with_sector||0}/${shape.rows||0}`;
+      else if(k==="benchmark"){
+        const per=shape.per_code||{},primary=per["sh000300"]||{};
+        const staleCodes=Object.entries(per).filter(([,p])=>p.stale).map(([c])=>c);
+        sum=`5 键 · sh000300 ${primary.asof||"—"}${staleCodes.length?` · stale ${staleCodes.join(",")}`:""}`;
+      }
       const issues=[...(v.errors||[]),...(v.warnings||[])].map(e=>e.code).slice(0,3).join(" / ");
       return `<tr><td><b>${esc(k)}</b></td><td>${stTxt}</td><td class="mut">${esc(v.asof||"—")}</td><td class="mut">${esc(sum)}</td><td class="mut">${esc(issues||"—")}</td></tr>`;
     }),
