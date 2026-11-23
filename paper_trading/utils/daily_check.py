@@ -438,6 +438,77 @@ def check_tick_stall(account_db, today: str, *, sample: int = 3) -> dict:
     return item("tick_stall", "tick 会话拒开扫描", "green", f"{today} 无拒开/空转")
 
 
+def check_action_funnel(account_db, today: str) -> dict:
+    """交易动作终态（2026-11-23 事故派生，T102）。
+
+    事故：计划 #28 的 `sell 000426 400` 与 `buy 600519 100` 被单轮处理上限
+    截断，状态停在"拒绝：超出单轮处理上限（仅审计，未执行）"——账本没错，
+    意图队列也没错，**单子从未进入执行链**，而 daily-check 全绿。
+
+    判据：当日 `agent_decisions.result.decisions` 里每条 buy/sell 必须以
+    **业务原因**结束（已入队/已成交/风控拒绝/池外/数量/价格/门禁等）；
+    "超出单轮处理上限""未知动作"属于执行管道自身丢单 ⇒ **红**（不是钱类红：
+    账本没动，但交易完整性已被破坏）。
+    """
+    with contextlib.closing(_ro(account_db)) as c:
+        if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table'"
+                         " AND name='agent_decisions'").fetchone():
+            return item("action_funnel", "交易动作终态", "skip",
+                        "agent_decisions 表不存在")
+        rows = [dict(r) for r in c.execute(
+            "SELECT id, result_json, created_at FROM agent_decisions"
+            " WHERE decision_date=? ORDER BY id", (today,))]
+
+    if not rows:
+        return item("action_funnel", "交易动作终态", "skip",
+                    f"{today} 没有 AI 决策记录")
+
+    total = 0
+    bad: list[str] = []
+    queued = 0
+    rejected = 0
+    for r in rows:
+        try:
+            result = json.loads(r.get("result_json") or "{}")
+        except (TypeError, ValueError):
+            bad.append(f"decision#{r['id']} 结果不是合法 JSON")
+            continue
+        for d in (result.get("decisions") or []):
+            if not isinstance(d, dict):
+                continue
+            act = str(d.get("action") or "").lower()
+            if act not in ("buy", "sell"):
+                continue
+            total += 1
+            status = str(d.get("status") or "").strip()
+            label = f"{d.get('symbol')} {act}"
+            if not status:
+                bad.append(f"{label} 无终态")
+            elif "超出单轮处理上限" in status or "未知动作" in status:
+                bad.append(f"{label}：{status[:60]}")
+            elif status.startswith("已入意图队列") or status.startswith("已成交") \
+                    or status.startswith("试运行通过"):
+                queued += 1
+            elif status.startswith("拒绝：") or status.startswith("风控拒绝：") \
+                    or status.startswith("撮合拒绝："):
+                rejected += 1
+            else:
+                bad.append(f"{label}：无法识别的终态 {status[:60]}")
+
+    if bad:
+        return item("action_funnel", "交易动作终态", "red",
+                    f"{today} 有 {len(bad)} 笔买卖动作被执行管道丢单："
+                    + "；".join(bad[:3]),
+                    on_red="查 agent.log 当日 `AI decide done` 的逐条 status；"
+                           "排序/额度只允许拒绝 hold，不允许丢买卖单")
+    if total == 0:
+        return item("action_funnel", "交易动作终态", "green",
+                    f"{today} 无买卖动作")
+    return item("action_funnel", "交易动作终态", "green",
+                f"{today} 买卖动作 {total} 笔全部有业务终态"
+                f"（入队/成交 {queued}、业务拒绝 {rejected}）")
+
+
 def daily_check(*, data_db, account_db, symbols: list, today: str, cfg,
                 state_dir: str = "var/rq_state/live",
                 days: int = 60, heartbeat_path=None,
@@ -456,6 +527,7 @@ def daily_check(*, data_db, account_db, symbols: list, today: str, cfg,
         check_carry_over(account_db, today, now=now, executor=executor),
         check_intent_chain(account_db, today, executor=executor),
         check_cond_loop(account_db, today, executor=executor),
+        check_action_funnel(account_db, today),
         check_engine_crashes(account_db, today),
         check_tick_stall(account_db, today),
     ]
