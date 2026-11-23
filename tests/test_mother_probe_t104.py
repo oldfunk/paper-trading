@@ -1,6 +1,8 @@
 """T104：母项目接口探针（形状/取值/新鲜度）。"""
 import sqlite3
 
+import pytest
+
 from paper_trading.integration.probes import (
     BENCHMARK_CODES,
     probe_all,
@@ -99,6 +101,20 @@ def test_probe_sector_flags_low_coverage(tmp_path):
     out2 = probe_sector(tmp_path / "mother", today="2026-11-24")
     assert out2["ok"] is False
     assert any(e["code"] == "low_coverage" for e in out2["warnings"])
+
+
+def test_probe_sector_counts_all_codes_not_only_latest_date(tmp_path):
+    """`stock_snapshot` 是每 code 一行的最新快照，覆盖率必须按全表算。"""
+    mdir = _mother(tmp_path, codes=BENCHMARK_CODES)
+    db = mdir / "data" / "db" / "stock_dashboard.db"
+    c = sqlite3.connect(db)
+    c.execute("INSERT INTO stock_snapshot VALUES ('600036','金融行业','2026-11-01')")
+    c.commit()
+    c.close()
+    out = probe_sector(mdir, today="2026-11-24")
+    assert out["shape"]["rows"] == 3
+    assert out["shape"]["fresh_rows"] == 2
+    assert out["shape"]["coverage"] == pytest.approx(2 / 3, abs=1e-4)
 
 
 def test_probe_mother_unavailable(tmp_path):

@@ -186,18 +186,23 @@ def probe_sector(mother=None, today: Optional[str] = None) -> dict:
             f"SELECT MAX(snapshot_date) FROM {SECTOR_TABLE}").fetchone()[0])
         out["asof"] = latest or None
         out["stale"] = _stale(latest, SECTOR_MAX_AGE_DAYS, today) if latest else True
-        total, filled = conn.execute(
+        # `stock_snapshot` 是“每 code 一行、snapshot_date 记最后一次更新日”，
+        # 不是按日全量快照。只统计 max(snapshot_date) 当天会把 831/5527 误读成
+        # “覆盖率 15%”；契约要看的是**全表每个 code 的最新行业**。
+        total, filled, fresh = conn.execute(
             f"SELECT COUNT(*), SUM(CASE WHEN sector IS NOT NULL AND sector<>''"
-            f" THEN 1 ELSE 0 END) FROM {SECTOR_TABLE} WHERE snapshot_date=?",
-            (latest,)).fetchone() if latest else (0, 0)
-        total, filled = int(total or 0), int(filled or 0)
+            f" THEN 1 ELSE 0 END),"
+            f" SUM(CASE WHEN snapshot_date=? THEN 1 ELSE 0 END)"
+            f" FROM {SECTOR_TABLE}", (latest,)).fetchone() if latest else (0, 0, 0)
+        total, filled, fresh = int(total or 0), int(filled or 0), int(fresh or 0)
         coverage = (filled / total) if total else 0.0
         out["shape"] = {"rows": total, "with_sector": filled,
                         "null_sector": total - filled,
+                        "fresh_rows": fresh,
                         "coverage": round(coverage, 4)}
         if total == 0:
             out["errors"].append(_probe_error(
-                SECTOR_TABLE, "no_rows", f"{latest or '无 snapshot_date'} 没有快照行"))
+                SECTOR_TABLE, "no_rows", "stock_snapshot 没有行"))
             return out
         if coverage < 0.5:
             out["warnings"].append(_probe_error(
