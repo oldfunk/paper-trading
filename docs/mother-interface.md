@@ -91,7 +91,49 @@ AI 上下文里的 `data_provenance` 汇总每个接口的 `source/asof/stale`�
 验收方式：Pi 上 `PAPER_TRADING_MOTHER_DIR=/home/pi/stock-dashboard venv/bin/python -m pytest tests/test_mother_contract.py -q`
 （含 `close_qfq` 近 30 天非空、基准代码、日历有 `is_open=1` 行三项数据级校验）。
 
-## 6. 性能约束（Pi 实机）
+## 6. 价值策略接口（2026-11-24 实测）
+
+母项目的“价值投资策略”不是一张策略注册表（`strategy_version/deployment/attribution`
+当前都是 **0 行**），而是流水线写入 `screening_result` 的 **AI 交易建议 JSON**。
+子项目只读这一处，不反向写。
+
+| 位置 | 关键列 | 说明 |
+|---|---|---|
+| `screening_result` | `code, run_date, run_id, score, status, ai_failed` | 最新一轮筛选结果；`run_date` 是新鲜度锚点 |
+| 同上 | `ai_trade_strategy` | **JSON 字符串**（兼容 dict）：`signal`, `buy_zone`, `stop_loss` 必填；`confidence`, `target_price`, `take_profit` 可选 |
+| 同上 | `ai_analysis`, `ai_investment_strategy`, `reason`, `score_detail` | 分析正文 / 投资策略 / 七门原因 / 五维拆解 |
+| `stock_analysis_history` | `stock_code, analysis_date, ai_trade_strategy, model` | 同一策略的历史序列 |
+| `ai_watchlist` | `code, status, added_reason, monitor_condition` | 观察池（core/dropped） |
+| `watchlist_thesis` | `code, core_thesis, assumptions, red_lines, sell_conditions` | 论点与卖出条件 |
+| `analysis_outcome` | `signal, verdict, ret_20/60/120, excess_*` | AI 结论追踪（P5.5 用） |
+
+**取值约定**：`signal ∈ {BUY, HOLD, AVOID}`（大小写不敏感，子项目统一转大写）；
+`confidence ∈ {高, 中, 低}`（可空）；`buy_zone` 是文本区间（如 `10-12元`），由
+`mother_strategy.parse_price_zone` 解析，解析失败按“区间不可用”处理。
+
+### 6.1 探针（不是接口）
+
+母项目负责供数；子项目只做**只读探针**，检测“接口对歪”而不是等它伪装成缺数据：
+
+```bash
+python -m paper_trading.cli data contract --json
+```
+
+输出三组 `ok/available/asof/stale/errors/warnings/shape`：
+
+- `strategy`：`screening_result` 列、`run_date` 新鲜度、`ai_trade_strategy` JSON 形状、
+  signal/confidence 取值、`buy_zone/stop_loss` 缺失计数；
+- `sector`：`stock_snapshot(code, sector, snapshot_date)` 覆盖度与 NULL 数；
+- `benchmark`：`benchmark_daily` 五个契约键的最新日期与缺失键。
+
+形状错误（缺列 / 坏 JSON / 未知 signal / 缺指数键）→ 退出码 **3**，必须人工归因；
+新鲜度单独用 `stale` 表达，不混进形状 `ok`。
+
+**边界**：探针不建表、不写母库、不缓存长期结果；母库不可读时三组都返回
+`available=false`，不抛异常、不阻断交易链。
+
+
+## 7. 性能约束（Pi 实机）
 
 - 母库 363MB 且正在回填：子项目**不新增常驻进程、不触发回填、不 `SELECT *`**。
 - 查询按 `code` 精确命中索引；小表（<10 万行）允许 `IN (...)`。

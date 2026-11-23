@@ -1478,6 +1478,11 @@ def main() -> None:
     data_quality.add_argument("--days", type=int, default=30,
                               help="回看窗口（交易日/缺口扫描天数，默认 30）")
     data_quality.add_argument("--json", action="store_true")
+    data_contract = data_sub.add_parser(
+        "contract",
+        help="母项目接口契约探针（只读：价值策略/行业/基准的形状与新鲜度）")
+    data_contract.add_argument("--today", default=None)
+    data_contract.add_argument("--json", action="store_true")
 
     # T31 原始价管道（引擎唯一允许的口径）
     data_raw_fetch = data_sub.add_parser(
@@ -2587,7 +2592,15 @@ def main() -> None:
                 return bridge.data_db.get_bars(code, limit=days)
 
             cmd = getattr(args, "data_command", None)
-            if cmd == "compare":
+            if cmd == "contract":
+                from paper_trading.integration.probes import probe_all
+
+                res = probe_all(today=getattr(args, "today", None))
+                emit(res, ok=res["ok"],
+                     error=None if res["ok"] else "母项目接口形状漂移，见 parts.*.errors")
+                if not res["ok"]:
+                    sys.exit(3)
+            elif cmd == "compare":
                 syms, note, _, _ = _resolve_syms(bridge, args)
                 res = _m.compare_bars(syms, days=args.days, local_bars=_lb)
                 out = {"symbols": syms, "pool_source": note, "compare": res}

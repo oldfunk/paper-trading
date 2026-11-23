@@ -1726,6 +1726,20 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   验收：`tests/test_dashboard.py` 新增 3 条（免口令边界 / 内置切换 200 与
   custom 403 / 缺表降级）；AGENTS 面板口令规则同步补例外说明。
 
+- [x] **T104 母项目接口探针**（2026-11-24）：新增 `integration/probes.py` +
+  `python -m paper_trading.cli data contract --json`（只读）：
+  - `strategy`：`screening_result.ai_trade_strategy` 的列/JSON 键/signal/confidence
+    形状（JSON 字符串与 dict 都认；坏 JSON/未知 signal 报错）；
+  - `sector`：`stock_snapshot(code, sector, snapshot_date)` 覆盖度/NULL；
+  - `benchmark`：`benchmark_daily` 的 5 个契约键（`sh000300`/`sh000922`/
+    `000001`/`399001`/`399006`）最新日期与缺失键。
+  形状错误 exit 3，新鲜度单独用 `stale` 表达；母库不可读三组都
+  `available=false`，不抛异常、不写母库。
+  契约文档 `docs/mother-interface.md` §6；面板取舍
+  `docs/panel-information-architecture.md`。
+  验收：`tests/test_mother_probe_t104.py` 8 条。
+
+
 
 
 
