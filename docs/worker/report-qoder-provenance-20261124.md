@@ -15,6 +15,12 @@
   不是推送者。GitHub Contributors 按提交邮箱归因，**不等于**账号有访问权。
 - **风险**：代码风险低（钱类守卫 + 26 条测试 + 生产两次只清会话目录）；
   归属/流程风险中等（外部身份进入历史，需留存审计）；未发现后门或数据外泄路径。
+- **处置（2026-11-24）**：新增 `.mailmap` 把 `Qoder <qoder@users.noreply.github.com>`
+  合并回 `oldfunk`（本地 `git shortlog` 已只剩 oldfunk）；GitHub 账号 `qoder`
+  已在账号级 **block**。**GitHub Contributors 图不会因 `.mailmap` 自动移除**
+  （GitHub 按 commit author email 归因），要彻底移除只能重写历史 + 重打 tag；
+  已发布 tag v0.8.0/v0.9.0/v0.10.0/v0.10.1 与母项目 vendor 引用都会失效，
+  **不建议为 5 个无恶意提交做这次重写**。
 
 ## 2. 提交与时间线
 
@@ -98,3 +104,18 @@ gh api --paginate 'repos/oldfunk/paper-trading/events?per_page=100' \
 gh api 'repos/oldfunk/paper-trading/collaborators?affiliation=all' --jq '.[].login'
 python -m pytest tests/test_reset_state_t62.py -q
 ```
+
+## 8. 处置记录（2026-11-24）
+
+| 动作 | 结果 |
+|---|---|
+| `.mailmap` 合并归因 | `git shortlog -sne --all` 中 qoder 的 5 次已并入 `oldfunk`（86 次），本地 git 工具链不再单列 qoder |
+| GitHub 账号 block | `PUT /user/blocks/qoder` 成功；`GET /user/blocks` 可见 qoder |
+| GitHub Contributors 图 | **未移除**：GitHub 按 commit author email 归因，`.mailmap` 不改变该图；只有重写历史才能去掉 |
+| 历史重写 | **未做**：会改变 11-03 之后的全部提交 hash，v0.8.0/v0.9.0/v0.10.0/v0.10.1 tag 与母项目 vendor 引用失效；为 5 个无恶意提交不值得 |
+| 代码 | **保留**（T62 工具已生产使用 2 次，钱类未动） |
+
+如果未来必须让 GitHub Contributors 图也干净，唯一路径是：
+维护窗口内停用 main/tag 保护与 ruleset → `git filter-repo --mailmap` 重写全部 refs →
+强制推送 → 重新打四个 tag → 母项目重新 vendor → 重新发布。属独立发布级操作，
+不在 v0.11.0 观察期做。
