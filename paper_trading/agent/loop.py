@@ -121,6 +121,7 @@ _BASIS_PREFIXES = frozenset({
     "value_view", "stock_cards", "financial_summary", "dividend", "outcomes",
     "thesis", "fundamentals", "screening", "market_regime", "data_provenance",
     "news", "intraday", "portfolio", "strategy_health", "strategy_allocations",
+    "ai_scorecard",
 })
 
 

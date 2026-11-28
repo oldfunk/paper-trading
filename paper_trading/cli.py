@@ -71,6 +71,33 @@ def _alloc_payload(weights, book, nav_total) -> dict:
                 "reason": f"{type(exc).__name__}: {exc}"}
 
 
+def _scorecard_payload() -> dict:
+    """AI 历史成绩摘要（P5.5）；样本不足时只报不可用，不给结论。"""
+    try:
+        from paper_trading.strategy.calibration import build_calibration
+
+        c = build_calibration()
+    except Exception as exc:                    # noqa: BLE001
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+    if not c.get("available") or not c.get("sufficient"):
+        return {"available": False,
+                "reason": c.get("reason") or c.get("warning") or "样本不足",
+                "n": c.get("n"), "sufficient": c.get("sufficient")}
+    def _mini(k: str) -> dict:
+        x = (c.get("by_signal") or {}).get(k) or {}
+        return {"n": x.get("n"), "avg_excess_20": x.get("avg_excess_20"),
+                "hit_rate": x.get("hit_rate")}
+    return {
+        "available": True,
+        "n": c.get("n"),
+        "window": c.get("window"),
+        "buy": _mini("BUY"), "hold": _mini("HOLD"), "avoid": _mini("AVOID"),
+        "spread_buy_minus_avoid": c.get("spread_buy_minus_avoid"),
+        "asof": c.get("asof"),
+        "note": "历史统计，不是命令；不要用历史命中率替代本次论据",
+    }
+
+
 ASK_RULES = """防幻觉硬规则（违反即视为答错）：
 1. 持仓 = 只有上面「当前真实持仓」里列出的股票，其他一律不是持仓。
    行情快照、股票池、基本面卡片里出现的股票都**只是候选/参考，绝不能说成持仓、已买入或已成交**。
@@ -908,6 +935,8 @@ class TradingBridge:
             # 多策略资金分配：额度上限，按 strategy.allocations；空=未启用
             "strategy_allocations": _alloc_payload(
                 self.allocations, self.alloc_book, st["total_value"]),
+            # P5.5：AI 历史成绩（样本足够才给；advisory，不是命令）
+            "ai_scorecard": _scorecard_payload(),
             "recent_nav": [
                 {"time": r["timestamp"], "total": r["total_value"], "pnl": r["pnl"]}
                 for r in nav_hist],
@@ -929,6 +958,8 @@ class TradingBridge:
                 "strategy_allocations": "多策略资金额度（weight × NAV，成本口径）。"
                                         "enabled=true 时买入必须给 strategy，且不得超该策略额度；"
                                         "卖出/持有不受限。",
+                "ai_scorecard": "AI 历史成绩（母库 analysis_outcome，20日超额）。"
+                                "只作参考，不是命令；样本不足时 available=false。",
                 "recent_ops": "操作流水（含同步/问答/决策记录，不等于成交）。",
                 "value_view": "Stock Dashboard 只读富化（基本面/财务摘要/股息/论点/筛选/大盘/追踪），仅供参照。",
                 "data_provenance": "每个富化接口的数据来源与新鲜度（source/asof/stale）。"
@@ -1504,6 +1535,12 @@ def main() -> None:
                                   help="缺省=股票池+持仓")
     strategy_compare.add_argument("--cash", type=float, default=100000.0)
     strategy_compare.add_argument("--json", action="store_true")
+    strategy_cal = strategy_sub.add_parser(
+        "calibration", help="AI 成绩校准（母库历史 verdict + 20日超额；只读）")
+    strategy_cal.add_argument("--benchmark", default="sh000300")
+    strategy_cal.add_argument("--since", default=None,
+                              help="只统计该日期之后的样本 YYYY-MM-DD")
+    strategy_cal.add_argument("--json", action="store_true")
 
     # llm
     llm_parser = subparsers.add_parser("llm", help="LLM 接入（只咨询，不交易）")
@@ -2310,6 +2347,17 @@ def main() -> None:
                 emit(out, ok=bool(out.get("ok")),
                      error=out.get("error"))
                 if not out.get("ok"):
+                    sys.exit(3)
+            elif cmd == "calibration":
+                from paper_trading.strategy.calibration import build_calibration
+
+                out = build_calibration(
+                    benchmark=str(getattr(args, "benchmark", "sh000300")
+                                  or "sh000300"),
+                    since=getattr(args, "since", None))
+                emit(out, ok=bool(out.get("available")),
+                     error=None if out.get("available") else out.get("reason"))
+                if not out.get("available"):
                     sys.exit(3)
             else:
                 from paper_trading.strategy.health import health_payload
