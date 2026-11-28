@@ -70,7 +70,7 @@ def test_qfq_anchor_shift_detected(tmp_path):
     db = _local(tmp_path, _bars(jump_day=10, jump=1.1))
     try:
         out = check(db, ["600519"], days=30, mother=sd, tol=0.001)
-        assert out["status"] == "red" and out["ok"] is False
+        assert out["status"] == "warn" and out["ok"] is True
         item = out["items"][0]
         assert item["status"] == "anchor_shift"
         assert item["max_dev"] > 0.05

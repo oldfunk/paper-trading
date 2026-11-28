@@ -94,18 +94,22 @@ def check(data_db, symbols: Iterable[str], *, days: int = 120,
             "max_dev_date": worst_d,
             "reason": reason,
         })
-    bad = [x for x in items if x["status"] in ("anchor_shift", "scale_mismatch")]
+    bad = [x for x in items if x["status"] == "scale_mismatch"]
+    drifted = [x for x in items if x["status"] == "anchor_shift"]
     uncomparable = [x for x in items if x["status"] in
                     ("unavailable", "uncomparable", "insufficient")]
     return {
         "ok": not bad,
         "available": True,
         "symbols": syms,
-        "status": "red" if bad else ("warn" if uncomparable else "green"),
+        "status": "red" if bad else
+                  ("warn" if (drifted or uncomparable) else "green"),
         "items": items,
         "bad": [x["symbol"] for x in bad],
+        "warn": [x["symbol"] for x in drifted],
         "uncomparable": [x["symbol"] for x in uncomparable],
-        "note": "只读锚点检测；anchor_shift 需人工核对除权日/源，不自动改数据",
+        "note": ("只读锚点检测；anchor_shift 只说明两边锚点不一致（谁新谁旧需人工/重拉确认），"
+                 "不自动改数据；scale_mismatch 才是硬错"),
     }
 
 

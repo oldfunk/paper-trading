@@ -102,7 +102,8 @@ def build_status(bridge, *, backup_dir: Optional[str] = None,
                 (f"{len(q.get('bad') or [])} 只锚点漂移"
                  + (f"：{q.get('bad')[:3]}" if q.get("bad") else "")
                  if st == "red" else
-                 ("无共同日/口径不可比：" + str((q.get("uncomparable") or [])[:3])
+                 ("锚点不一致：" + str((q.get("warn") or [])[:3])
+                  + "；不可比：" + str((q.get("uncomparable") or [])[:3])
                   if st == "warn" else "比值稳定/无可比样本")),
                 "data qfq-check --json；人工核对除权日/源，不自动改数据"))
         except Exception as exc:            # noqa: BLE001
