@@ -58,6 +58,9 @@
   sector 5247/5527；探针 `data contract` 验收通过。
 - #11 子项目 v0.10.1 vendor 通知（2026-11-24）→ **✅ 生产验证通过并关闭**：
   :8081 内置方案切换免口令、`/api/intents` 降级；gate 母 1522 / vendor 996。
+- #12 `/api/performance` 信号收益按 analysis×benchmark 双计（2026-11-28 提交）→
+  `AnalysisOutcomeDAO.get_all()` 返回两个基准行，`signal_summary` 未去重；建议按
+  `benchmark_code=sh000300` 过滤。子项目只读，未改母码。
 
 ## 执行侧验证结果（2026-10-27，Pi）
 

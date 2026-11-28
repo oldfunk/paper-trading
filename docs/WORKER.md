@@ -1913,6 +1913,9 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   第二实例 NAV 2026-11-20..11-27 每日 1 行（10-23..11-19 历史缺口仍不插值）；
   母 `scripts/gate.sh` 已把 `paper_trading/tests` 作为 vendor 套件运行（含契约测试，
   失败不阻塞）。母 vendor 仍 v0.10.1，需子项目发 v0.12 tag 后由母侧 subtree pull。
+  发现母侧 E3 `/api/performance` 把 `analysis_outcome` 的两个 benchmark 行都计入
+  `signals`（n 翻倍、均值混基准），已按跨仓协议提
+  [stock-dashboard#12](https://github.com/oldfunk/stock-dashboard/issues/12)，子项目不改母码。
 
 
 
