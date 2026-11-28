@@ -27,6 +27,9 @@
 | `security-review.md` | 安全复核清单与攻防演练（无口令写入/CSRF/跨实例/Key 泄露） |
 | `ledger-backup.md` | 账本备份/恢复/版本化与回滚步骤（B1） |
 | `ops-runbook.md` | 每日自动备份/巡检 cron、告警处理与回滚（M4） |
+| `matching-refinement.md` | 撮合细化设计（成交量/涨跌停排队/竞价）与回归清单（未改代码） |
+| `release-v0.12.0.md` | v0.12.0 发布说明草案（未打 tag） |
+| `release-v0.12.0-checklist.md` | v0.12.0 发布检查单（等 12-01 收盘链） |
 | `panel-information-architecture.md` | 面板信息架构与取舍（重要/可删/后置） |
 | `ui-iteration-20261119.md` | 面板 P0/P1/P2 的实现契约与变更记录 |
 | `architecture-map.md` | 模块依赖快照（2026-10-29 基线 + 11-24 复核计数） |

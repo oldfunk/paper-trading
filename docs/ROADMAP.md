@@ -174,6 +174,7 @@
   fingerprint、`optimize/walkforward` 绑 `data_fingerprint`；5 项测试
   （稳定性/敏感性/序无关/可复现/分钟哈希）。
 - [ ] 撮合细化：成交量约束、涨跌停排队近似、集合竞价简化口径集中到一处文档。
+  2026-11-28：设计与回归清单完成 `docs/matching-refinement.md`；代码待 v0.12 发布后单独分支，默认关闭。
 - [ ] 基准与归因：等权买入持有之外，加入指数基准、行业/风格暴露（可选）。
   - 2026-11-24 进度：数据契约已由母项目 issue #10 交付（`sh000300` 到 11-23、
     `stock_snapshot.sector` 94.9%）；只读探针 `data contract` 已上线；
