@@ -40,7 +40,7 @@ def test_run_research_returns_guardrails(tmp_path):
     out = run_research(b, grid="ma_cross", symbols=["600519"], days=100,
                        cash=100000, top=3, split=0.6)
     assert out["ok"] is True
-    data = out["data"]
+    data = out
     r = data["research"]
     assert r["auto_apply"] is False
     assert r["forward"]["status"] == "pending"

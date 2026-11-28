@@ -113,6 +113,26 @@ def test_qfq_empty_pool_skips(tmp_path):
     assert out["status"] == "skip" and out["ok"] is True
 
 
+def test_preflight_warn_and_red(tmp_path):
+    from paper_trading.data.qfq_check import preflight
+
+    mbars = _bars()
+    sd = _mother(tmp_path, mbars)
+    db = _local(tmp_path, _bars(jump_day=10, jump=1.1))
+    try:
+        w = preflight(db, ["600519"], days=30, mother=sd)
+        assert w["ok"] is True and w["status"] == "warn"
+
+        sd2 = _mother(tmp_path / "x", [Bar(
+            symbol="600519", timestamp=b.timestamp, open=b.open * 2,
+            high=b.high * 2, low=b.low * 2, close=b.close * 2, volume=1000,
+            adjust="qfq") for b in mbars])
+        r = preflight(db, ["600519"], days=30, mother=sd2)
+        assert r["ok"] is False and r["status"] == "red"
+    finally:
+        m.reset_cache()
+
+
 def test_repair_qfq_dry_run_then_apply(tmp_path):
     from paper_trading.data.qfq_check import repair
 

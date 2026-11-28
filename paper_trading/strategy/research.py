@@ -120,5 +120,6 @@ def run_research(bridge, *, grid: str = "ma_cross",
         "cash": float(cash),
         "note": "研究结果不自动写配置/规则；生产变更须人工复核并重新观察",
     }
-    return {"ok": not out.get("error"), "data": out,
-            "error": out.get("error")}
+    out["ok"] = not out.get("error")
+    out.setdefault("error", None)
+    return out
