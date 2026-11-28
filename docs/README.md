@@ -21,6 +21,7 @@
 | `CONTRACT.md` | 子项目三表契约（拥有/只读/永不碰）+ 接缝清单（vendor 门禁用） |
 | `mother-interface.md` | 母库只读接口、降级、来源标注、**价值策略位置/格式**、接口探针 |
 | `strategy-contract.md` | 子项目自己的策略注册表/参数/自定义/离线运行 |
+| `ai-autonomy.md` | AI 自主权边界：框架管安全，AI 管风格；健康度默认 advisory |
 | `panel-information-architecture.md` | 面板信息架构与取舍（重要/可删/后置） |
 | `ui-iteration-20261119.md` | 面板 P0/P1/P2 的实现契约与变更记录 |
 | `architecture-map.md` | 模块依赖快照（2026-10-29 基线 + 11-24 复核计数） |
