@@ -29,7 +29,9 @@
 | `news` | `news_item` | `code, title` | `local:akshare`（财联社/同花顺快讯） | 母库个股 + 全局（`code=''`）；缺则本地 |
 | `screening_detail` | `screening_result` | `run_id, run_date` | `local:config`（手填池，无评分） | 含 `score_detail/reason/strategy_tags` |
 | `thesis` | `watchlist_thesis` | `code` | 无 → `unavailable` | 论点/卖出条件 |
-| `outcomes` | `analysis_outcome` | `stock_code` | 无 → `unavailable` | AI 结论追踪；覆盖度低时给 `note` |
+| `outcomes` | `analysis_outcome` | `stock_code` | 无 → `unavailable` | AI 结论追踪；verdict 为空时从 `stock_analysis_history.ai_analysis` JSON 原文回填；覆盖度低时给 `note` |
+| `outcome_samples` | `analysis_outcome` + `stock_analysis_history` | `analysis_id, benchmark_code, ret_20` | 无 → `unavailable` | 成绩校准全量样本：固定 `sh000300`、按 `analysis_id` 去重；旧样本无 verdict 时保留 signal+前向收益 |
+| `raw_close_map` | `kline_daily.close_raw` + `daily_close.close` | `code, trade_date` | 无 → `{}` | raw 管道的独立收盘参照；`kline_daily` 按标的滞后时用 `daily_close` 补洞（2026-11-28 实测 69,560 重叠行零差异） |
 | `sectors` | `stock_snapshot` | `code, sector, snapshot_date` | 无 → `unavailable` | 行业分布；NULL/缺行保持 None（按“未知”），不回退 |
 | `regime` | `market_index` | `index_code, date` | 无 → `unavailable` | 大盘指数状态 |
 

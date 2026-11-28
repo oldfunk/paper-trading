@@ -52,6 +52,7 @@ python -m paper_trading.cli corporate suggest --json
 # A3：多策略资金额度（只读）/ 默认策略对照（历史回测，不承诺收益）
 python -m paper_trading.cli strategy allocations --json
 python -m paper_trading.cli strategy compare --days 120 --json
+python -m paper_trading.cli strategy calibration --json
 
 # A5/B2：日/周报 + 逐日审计（只读）
 python -m paper_trading.cli report daily --date 2026-11-27 --json

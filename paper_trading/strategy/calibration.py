@@ -141,6 +141,11 @@ def build_calibration(*, benchmark: str = DEFAULT_BENCHMARK,
     sufficient = (len(usable) >= MIN_TOTAL
                   and int(buy.get("n") or 0) >= MIN_PER_SIDE
                   and int(avoid.get("n") or 0) >= MIN_PER_SIDE)
+    warnings = []
+    if int(buy.get("n") or 0) < 30:
+        warnings.append(f"BUY 样本仅 {buy.get('n') or 0} 条，spread 易受个别样本影响")
+    if int(avoid.get("n") or 0) < 30:
+        warnings.append(f"AVOID 样本仅 {avoid.get('n') or 0} 条，结论不稳")
     dates = [x["date"] for x in usable if x["date"]]
     base.update({
         "available": True, "sufficient": sufficient, "n": len(usable),
@@ -152,6 +157,7 @@ def build_calibration(*, benchmark: str = DEFAULT_BENCHMARK,
         "duplicates_dropped": ((blk.get("data") or {}).get("raw_count", 0)
                                - (blk.get("data") or {}).get("unique_count", 0)),
         "asof": blk.get("asof"),
+        "warnings": warnings,
         "note": ("历史统计，不是未来收益承诺；BUY 命中=20日超额>0，"
                  "AVOID 命中=20日超额<0；旧样本无 verdict 时按 signal 统计；"
                  "样本不足时不据此下结论"),

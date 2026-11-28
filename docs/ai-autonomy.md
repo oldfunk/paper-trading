@@ -47,6 +47,8 @@
   它只是默认基线，`custom` 可完全覆盖；
 - 健康度已进入 AI 上下文（`llm_context.strategy_health`），**advisory**：
   AI 看到 `demote` 必须解释继续/放缓/停手；框架不自动拦买；
+- AI 历史成绩（`llm_context.ai_scorecard`）只在样本足够时注入：BUY/AVOID 的
+  20 日超额与命中率，明确“历史统计不是命令”，不自动改风格；
 - 额度已进入 AI 上下文（`llm_context.strategy_allocations`）：启用后买入必须
   标注 `strategy`，不得超 remaining；
 - `agent replay` 可回放健康度输入与 AI 是否回应；`audit day` 可查任意一天

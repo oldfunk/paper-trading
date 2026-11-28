@@ -21,7 +21,7 @@
 | 项 | 路径/说明 |
 |---|---|
 | 母库市场库 | `data/db/stock_dashboard.db`（SQLite `mode=ro` + `query_only`） |
-| 读取的表 | `kline_daily`、`financial_summary`、`dividend_annual`、`benchmark_daily`、`news_item`、`screening_result`、`watchlist_thesis`、`analysis_outcome`、`market_index`、`instrument`、`trading_calendar`、`ai_watchlist`、`watchlist`、`stock_snapshot`、`stock_analysis_history`、`watchlist_notes` |
+| 读取的表 | `kline_daily`、`daily_close`、`financial_summary`、`dividend_annual`、`benchmark_daily`、`news_item`、`screening_result`、`watchlist_thesis`、`analysis_outcome`、`market_index`、`instrument`、`trading_calendar`、`ai_watchlist`、`watchlist`、`stock_snapshot`、`stock_analysis_history`、`watchlist_notes` |
 | 路径解析 | 环境变量 `STOCK_DASHBOARD_DIR`（默认 `~/stock-dashboard`）；测试用 `PAPER_TRADING_MOTHER_DIR` |
 | 只读保证 | 只 `SELECT`/`PRAGMA`；不建索引、不写、不触发母库回填 |
 

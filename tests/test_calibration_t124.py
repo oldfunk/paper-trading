@@ -148,3 +148,22 @@ def test_calibration_unavailable_without_mother(tmp_path):
     out = cal.build_calibration(mother=tmp_path / "nope")
     assert out["available"] is False
     assert out["reason"]
+
+
+def test_scorecard_payload_minifies_and_keeps_warning(monkeypatch):
+    from paper_trading.cli import _scorecard_payload
+
+    fake = {"available": True, "sufficient": True, "n": 390,
+            "window": {"start": "2026-07-08", "end": "2026-09-29"},
+            "by_signal": {"BUY": {"n": 23, "avg_excess_20": 0.1, "hit_rate": 0.9},
+                          "HOLD": {"n": 152, "avg_excess_20": 0.05},
+                          "AVOID": {"n": 215, "avg_excess_20": 0.01,
+                                    "hit_rate": 0.5}},
+            "spread_buy_minus_avoid": 0.09,
+            "warnings": ["BUY 样本仅 23 条"], "asof": "2026-11-26"}
+    monkeypatch.setattr(cal, "build_calibration", lambda **k: fake)
+    out = _scorecard_payload()
+    assert out["available"] is True and out["buy"]["n"] == 23
+    assert out["warnings"] == ["BUY 样本仅 23 条"]
+    assert "历史统计" in out["note"]
+

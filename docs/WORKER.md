@@ -1888,6 +1888,32 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   conditions=7/intents=4）；`security audit` 0 fail；`strategy compare`
   60 日可跑。dashboard :8080 active、`/api/health` healthy。
 
+- [x] **T123 母库 daily_close 补 raw 参照（C3）**（2026-11-28，母库侧新状态）：
+  母库 `kline_daily.close_raw` 对部分池内标的仍滞后（000858 到 11-17、000333 到 11-20），
+  但新表 `daily_close` 已覆盖全市场到 11-27，且与 `close_raw` 在 **69,560 个重叠行零差异**。
+  `mother.raw_close_map` / `raw_close_asof` 改为 `kline_daily` 优先、`daily_close` 补洞
+  （`ref_source` 标注）。生产 `data fetch-raw --days 30` 后
+  `raw-coverage --gate`：**violations=[]，440/440 checked，unflipped/waiting=0**。
+  验收：`tests/test_mother_daily_close_t123.py` 3 条。
+
+- [x] **T124 AI 成绩校准（P5.5 / C1）**（2026-11-28，母库侧新状态）：
+  母库 `analysis_outcome` 1,140 行（570 个 analysis × 2 基准），verdict 已回填 374 条；
+  旧样本 2026-07/08 的 verdict 仍为空，但 `signal` 与 `ret_20/excess_20` 齐全。
+  `mother.outcome_samples` 固定 `sh000300`、按 `analysis_id` 去重、从
+  `stock_analysis_history.ai_analysis` JSON 回填 verdict/signal；
+  `strategy/calibration.py` 输出 BUY/HOLD/AVOID 命中率/均值/中位数/价差，
+  样本不足（<30 或单侧 <10）时 `sufficient=false` 且只展示不结论。
+  生产：390 条可用；BUY 23（+10.39%，命中 91.3%）、AVOID 215（+0.57%，命中 51.6%）、
+  HOLD 152（+5.62%），spread +9.82pp；**BUY 样本少，已输出警告**。
+  `llm_context.ai_scorecard` 仅在样本足够时注入（advisory）；`TRADER_SYSTEM` 第 14 条
+  明确“历史统计不是命令”。验收：`tests/test_calibration_t124.py` 7 条。
+
+- [x] **T125 母项目新状态取数/复核**（2026-11-28，全量 1088 passed / 13 skipped）：母库 `analysis_outcome` 已回填、
+  `daily_close` 已全市场覆盖、`benchmark_daily` 5 个代码到 11-27；
+  第二实例 NAV 2026-11-20..11-27 每日 1 行（10-23..11-19 历史缺口仍不插值）；
+  母 `scripts/gate.sh` 已把 `paper_trading/tests` 作为 vendor 套件运行（含契约测试，
+  失败不阻塞）。母 vendor 仍 v0.10.1，需子项目发 v0.12 tag 后由母侧 subtree pull。
+
 
 
 

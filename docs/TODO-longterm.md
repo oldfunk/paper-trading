@@ -30,11 +30,11 @@
 
 | ID | 项 | 阻塞 | 下一步 |
 |---|---|---|---|
-| C1 | P5.5 AI 成绩校准 | 母库 `analysis_outcome` 最新 11-19、766 条 verdict 为空 | 先做离线校准（有 verdict 样本）；持续校准等母库回填 |
-| C2 | P7.4 契约测试进母 CI | 母项目侧 | 母侧排期；子项目只提供探针/契约 |
-| C3 | 母库 `raw_gate` 参照滞后 | 母库 `close_raw` 断更 | 母侧修复；子项目按裁决 A 保持 warn |
-| C4 | 母项目 :8081 vendor v0.11.0 | 母侧发布窗口 | `subtree pull v0.11.0` + gate + 重启 |
-| C5 | 母项目 issue #7（第二实例 NAV 断档） | 母侧 | 母侧处理；子项目不介入 |
+| C1 | P5.5 AI 成绩校准 | ~~母库 verdict 为空~~ **已解除（2026-11-28）** | ✅ 已上线 `strategy calibration`：母库 390 条可用样本（旧样本按 signal+前向收益，verdict 有 374 条）；`llm_context.ai_scorecard` 仅样本足够时注入 |
+| C2 | P7.4 契约测试进母 CI | 母侧策略（vendor 失败不阻塞） | 母 `scripts/gate.sh` 已跑 `paper_trading/tests`（含 `test_mother_contract.py`）；是否把 vendor 契约失败改为阻塞仍由母侧决定 |
+| C3 | 母库 `raw_gate` 参照滞后 | ~~`close_raw` 断更~~ **已解除（2026-11-28）** | ✅ 母库 `daily_close` 与 `close_raw` 69,560 行零差异，子项目用 `daily_close` 补洞；生产 `raw-coverage --gate` 0 violations（440/440 checked） |
+| C4 | 母项目 :8081 vendor v0.11.0 | 母侧发布窗口 + 子项目尚未打 v0.12 tag | 子项目发 v0.12.0 后由母侧 `subtree pull`；当前母仍 v0.10.1 |
+| C5 | 母项目 issue #7（第二实例 NAV 断档） | 母侧历史缺口 | 第二实例 2026-11-20..11-27 已每日 1 行；10-23..11-19 历史缺口按母侧口径不插值，issue 仍开 |
 
 ## D. 之后（v0.13+ / 未排期）
 

@@ -30,6 +30,7 @@
 - **只读集成**：[Stock Dashboard](https://github.com/oldfunk/stock-dashboard) 在同一台机器时，全市场候选池/代码表/基本面/论点自动可用，缺席静默回退
 - **面板 P2**：收益曲线（总资产/收益率/回撤）、今日分时、FIFO 已实现盈亏/胜率/费用、成交记录 + CSV 导出；**CSI300 基准已上线**（`/api/benchmark`，超额/相对回撤）；**行业分布已上线**（`/api/sectors`，未知桶/覆盖度）
 - **策略健康**：滚动 20 日超额、窗口回撤、换手、费用拖累，输出 healthy/watch/demote 建议（只读，不直接改交易）；已进入 AI 上下文（advisory），可选 `health_policy=enforce` 由用户显式拦新买
+- **AI 成绩校准**：`strategy calibration` 读母库 `analysis_outcome`（旧样本无 verdict 时按 signal+20日超额），输出 BUY/HOLD/AVOID 命中率与超额；样本足够才进 AI 上下文（advisory）
 - **默认通用策略**：`general` 方案为 **MA20/60 + 趋势/质量/风险** 中线手册（10–30 个交易日）；可用 `custom` 覆盖
 - **多策略资金分配**：`strategy.allocations`（权重由用户/AI 配置，无默认偏好；额度=weight×NAV）；计划/执行两处闸，卖出/持有不受限，超限 fail-closed
 - **审计与报告**：`agent replay` 可回放“健康度输入→选择→理由”；`report daily|weekly --out`；`audit day` 串计划/决策/意图/成交/条件单

@@ -10,10 +10,14 @@
 - [x] P5.2 止损门禁：`agent.require_stop=true` 时，买入缺 `risk_stop` 且无对应卖出条件 → 拒单；`risk_stop` 与引擎 `trailing_stop/time_stop` 口径对齐说明
 - [x] P5.3 AI 决策落库 `agent_decisions`（decision_date/plan_id/actions_json/basis/result）供回放与审计
 - [x] P5.4 决策回放/对照：CLI `agent replay --date`（AI 决策 vs 规则信号，只读不下单）
-- [ ] P5.5 AI 成绩校准：`analysis_outcome` 有 verdict 后接入（**等母库回填**，覆盖度低则 `unavailable`）
-  - 2026-11-24 实测：926 行、最新 `analysis_date=2026-11-19`；`verdict` 有 **766 条为空**，
-    有效约 160 条；signal 分布 AVOID 474 / HOLD 362 / BUY 90。可先做**离线校准**
-    （只用有 verdict 的样本），持续校准仍等母库回填。
+- [x] P5.5 AI 成绩校准（2026-11-28）：`strategy calibration` + `llm_context.ai_scorecard`。
+  - 母库 `analysis_outcome` 现有 1,140 行（570 个 analysis × 2 基准）；固定 `sh000300` 去重，
+    旧样本（2026-07/08）无 verdict 时按 signal + 已到期的 20 日超额计入；verdict 有 374 条。
+  - 生产样本 390 条：BUY 23（20 日平均超额 +10.39%，命中 91.3%）、AVOID 215（+0.57%，命中 51.6%）、
+    HOLD 152（+5.62%）；spread +9.82pp。**BUY 样本偏少，已在输出里显式警告**。
+  - `ai_scorecard` 只在样本足够时进上下文，明确 advisory；不自动调整 AI 风格。
+  - 新样本（2026-11）verdict 已有，但要等 20 个交易日才有 `ret_20`，届时自动进入统计。
+  - 2026-11-24 旧结论（766 条 verdict 空）已被母库回填与历史原文回退解除。
 
 ## P6 — 母库数据补全适配与监控
 
