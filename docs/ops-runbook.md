@@ -40,6 +40,7 @@ bash deploy/install-ops-cron.sh --install
 - `20 21 * * *`：`ops check`
 
 日志：`logs/backup.log`、`logs/ops.log`。不碰其它 cron。
+备份文件与目录在 POSIX 下收紧为 `600` / `700`（Windows 无 POSIX mode，忽略）。
 
 ## 3. 告警处理
 

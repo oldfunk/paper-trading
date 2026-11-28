@@ -1923,6 +1923,10 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   red 退出 1 并写 `var/ops_status.json`。`deploy/install-ops-cron.sh` 幂等安装
   21:10 备份 + 21:20 巡检两条 cron（只增删带标记的行）。验收：
   `tests/test_ops_t126.py` 3 条；生产安装后 `ops check` 0 red。
+  生产验证（2026-11-28）：备份 `backups/paper_account.20261128T154005.db`
+  （600；目录 700）；`ops check` 四项全绿（备份/心跳/quote 13 只/风控），
+  cron `10 21` 备份 + `20 21` 巡检已装（原有 43 行保留，新增 2 行）；
+  账本钱类快照未变。
 
 
 
