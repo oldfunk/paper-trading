@@ -99,11 +99,21 @@ def _benchmark_return(bench_code: str, days: list[str],
             closes[str(r["date"])[:10]] = float(r["close"])
         except (KeyError, TypeError, ValueError):
             continue
-    common = sorted(d for d in closes if start <= d <= end)
-    if len(common) < 2:
+    if start == end:
+        # 日报：基准也要和上一个基准交易日比，否则区间只有一天
+        e = end if end in closes else max(
+            (d for d in closes if d <= end), default=None)
+        prev = [d for d in sorted(closes) if d < start]
+        s = prev[-1] if prev else None
+    else:
+        inrange = sorted(d for d in closes if start <= d <= end)
+        if len(inrange) < 2:
+            return {"available": False, "code": bench_code,
+                    "reason": f"区间内基准交易日不足（{len(inrange)}）"}
+        s, e = inrange[0], inrange[-1]
+    if not s or not e or s == e:
         return {"available": False, "code": bench_code,
-                "reason": f"区间内基准交易日不足（{len(common)}）"}
-    s, e = common[0], common[-1]
+                "reason": "基准在区间内没有可比的前后交易日"}
     return {"available": True, "code": bench_code, "start": s, "end": e,
             "return": round(closes[e] / closes[s] - 1, 6),
             "asof": blk.get("asof"), "stale": bool(blk.get("stale"))}

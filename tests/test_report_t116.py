@@ -66,6 +66,25 @@ def test_weekly_report_nav_change_and_health_window(tmp_path):
     assert out["health_change"]["before"]["available"] is False
 
 
+def test_daily_benchmark_uses_previous_trading_day(monkeypatch, tmp_path):
+    b = _bridge(tmp_path)
+    _seed(b)
+
+    def fake_benchmark(codes, days=60, mother=None, ttl=None):
+        return {"sh000300": {"available": True, "asof": "2026-11-27",
+                             "stale": False,
+                             "data": [{"date": "2026-11-26", "close": 100.0},
+                                      {"date": "2026-11-27", "close": 99.0}]}}
+
+    monkeypatch.setattr("paper_trading.integration.mother.benchmark",
+                        fake_benchmark)
+    out = daily_report(b, "2026-11-27")
+    assert out["benchmark"]["available"] is True
+    assert out["benchmark"]["start"] == "2026-11-26"
+    assert out["benchmark"]["return"] == -0.01
+    assert round(out["excess_return"], 6) == round(0.01 - (-0.01), 6)
+
+
 def test_report_write_json(tmp_path):
     b = _bridge(tmp_path)
     _seed(b)
