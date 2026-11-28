@@ -1813,7 +1813,8 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   - `config.yaml` / CLI / main / `utils.config` 的 fallback 窗口统一 20/60；
   - 默认是基线，可被 `custom` 覆盖；健康度仍 advisory，不自动拦买；
   - 验收：`tests/test_general_strategy_t111.py` 3 条；全量 **1025 passed / 13 skipped**；
-    生产 `TradingBridge.strategy` 应为 `MA_20_60`，下一次计划（12-01）使用新默认。
+    生产 `TradingBridge.strategy` 为 `CompositeStrategy(ma_cross)`、内层 MA20/60，
+    下一次计划（12-01）使用新默认。
 
 
 

@@ -46,7 +46,7 @@
 
 - `general` 方案 `signal=20/60`，prompt 含 `方案规则` 与完整手册；
 - 全量测试全绿；
-- 生产 `TradingBridge.strategy` 为 `MA_20_60`；
+- 生产 `TradingBridge.strategy` 为 `CompositeStrategy(ma_cross)`，内层 `MACrossStrategy` 为 **MA20/60**；
 - 下一次计划（11-30 晚生成 12-01 计划）使用新默认；已存在的计划 #32 不受影响。
 
 ## 6. 未做 / 后续
