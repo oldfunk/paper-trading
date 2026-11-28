@@ -1805,6 +1805,17 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   **定位：只读 / advisory，不自动拦买**；11-30 计划 #32 的买单不受影响；
   `enforce` 是用户显式策略（见 `docs/ai-autonomy.md`）。
 
+- [x] **T111 默认通用策略（I5b）**（2026-11-28）：把旧默认 MA5/20 更新为
+  **MA20/60 + 趋势/质量/风险**的通用中线手册（10–30 个交易日）：
+  - `strategy/general_playbook.py` 的 `GENERAL_RULES` 是唯一真相源；
+    `general` 方案 title/desc/signal/exits/rules 同步；
+  - `SCHEME_TMPL` 新增 `{rules}`，`_scheme_txt()` 把手册注入 AI prompt；
+  - `config.yaml` / CLI / main / `utils.config` 的 fallback 窗口统一 20/60；
+  - 默认是基线，可被 `custom` 覆盖；健康度仍 advisory，不自动拦买；
+  - 验收：`tests/test_general_strategy_t111.py` 3 条；全量 **1025 passed / 13 skipped**；
+    生产 `TradingBridge.strategy` 应为 `MA_20_60`，下一次计划（12-01）使用新默认。
+
+
 
 
 

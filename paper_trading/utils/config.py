@@ -82,8 +82,8 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
         "trading_config": tcfg,
         "strategy": {
             "active": str(strategy.get("active", "general") or "general"),
-            "short_window": int(strategy.get("short_window", 5)),
-            "long_window": int(strategy.get("long_window", 20)),
+            "short_window": int(strategy.get("short_window", 20)),
+            "long_window": int(strategy.get("long_window", 60)),
             "buy_volume": int(strategy.get("buy_volume", 100)),
             "sell_volume": int(strategy.get("sell_volume", 100)),
         },

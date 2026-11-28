@@ -70,7 +70,10 @@
 - **状态（2026-11-28，I5a 完成）**：健康度已上线（`strategy health` +
   `/api/strategy-health` + 运维页卡）；生产当前 `demote`（20 日超额 −5.14%），
   但只读、不自动改交易；11-30 计划 #32 的买单不受影响。
-- **I5b 待做（按 `docs/ai-autonomy.md`）**：
+- **I5b 默认通用策略（2026-11-28 完成）**：旧默认 MA5/20 → **MA20/60 +
+  趋势/质量/风险 playbook**；`GENERAL_RULES` 由 `SCHEME_TMPL` 注入 AI prompt；
+  `general` 方案 title/desc/exits/signal 同步；详情 `docs/default-strategy.md`。
+- **I5c 待做（按 `docs/ai-autonomy.md`）**：
   1. 健康度进 AI 上下文（advisory），AI 自己决定“继续/放缓/停手”并写理由；
   2. `health_policy` 配置面（off/advisory/enforce，默认 advisory）+ 测试；
      `enforce` 是**用户显式策略**，不是框架默认；

@@ -74,6 +74,8 @@ USER_TMPL = """股票池：{pool}
 请输出今日决策 JSON。"""
 
 SCHEME_TMPL = """当前投资方案：{title}（{name}）——{desc}
+方案规则：
+{rules}
 离场纪律：{exits}"""
 
 MOTHER_RULES = """

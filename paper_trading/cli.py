@@ -126,7 +126,7 @@ class TradingBridge:
     ) -> None:
         # config.yaml 单一真相源（显式 TradingConfig 优先，其次 config_path，其次默认 config.yaml）
         risk_kwargs: dict = {}
-        strat_kwargs: dict = {"short_window": 5, "long_window": 20}
+        strat_kwargs: dict = {"short_window": 20, "long_window": 60}
         stock_pool: list[str] = []
         agent_kwargs: dict = {}
         data_source = "auto"          # auto=母库优先/本地兜底；local=只用本地；mother=只用母库
@@ -200,8 +200,8 @@ class TradingBridge:
         try:
             self.strategy = _build_strategy(
                 self.config_path, root=_root,
-                defaults={"short_window": strat_kwargs.get("short_window", 5),
-                          "long_window": strat_kwargs.get("long_window", 20),
+                defaults={"short_window": strat_kwargs.get("short_window", 20),
+                          "long_window": strat_kwargs.get("long_window", 60),
                           "buy_volume": strat_kwargs.get("buy_volume", 100),
                           "sell_volume": strat_kwargs.get("sell_volume", 100)})
         except _StrategyConfigError as exc:

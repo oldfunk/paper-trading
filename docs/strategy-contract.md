@@ -132,10 +132,22 @@ python -m paper_trading.cli \
 - 探针：`python -m paper_trading.cli data contract --json`，形状漂移 exit 3；
 - 边界：母项目供数、子项目只读；不把母策略写进本文件的注册表，也不反向写母库。
 
-## 6. 回归与回滚
+## 6. 默认通用策略（general，2026-11-28）
+
+旧默认 MA5/20 已更新为 **MA20/60 + 趋势/质量/风险**的通用中线手册：
+
+- 唯一真相源：`paper_trading/strategy/general_playbook.py` 的 `GENERAL_RULES`；
+- `general` 方案：`signal={short_window:20, long_window:60}`，`rules=GENERAL_RULES`；
+- `SCHEME_TMPL` 通过 `{rules}` 注入 AI prompt（`_scheme_txt()`）；
+- `config.yaml` / CLI / main / `utils.config` 的 fallback 同步 20/60；
+- 默认是基线，可被 `custom` 覆盖；健康度仍 advisory，不自动拦买；
+- 详细规则与边界见 `docs/default-strategy.md`。
+
+## 7. 回归与回滚
 
 - 单测：`tests/test_strategy_registry_t87.py`（正常/未知类/坏参数/重复名/
   禁用/自定义白名单/内置信号/Bridge 装配与留痕）；
+  默认策略：`tests/test_general_strategy_t111.py`（方案/提示词/config 接线）；
 - 全量 `pytest` 必须绿（除既存时窗失败）；
 - 回滚：删掉 `strategy.local.yaml` 的 `strategies` 或把 `config.yaml` 的列表
-  清空 ⇒ 自动回到内置 MA5/20；不改账本、不改执行底座。
+  清空 ⇒ 回到内置默认（当前 MA20/60）；不改账本、不改执行底座。

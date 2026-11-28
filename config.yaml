@@ -35,8 +35,8 @@ trading:
 
 strategy:
   active: general
-  short_window: 5
-  long_window: 20
+  short_window: 20
+  long_window: 60
   buy_volume: 100
   sell_volume: 100
 

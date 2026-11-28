@@ -256,6 +256,7 @@ class AgentTrader:
         s = self.bridge.scheme
         txt = SCHEME_TMPL.format(title=s.title or s.name, name=s.name,
                                  desc=s.desc or "（无说明）",
+                                 rules=s.rules or "（无额外规则，按通用风控与离场纪律执行）",
                                  exits=s.exits_note or "MA 死叉离场")
         if s.name == "custom" and (s.instruction or "").strip():
             txt += ("\n用户自定义交易指令（最高优先级，风控与合规除外）：\n"
