@@ -2,6 +2,8 @@
 import sqlite3
 from datetime import datetime, timedelta
 
+import pytest
+
 from paper_trading.data.db_manager import DataDBManager
 from paper_trading.data.qfq_check import check
 from paper_trading.integration import mother as m
@@ -109,3 +111,40 @@ def test_qfq_empty_pool_skips(tmp_path):
     db = DataDBManager(tmp_path / "data.db")
     out = check(db, [], days=30, mother=tmp_path / "nope")
     assert out["status"] == "skip" and out["ok"] is True
+
+
+def test_repair_qfq_dry_run_then_apply(tmp_path):
+    from paper_trading.data.qfq_check import repair
+
+    db = _local(tmp_path, _bars())
+    calls = []
+
+    def fetch(sym, start):
+        calls.append((sym, start))
+        return _bars(jump_day=10, jump=1.1)
+
+    dry = repair(db, ["600519"], days=30, apply=False, fetch=fetch)
+    assert dry["ok"] is True and dry["applied"] is False
+    assert dry["items"][0]["revisions"] > 0
+    assert db.get_bars("600519", limit=30)[-1].close == pytest.approx(11.9)
+
+    out = repair(db, ["600519"], days=30, apply=True, fetch=fetch)
+    assert out["ok"] is True and out["applied"] is True
+    assert out["items"][0]["status"] == "applied"
+    assert len(calls) == 2
+    # 后半段已重拉为新锚点
+    assert db.get_bars("600519", limit=1)[0].close == pytest.approx(11.9 * 1.1)
+
+
+def test_repair_qfq_fetch_failure_is_reported(tmp_path):
+    from paper_trading.data.qfq_check import repair
+
+    db = _local(tmp_path, _bars())
+
+    def boom(sym, start):
+        raise RuntimeError("net down")
+
+    out = repair(db, ["600519"], days=30, apply=True, fetch=boom)
+    assert out["ok"] is False
+    assert out["items"][0]["status"] == "fetch_failed"
+

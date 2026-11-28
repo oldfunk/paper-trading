@@ -1642,6 +1642,18 @@ def main() -> None:
     data_qfq.add_argument("--tol", type=float, default=0.001,
                           help="最大允许比值漂移（默认 0.001=0.1%%）")
     data_qfq.add_argument("--json", action="store_true")
+    data_repair = data_sub.add_parser(
+        "repair-qfq",
+        help="按需重拉历史前复权，修复本地旧锚点（默认 dry-run）")
+    data_repair.add_argument("--symbols", nargs="*")
+    data_repair.add_argument("--pool-from", default="config")
+    data_repair.add_argument("--pool-limit", type=int, default=20)
+    data_repair.add_argument("--pool-tag", default="")
+    data_repair.add_argument("--no-picks", action="store_true")
+    data_repair.add_argument("--days", type=int, default=120)
+    data_repair.add_argument("--apply", action="store_true",
+                             help="真的重拉并写 daily_bars（默认只报告）")
+    data_repair.add_argument("--json", action="store_true")
 
     # T31 原始价管道（引擎唯一允许的口径）
     data_raw_fetch = data_sub.add_parser(
@@ -3061,6 +3073,24 @@ def main() -> None:
                 out["pool_source"] = note
                 emit(out, ok=bool(out.get("ok")), error=out.get("reason"))
                 if out.get("status") == "red":
+                    sys.exit(1)
+            elif cmd == "repair-qfq":
+                from paper_trading.data.qfq_check import repair as qfq_repair
+
+                syms, note, _, _ = _resolve_syms(bridge, args)
+                out = qfq_repair(bridge.data_db, syms, days=args.days,
+                                 apply=bool(getattr(args, "apply", False)))
+                out["pool_source"] = note
+                rev = [{"symbol": i["symbol"], "changes": i.get("sample") or []}
+                       for i in out.get("items", []) if i.get("revisions")]
+                if out.get("applied") and rev:
+                    bridge.broker.log_operation(
+                        "data:qfq_repair",
+                        {"symbols": [x["symbol"] for x in rev], "days": args.days},
+                        True, {"revisions": rev},
+                        None, None)
+                emit(out, ok=bool(out.get("ok")), error=out.get("reason"))
+                if not out.get("ok"):
                     sys.exit(1)
             elif cmd == "fetch-raw":
                 from paper_trading.data import raw_feed

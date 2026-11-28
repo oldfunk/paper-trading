@@ -10,8 +10,9 @@
 """
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 
 def check(data_db, symbols: Iterable[str], *, days: int = 120,
@@ -106,3 +107,72 @@ def check(data_db, symbols: Iterable[str], *, days: int = 120,
         "uncomparable": [x["symbol"] for x in uncomparable],
         "note": "只读锚点检测；anchor_shift 需人工核对除权日/源，不自动改数据",
     }
+
+
+def repair(data_db, symbols: Iterable[str], *, days: int = 120,
+           apply: bool = False, fetch: Optional[Callable] = None,
+           tol: float = 0.001, mother=None) -> dict:
+    """按需重拉指定标的的历史 qfq，修复本地旧锚点。
+
+    默认 **dry-run**：只报告会改哪些日期；`apply=True` 才写 `daily_bars`。
+    只重拉本地行情，不碰账户/NAV/策略；重拉后 `data:revision` 由 CLI 留痕。
+    `fetch` 可注入 `(symbol, start_date) -> list[Bar]`，测试不联网。
+    """
+    syms = sorted({str(s).strip().zfill(6) for s in (symbols or []) if s})
+    out = {"ok": True, "applied": False, "days": int(days),
+           "items": [], "note": "dry-run：未写本地行情；--apply 才重拉并落库"}
+    if not syms:
+        out["note"] = "股票池为空"
+        return out
+    if fetch is None:
+        from paper_trading.data.akshare_fetcher import AkshareFetcher
+
+        def fetch(sym, start_date):
+            return AkshareFetcher.fetch_daily(sym, start_date=start_date)
+    start = (date.today() - timedelta(days=int(days) * 2)).strftime("%Y%m%d")
+    for sym in syms:
+        try:
+            old = {b.timestamp.date().isoformat(): float(b.close)
+                   for b in data_db.get_bars(sym, limit=int(days))
+                   if getattr(b, "close", None) is not None}
+        except Exception as exc:            # noqa: BLE001
+            out["items"].append({"symbol": sym, "status": "error",
+                                 "reason": f"本地读取失败：{type(exc).__name__}: {exc}"})
+            out["ok"] = False
+            continue
+        try:
+            bars = fetch(sym, start) or []
+        except Exception as exc:            # noqa: BLE001
+            out["items"].append({"symbol": sym, "status": "fetch_failed",
+                                 "reason": f"{type(exc).__name__}: {exc}"})
+            out["ok"] = False
+            continue
+        revisions = []
+        for b in bars:
+            d = b.timestamp.date().isoformat()
+            prev = old.get(d)
+            try:
+                now = float(b.close)
+            except (TypeError, ValueError):
+                continue
+            if prev and prev > 0 and now > 0 and abs(now / prev - 1) > float(tol):
+                revisions.append({"day": d, "old": round(prev, 4),
+                                  "new": round(now, 4),
+                                  "pct": round((now / prev - 1) * 100, 3)})
+        item = {"symbol": sym, "status": "dry_run", "bars": len(bars),
+                "revisions": len(revisions), "sample": revisions[:5]}
+        if apply:
+            try:
+                n = data_db.upsert_bars(bars)
+                data_db.add_stock_to_pool(sym)
+                item.update(status="applied", written=n)
+            except Exception as exc:        # noqa: BLE001
+                item.update(status="write_failed",
+                            reason=f"{type(exc).__name__}: {exc}")
+                out["ok"] = False
+        out["items"].append(item)
+    out["applied"] = bool(apply)
+    if apply:
+        out["note"] = "已重拉并落库；请再跑 data qfq-check 复核"
+    return out
+
