@@ -100,7 +100,9 @@ step "m3 daily-check" "$PY" -m paper_trading.cli m3 daily-check --json
 # 6) 面板三接口（面板未启动则 skip，不判红）
 if command -v curl >/dev/null 2>&1; then
   echo ""; echo "=== panel endpoints ==="
-  for u in /api/ai-scorecard /api/strategy-allocations /api/ops-status; do
+  for u in /api/ai-scorecard /api/strategy-allocations /api/ops-status \
+           "/api/report?kind=daily&date=$(date +%F)" \
+           "/api/audit?date=$(date +%F)"; do
     code=$(curl -s -o /tmp/pt-gate.json -w '%{http_code}' --max-time 10 \
       "http://127.0.0.1:8080$u" || echo 000)
     if [ "$code" = "200" ]; then
