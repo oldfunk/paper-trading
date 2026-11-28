@@ -1928,6 +1928,14 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   cron `10 21` 备份 + `20 21` 巡检已装（原有 43 行保留，新增 2 行）；
   账本钱类快照未变。
 
+- [x] **T127 面板运维卡（D5）**（2026-11-28）：新增三个只读接口/卡片：
+  `/api/ai-scorecard`（BUY/HOLD/AVOID 样本/20日超额/命中率 + 警告）、
+  `/api/strategy-allocations`（权重/额度/已用/剩余，未启用显式提示）、
+  `/api/ops-status`（备份/心跳/raw_gate/熔断；GET 不写 ops_status.json）。
+  三接口 60/30/60s 缓存；页面纯 SVG/无前端依赖，未启用/不可用均显式文案。
+  验收：`tests/test_dashboard.py` 21 条（含 3 条新 payload 测试）；
+  `node --check` 面板脚本通过；全量 **1094 passed / 13 skipped**。
+
 
 
 

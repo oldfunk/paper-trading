@@ -293,6 +293,14 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 </section>
 
 <section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">运维巡检</h2><span class="section-count" id="c-opsc"></span></div>
+  <div class="ai-panel">
+    <div class="s" id="ops-sum">运维巡检：加载中…</div>
+    <div class="scroll"><table id="opschecks"></table></div>
+  </div>
+</section>
+
+<section data-tab="ops">
   <div class="section-header"><h2 class="section-title">今日体检</h2><span class="section-count" id="c-checks"></span></div>
   <div class="card"><div id="checksbox" class="s">加载中…</div></div>
 </section>
@@ -307,6 +315,24 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   <div class="ai-panel">
     <div class="s" id="shealth-sum">策略健康：加载中…</div>
     <div class="scroll"><table id="shealth"></table></div>
+  </div>
+</section>
+
+<section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">AI 成绩</h2><span class="section-count" id="c-score"></span></div>
+  <div class="ai-panel">
+    <div class="s" id="score-sum">AI 成绩：加载中…</div>
+    <div class="scroll"><table id="scorecard"></table></div>
+    <div class="s mut" id="score-note"></div>
+  </div>
+</section>
+
+<section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">策略资金额度</h2><span class="section-count" id="c-alloc"></span></div>
+  <div class="ai-panel">
+    <div class="s" id="alloc-sum">资金额度：加载中…</div>
+    <div class="scroll"><table id="alloc"></table></div>
+    <div class="s mut" id="alloc-note"></div>
   </div>
 </section>
 
@@ -548,6 +574,7 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="preview")return "风控检查通过";
   return "完成";}
 let PERF=null,OV=null,INTS=[],INTRA=null,BENCH=null,SECT=null,SHEALTH=null,PERFMODE="nav";
+let SCORE=null,ALLOC=null,OPSCHK=null;
 function dayDiff(iso){if(!iso)return null;const t=Date.parse(iso+"T00:00:00");
   return isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/86400000));}
 function sparkSVG(vals){
@@ -760,6 +787,88 @@ function renderStrategyHealth(){
   ].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td class="mut">${r[2]}</td></tr>`).join("");
   rows(t,head,body);
 }
+function renderScorecard(){
+  const t=document.getElementById("scorecard");
+  const sum=document.getElementById("score-sum");
+  const cnt=document.getElementById("c-score");
+  const note=document.getElementById("score-note");
+  if(!t)return;
+  const head=[["信号",0],["样本",1],["20日平均超额",1],["命中率",1]];
+  if(!SCORE||!SCORE.available){
+    if(sum)sum.textContent="AI 成绩不可用："+((SCORE&&SCORE.reason)||"母库样本不足");
+    if(cnt)cnt.textContent="—";
+    if(note)note.textContent="";
+    rows(t,head,`<tr><td colspan="4" class="mut">暂无数据</td></tr>`);
+    return;
+  }
+  const sig=SCORE.by_signal||{};
+  const pick=k=>sig[k]||{};
+  const b=pick("BUY"),h=pick("HOLD"),a=pick("AVOID");
+  if(cnt)cnt.textContent=`${SCORE.n||0} 条 · ${(SCORE.window&&SCORE.window.start)||"—"} → ${(SCORE.window&&SCORE.window.end)||"—"}`;
+  if(sum)sum.textContent=(SCORE.sufficient?"样本足够":"样本不足（只展示，不结论）")
+    +` · BUY−AVOID ${SCORE.spread_buy_minus_avoid==null?"—":pct(SCORE.spread_buy_minus_avoid)}`
+    +` · 截至 ${SCORE.asof||"—"}`;
+  const line=(label,x)=>[label,x.n??0,x.avg_excess_20==null?"—":pct(x.avg_excess_20),
+    x.hit_rate==null?"—":pct(x.hit_rate)];
+  const body=[line("BUY",b),line("HOLD",h),line("AVOID",a)].map(r=>
+    `<tr><td><b>${r[0]}</b></td><td class="num">${r[1]}</td>`+
+    `<td class="num ${String(r[2]).startsWith("-")?"bad":"ok"}">${r[2]}</td>`+
+    `<td class="num">${r[3]}</td></tr>`).join("");
+  rows(t,head,body);
+  if(note)note.textContent=(SCORE.note||"")+((SCORE.warnings||[]).length?"；警告："+SCORE.warnings.join("；"):"");
+}
+function renderAllocations(){
+  const t=document.getElementById("alloc");
+  const sum=document.getElementById("alloc-sum");
+  const cnt=document.getElementById("c-alloc");
+  const note=document.getElementById("alloc-note");
+  if(!t)return;
+  const head=[["策略"],["权重",1],["额度",1],["已用",1],["剩余",1]];
+  if(!ALLOC||ALLOC.available===false){
+    if(sum)sum.textContent="资金额度不可用："+((ALLOC&&(ALLOC.reason||ALLOC.note))||"未配置");
+    if(cnt)cnt.textContent="—";
+    if(note)note.textContent="";
+    rows(t,head,`<tr><td colspan="5" class="mut">暂无数据</td></tr>`);
+    return;
+  }
+  if(!ALLOC.enabled){
+    if(sum)sum.textContent="未配置 strategy.allocations；沿用单方案行为";
+    if(cnt)cnt.textContent="未启用";
+    if(note)note.textContent=ALLOC.note||"";
+    rows(t,head,`<tr><td colspan="5" class="mut">未启用（空配置）</td></tr>`);
+    return;
+  }
+  const items=ALLOC.items||[];
+  if(cnt)cnt.textContent=`${items.length} 个策略 · 权重和 ${pct(ALLOC.total_weight)}`;
+  if(sum)sum.textContent=`NAV ${fmt(ALLOC.nav_total)} · 额度口径：${ALLOC.basis||"—"}`;
+  const body=items.map(x=>`<tr><td><b>${esc(x.strategy)}</b></td>`+
+    `<td class="num">${pct(x.weight)}</td><td class="num">${fmt(x.budget)}</td>`+
+    `<td class="num">${fmt(x.used)}</td><td class="num ${Number(x.remaining)<=0?"bad":""}">${fmt(x.remaining)}</td></tr>`).join("");
+  rows(t,head,body);
+  if(note)note.textContent=ALLOC.note||"";
+}
+function renderOpsCheck(){
+  const t=document.getElementById("opschecks");
+  const sum=document.getElementById("ops-sum");
+  const cnt=document.getElementById("c-opsc");
+  if(!t)return;
+  const head=[["检查"],["状态"],["详情"]];
+  if(!OPSCHK||OPSCHK.ok===undefined){
+    if(sum)sum.textContent="运维巡检不可用：尚未运行";
+    if(cnt)cnt.textContent="—";
+    rows(t,head,`<tr><td colspan="3" class="mut">暂无数据（cron 21:20 或手动 ops check）</td></tr>`);
+    return;
+  }
+  const reds=OPSCHK.red||[],warns=OPSCHK.warn||[];
+  if(cnt)cnt.textContent=OPSCHK.ok?"正常":`${reds.length} 红 / ${warns.length} 黄`;
+  if(sum)sum.textContent=(OPSCHK.ok?"全部通过":"需处理")+` · ${OPSCHK.checked_at||"—"}`;
+  const body=(OPSCHK.checks||[]).map(c=>{
+    const st={green:["ok","正常"],red:["bad","红"],warn:["warn","黄"],skip:["mut","跳过"]}[c.status]||["mut",c.status||"—"];
+    return `<tr><td>${esc(c.name||c.id)}</td><td class="${st[0]}">${st[1]}</td>`+
+      `<td class="mut">${esc(c.detail||"")}${c.fix?`<br><span class="s">处理：${esc(c.fix)}</span>`:""}</td></tr>`;
+  }).join("");
+  rows(t,head,body);
+}
 function renderOpsPanels(){
   const h=(OV&&OV.health)||{},ck=h.checks||{};
   const ch=document.getElementById("c-health");
@@ -874,6 +983,13 @@ async function refresh(){
   const [s,ops,pos,ord,nav,nm,prov,fl,ct]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance","/api/fills?limit=30","/api/contract"].map(get));
   const shR=await get("/api/strategy-health").catch(()=>({ok:false}));
   SHEALTH=(shR&&shR.ok)?shR.data:null;
+  const [scoreR,allocR,opsR]=await Promise.all([
+    get("/api/ai-scorecard").catch(()=>({ok:false})),
+    get("/api/strategy-allocations").catch(()=>({ok:false})),
+    get("/api/ops-status").catch(()=>({ok:false}))]);
+  SCORE=(scoreR&&scoreR.ok)?scoreR.data:null;
+  ALLOC=(allocR&&allocR.ok)?allocR.data:null;
+  OPSCHK=(opsR&&opsR.ok)?opsR.data:null;
   const [perfR,ovR,intR,intraR,benchR,sectR]=await Promise.all([
     get("/api/performance").catch(()=>({ok:false})),
     get("/api/overview").catch(()=>({ok:false})),
@@ -929,6 +1045,9 @@ async function refresh(){
   renderIntents();
   renderOpsPanels();
   renderStrategyHealth();
+  renderScorecard();
+  renderAllocations();
+  renderOpsCheck();
   drawIntraday();
   drawSectors();
   const navRows=(nav.data||[]);
@@ -1711,6 +1830,9 @@ def _walkforward_payload(bridge, grid: str, symbols, days: int, cash: float,
 _PROV_CACHE: dict = {"ts": 0.0, "data": None}
 _CONTRACT_CACHE: dict = {"ts": 0.0, "data": None}
 _SHEALTH_CACHE: dict = {"ts": 0.0, "data": None}
+_SCORE_CACHE: dict = {"ts": 0.0, "data": None}
+_ALLOC_CACHE: dict = {"ts": 0.0, "data": None}
+_OPS_CACHE: dict = {"ts": 0.0, "data": None}
 
 
 def _strategy_health_payload(account_db, ttl: float = 30.0) -> dict:
@@ -1730,6 +1852,64 @@ def _strategy_health_payload(account_db, ttl: float = 30.0) -> dict:
     _SHEALTH_CACHE.update(ts=now, data=data)
     return data
 
+
+def _scorecard_payload(ttl: float = 60.0) -> dict:
+    """AI 成绩校准（P5.5，只读；60s 缓存）。"""
+    import time
+
+    now = time.time()
+    if _SCORE_CACHE["data"] is not None and now - _SCORE_CACHE["ts"] < ttl:
+        return _SCORE_CACHE["data"]
+    try:
+        from paper_trading.strategy.calibration import build_calibration
+
+        data = build_calibration()
+    except Exception as exc:                # noqa: BLE001 - 面板不因校准失败
+        data = {"available": False, "sufficient": False,
+                "reason": f"{type(exc).__name__}: {exc}"}
+    _SCORE_CACHE.update(ts=now, data=data)
+    return data
+
+
+def _allocations_payload(bridge, ttl: float = 30.0) -> dict:
+    """策略资金额度（A3，只读；30s 缓存）。"""
+    import time
+
+    now = time.time()
+    if _ALLOC_CACHE["data"] is not None and now - _ALLOC_CACHE["ts"] < ttl:
+        return _ALLOC_CACHE["data"]
+    from paper_trading.strategy.allocation import allocations_payload
+
+    try:
+        st = bridge.get_status()
+        data = allocations_payload(
+            getattr(bridge, "allocations", {}) or {},
+            getattr(bridge, "alloc_book", None),
+            float(st.get("total_value") or 0.0))
+    except Exception as exc:                # noqa: BLE001
+        data = {"enabled": False, "available": False,
+                "reason": f"{type(exc).__name__}: {exc}"}
+    _ALLOC_CACHE.update(ts=now, data=data)
+    return data
+
+
+def _ops_status_payload(bridge, ttl: float = 60.0) -> dict:
+    """运维巡检（M4，只读；60s 缓存；GET 不写 ops_status.json）。"""
+    import time
+
+    now = time.time()
+    if _OPS_CACHE["data"] is not None and now - _OPS_CACHE["ts"] < ttl:
+        return _OPS_CACHE["data"]
+    try:
+        from paper_trading.utils.ops_status import build_status
+
+        data = build_status(bridge)
+    except Exception as exc:                # noqa: BLE001
+        data = {"ok": False, "red": ["ops"], "warn": [],
+                "checks": [], "alerts": [f"{type(exc).__name__}: {exc}"],
+                "note": "巡检失败"}
+    _OPS_CACHE.update(ts=now, data=data)
+    return data
 
 
 def _contract_payload(ttl: float = 30.0) -> dict:
@@ -2517,6 +2697,17 @@ class Handler(BaseHTTPRequestHandler):
                 # 策略健康度（只读；30s 缓存；不直接改交易）
                 self._json({"ok": True,
                             "data": _strategy_health_payload(self.account_db)})
+            elif u.path == "/api/ai-scorecard":
+                # AI 成绩校准（只读；60s 缓存；样本不足时 available=false）
+                self._json({"ok": True, "data": _scorecard_payload()})
+            elif u.path == "/api/strategy-allocations":
+                # 策略资金额度（只读；30s 缓存）
+                self._json({"ok": True,
+                            "data": _allocations_payload(self._bridge())})
+            elif u.path == "/api/ops-status":
+                # 运维巡检（只读；60s 缓存；不写 ops_status.json）
+                self._json({"ok": True,
+                            "data": _ops_status_payload(self._bridge())})
             elif u.path == "/api/performance":
                 # 收益曲线 + KPI 指标：只读 account db，不构造 bridge（快）
                 self._json({"ok": True, "data": _perf_payload(self.account_db)})
