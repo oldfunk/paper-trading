@@ -303,6 +303,14 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 </section>
 
 <section data-tab="ops">
+  <div class="section-header"><h2 class="section-title">策略健康</h2><span class="section-count" id="c-shealth"></span></div>
+  <div class="ai-panel">
+    <div class="s" id="shealth-sum">策略健康：加载中…</div>
+    <div class="scroll"><table id="shealth"></table></div>
+  </div>
+</section>
+
+<section data-tab="ops">
   <div class="section-header"><h2 class="section-title">数据来源</h2><span class="section-count" id="c-prov"></span></div>
   <div class="ai-panel">
     <div class="s" id="prov-sum">数据来源：加载中…</div>
@@ -539,7 +547,7 @@ function resultCN(a,ok,j){let r={};try{r=JSON.parse(j||"{}")}catch(e){}
   if(a==="run"||a==="cron-run")return`产生信号 ${r.signals??0} 个，下单 ${r.orders??0} 笔`;
   if(a==="preview")return "风控检查通过";
   return "完成";}
-let PERF=null,OV=null,INTS=[],INTRA=null,BENCH=null,SECT=null,PERFMODE="nav";
+let PERF=null,OV=null,INTS=[],INTRA=null,BENCH=null,SECT=null,SHEALTH=null,PERFMODE="nav";
 function dayDiff(iso){if(!iso)return null;const t=Date.parse(iso+"T00:00:00");
   return isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/86400000));}
 function sparkSVG(vals){
@@ -725,6 +733,31 @@ function renderIntents(){
       `<td class="mut">${esc(String(why).slice(0,120))}</td></tr>`;
   }),10,"暂无意图");
 }
+function renderStrategyHealth(){
+  const t=document.getElementById("shealth");
+  const sum=document.getElementById("shealth-sum");
+  const cnt=document.getElementById("c-shealth");
+  if(!t)return;
+  if(!SHEALTH||!SHEALTH.available){
+    if(sum)sum.textContent="策略健康不可用："+((SHEALTH&&SHEALTH.reason)||"母库基准不可用");
+    if(cnt)cnt.textContent="—";
+    rowsC(t,[["指标"],["值"],["说明"]],[],3,"暂无数据");
+    return;
+  }
+  const m=SHEALTH.metrics||{},w=SHEALTH.window||{};
+  const labels={healthy:'<span class="ok">健康</span>',watch:'<span class="mut">观察</span>',demote:'<span class="bad">建议降级</span>'};
+  const recTxt={active:"正常",watch:"观察",observe:"只观察，不新增买入"}[SHEALTH.recommendation]||SHEALTH.recommendation;
+  if(cnt)cnt.textContent=`${w.start||"—"} → ${w.end||"—"} · ${w.days||0} 日`;
+  if(sum)sum.textContent=`建议：${recTxt}${SHEALTH.reasons&&SHEALTH.reasons.length?" · "+SHEALTH.reasons.join("；"):""}${SHEALTH.stale?" · 基准 stale":""}`;
+  rowsC(t,[["指标"],["值"],["说明"]], [
+    ["组合 / 基准 / 超额",`${pct(m.portfolio_return)} / ${pct(m.benchmark_return)} / ${pct(m.excess)}`,"窗口内累计"],
+    ["20 日超额",pct(m.excess_20),"滚动 20 个共同日"],
+    ["最大回撤",pct(m.max_drawdown),"窗口内"],
+    ["换手",pct(m.turnover),"成交额 / 平均 NAV"],
+    ["费用拖累",`${(Number(m.fee_drag||0)*10000).toFixed(1)} bp`,"三项费用 / 平均 NAV"],
+    ["状态",labels[SHEALTH.health]||esc(SHEALTH.health||"—"),(SHEALTH.reasons||[]).join("；")||"阈值内"],
+  ],3,"暂无数据");
+}
 function renderOpsPanels(){
   const h=(OV&&OV.health)||{},ck=h.checks||{};
   const ch=document.getElementById("c-health");
@@ -837,6 +870,8 @@ window.addEventListener("resize",()=>{clearTimeout(window.__ptResize);window.__p
 async function refresh(){
  try{
   const [s,ops,pos,ord,nav,nm,prov,fl,ct]=await Promise.all(["/api/status","/api/ops?limit=30","/api/positions","/api/orders?limit=30","/api/nav?limit=60","/api/names","/api/data-provenance","/api/fills?limit=30","/api/contract"].map(get));
+  const shR=await get("/api/strategy-health").catch(()=>({ok:false}));
+  SHEALTH=(shR&&shR.ok)?shR.data:null;
   const [perfR,ovR,intR,intraR,benchR,sectR]=await Promise.all([
     get("/api/performance").catch(()=>({ok:false})),
     get("/api/overview").catch(()=>({ok:false})),
@@ -891,6 +926,7 @@ async function refresh(){
   renderToday();
   renderIntents();
   renderOpsPanels();
+  renderStrategyHealth();
   drawIntraday();
   drawSectors();
   const navRows=(nav.data||[]);
@@ -1672,6 +1708,26 @@ def _walkforward_payload(bridge, grid: str, symbols, days: int, cash: float,
 
 _PROV_CACHE: dict = {"ts": 0.0, "data": None}
 _CONTRACT_CACHE: dict = {"ts": 0.0, "data": None}
+_SHEALTH_CACHE: dict = {"ts": 0.0, "data": None}
+
+
+def _strategy_health_payload(account_db, ttl: float = 30.0) -> dict:
+    """策略健康度（I5a，只读；30s 缓存）。"""
+    import time
+
+    now = time.time()
+    if _SHEALTH_CACHE["data"] is not None and now - _SHEALTH_CACHE["ts"] < ttl:
+        return _SHEALTH_CACHE["data"]
+    from paper_trading.strategy.health import health_payload
+
+    try:
+        data = health_payload(account_db)
+    except Exception as exc:                # noqa: BLE001 - 面板不因健康度失败
+        data = {"available": False, "metrics": {}, "reasons": [],
+                "reason": f"{type(exc).__name__}: {exc}"}
+    _SHEALTH_CACHE.update(ts=now, data=data)
+    return data
+
 
 
 def _contract_payload(ttl: float = 30.0) -> dict:
@@ -2455,6 +2511,10 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/api/contract":
                 # 母项目接口契约探针（只读；30s 缓存）
                 self._json({"ok": True, "data": _contract_payload()})
+            elif u.path == "/api/strategy-health":
+                # 策略健康度（只读；30s 缓存；不直接改交易）
+                self._json({"ok": True,
+                            "data": _strategy_health_payload(self.account_db)})
             elif u.path == "/api/performance":
                 # 收益曲线 + KPI 指标：只读 account db，不构造 bridge（快）
                 self._json({"ok": True, "data": _perf_payload(self.account_db)})

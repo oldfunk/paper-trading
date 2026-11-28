@@ -1397,6 +1397,16 @@ def main() -> None:
                             help="自定义指令（仅 custom 方案，自然语言）")
     scheme_use.add_argument("--json", action="store_true")
 
+    # strategy（I5a：只读健康度）
+    strategy_parser = subparsers.add_parser(
+        "strategy", help="策略健康（只读：滚动超额/回撤/换手/费用拖累）")
+    strategy_parser.add_argument("--json", action="store_true")
+    strategy_sub = strategy_parser.add_subparsers(dest="strategy_command")
+    strategy_health = strategy_sub.add_parser("health", help="策略健康度与建议")
+    strategy_health.add_argument("--window", type=int, default=60,
+                                 help="窗口（共同交易日数，默认 60）")
+    strategy_health.add_argument("--json", action="store_true")
+
     # llm
     llm_parser = subparsers.add_parser("llm", help="LLM 接入（只咨询，不交易）")
     llm_parser.add_argument("--json", action="store_true")
@@ -2061,6 +2071,16 @@ def main() -> None:
                                    "allow_buy": s.allow_buy, "exits": s.exits_note}
                                   for s in ss.values()],
                       "mother": mother_strategies()})
+
+        elif args.command == "strategy":
+            from paper_trading.strategy.health import health_payload
+
+            out = health_payload(bridge.broker.db_path,
+                                 window=int(getattr(args, "window", 60) or 60))
+            emit(out, ok=bool(out.get("available")),
+                 error=None if out.get("available") else out.get("reason"))
+            if not out.get("available"):
+                sys.exit(3)
 
         elif args.command == "llm":
             if args.llm_command == "config":
