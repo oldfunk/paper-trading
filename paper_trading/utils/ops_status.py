@@ -88,6 +88,31 @@ def build_status(bridge, *, backup_dir: Optional[str] = None,
         checks.append(_check("quote", "行情/raw 口径与新鲜度", "skip",
                              "已按参数跳过"))
 
+    # 3b) 前复权锚点/源切换（本地 vs 母库同日比值）
+    if check_quote:
+        try:
+            from paper_trading.data.qfq_check import check as qfq_check
+
+            q = qfq_check(bridge.data_db, _symbols(bridge), days=120)
+            st = str(q.get("status") or "warn")
+            checks.append(_check(
+                "qfq", "前复权锚点/源切换",
+                "green" if st == "green" else
+                ("red" if st == "red" else ("skip" if st == "skip" else "warn")),
+                (f"{len(q.get('bad') or [])} 只锚点漂移"
+                 + (f"：{q.get('bad')[:3]}" if q.get("bad") else "")
+                 if st == "red" else
+                 ("无共同日/口径不可比：" + str((q.get("uncomparable") or [])[:3])
+                  if st == "warn" else "比值稳定/无可比样本")),
+                "data qfq-check --json；人工核对除权日/源，不自动改数据"))
+        except Exception as exc:            # noqa: BLE001
+            checks.append(_check("qfq", "前复权锚点/源切换", "warn",
+                                 f"检查失败：{type(exc).__name__}: {exc}",
+                                 "data qfq-check --json 手动复核"))
+    else:
+        checks.append(_check("qfq", "前复权锚点/源切换", "skip",
+                             "已按参数跳过"))
+
     # 4) 熔断态（只读；不锚定日亏基线）
     try:
         st = bridge.get_status()

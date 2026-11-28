@@ -126,7 +126,9 @@
 ### M1.5 — 除权除息自动化（M1 之后、M2 之前）
 
 - [x] 用 akshare 分红送配数据自动生成调整建议（只建议，人工确认后落账）。✅ 2026-11-28 `corporate suggest`（母库优先，akshare 可选；不猜除权日）
-- [ ] 前复权数据源切换检测 + 数据快照对比，自动触发复核流程。
+- [x] 前复权数据源切换检测 + 数据快照对比，自动触发复核流程。✅ 2026-11-28
+  `data qfq-check`：本地 vs 母库同日比值漂移/尺度不一致；`ops check` 纳入 qfq 项。
+  只告警/退出码，不自动改数据（快照对比由 `data compare` + 引擎 fingerprint 承担）。
 - [x] 自动交易日历（akshare 缓存 + 本地回退），T+1 解冻不再依赖手填 `holidays`（v0.6.5：`calendar sync/status`，缓存 `var/trading_calendar.json`，失败回退周末+`config.holidays`）。
 - [x] 分红税口径（持股 1 个月内 20%、1 月–1 年 10%、超 1 年免税）建模。✅ 2026-11-28 `corporate tax`（缺 entry_day 不按 0 税）
 

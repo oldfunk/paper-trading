@@ -76,6 +76,7 @@ python -m paper_trading.cli data quality --json
 # 母库覆盖度/口径对照（P6）
 python -m paper_trading.cli data coverage --json
 python -m paper_trading.cli data compare --symbols 600036 --json
+python -m paper_trading.cli data qfq-check --json
 ```
 
 ### Cron Integration（生产机 NEC；路径已同步）

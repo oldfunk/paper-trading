@@ -24,6 +24,7 @@ python -m paper_trading.cli ops check --json
 | `backup` | 存在最近自动备份、`PRAGMA integrity_check=ok`、年龄 ≤26h |
 | `heartbeat` | engine/agent/rq_tick/minute 在应跳窗口内未停滞 |
 | `quote` | `raw_gate`：本地 raw 新鲜 + 母库逐日参照已翻转 |
+| `qfq` | 本地 vs 母库前复权同日比值漂移/尺度不一致（`data qfq-check`） |
 | `risk` | `drawdown_halt` / `daily_loss_halt` 是否触发 |
 
 ## 2. 安装 cron（生产）
@@ -49,6 +50,9 @@ bash deploy/install-ops-cron.sh --install
 - `heartbeat=red`：`health show`；检查 crontab/systemd；参考 `docs/migration-m3.md`。
 - `quote=red`：`data raw-coverage --gate`；先补 `data fetch-raw`，再看母库参照
   （`flip_watch.waiting_days` 是母库侧，`unflipped_days` 是我们没重跑）。
+- `qfq=red`：`data qfq-check --json`；看 `anchor_shift` 的日期与
+  `max_dev`，人工核对除权日/源切换；**不自动改数据**。若只是母库回填滞后，
+  等下一次同步后复查。
 - `risk=red`：查 `risk_state` 与 `ai:decide` 拒因；**不要手工改峰值/基线**，
   按事故流程核对钱类口径。
 

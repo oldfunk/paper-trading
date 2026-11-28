@@ -1946,6 +1946,12 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   `docs/release-v0.12.0-checklist.md`（草案，未 bump/未打 tag）；
   等 12-01 收盘链与 12-02 新默认计划执行证据后再发。
 
+- [x] **T129 前复权锚点检测（M1.5）**（2026-11-28）：新增 `data/qfq_check.py`
+  与 `data qfq-check`：本地 `daily_bars` vs 母库 `close_qfq` 同日比值，
+  比值首日偏离 >10% → `scale_mismatch`，区间漂移 >tol（默认 0.1%）→
+  `anchor_shift`；母库不是 qfq → `uncomparable`（不猜）。只告警/退出码，
+  不自动改数据。`ops check` 增加 `qfq` 项。验收：`test_qfq_check_t129.py` 5 条。
+
 
 
 

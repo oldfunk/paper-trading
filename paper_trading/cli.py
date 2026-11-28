@@ -1630,6 +1630,18 @@ def main() -> None:
         help="母项目接口契约探针（只读：价值策略/行业/基准的形状与新鲜度）")
     data_contract.add_argument("--today", default=None)
     data_contract.add_argument("--json", action="store_true")
+    data_qfq = data_sub.add_parser(
+        "qfq-check",
+        help="前复权锚点/源切换检测（只读：本地 vs 母库同日比值漂移）")
+    data_qfq.add_argument("--symbols", nargs="*")
+    data_qfq.add_argument("--pool-from", default="config")
+    data_qfq.add_argument("--pool-limit", type=int, default=20)
+    data_qfq.add_argument("--pool-tag", default="")
+    data_qfq.add_argument("--no-picks", action="store_true")
+    data_qfq.add_argument("--days", type=int, default=120)
+    data_qfq.add_argument("--tol", type=float, default=0.001,
+                          help="最大允许比值漂移（默认 0.001=0.1%%）")
+    data_qfq.add_argument("--json", action="store_true")
 
     # T31 原始价管道（引擎唯一允许的口径）
     data_raw_fetch = data_sub.add_parser(
@@ -3040,6 +3052,16 @@ def main() -> None:
                 q = quality_check(bridge.data_db, syms, days=args.days)
                 # 有发现≠命令失败（数据照常可用，发现进 findings 供审计）
                 emit({"symbols": syms, "pool_source": note, **q})
+            elif cmd == "qfq-check":
+                from paper_trading.data.qfq_check import check as qfq_check
+
+                syms, note, _, _ = _resolve_syms(bridge, args)
+                out = qfq_check(bridge.data_db, syms, days=args.days,
+                                tol=float(args.tol or 0.001))
+                out["pool_source"] = note
+                emit(out, ok=bool(out.get("ok")), error=out.get("reason"))
+                if out.get("status") == "red":
+                    sys.exit(1)
             elif cmd == "fetch-raw":
                 from paper_trading.data import raw_feed
 
