@@ -1833,6 +1833,54 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
     生产 `TradingBridge.strategy` 为 `CompositeStrategy(ma_cross)`、内层 MA20/60，
     下一次计划（12-01）使用新默认。
 
+- [x] **T114 多策略资金分配（I5c-3 / A3）**（2026-11-28）：
+  `strategy/allocation.py`：`strategy.allocations` 权重（空=旧行为）、
+  额度=`weight×NAV`（累计净买入成本口径）、`AllocationBook` 持久化已用额度；
+  计划阶段裁超额买入 + 执行阶段统一闸；卖出/持有不受限；配置后买入缺
+  `strategy` 拒单；非法权重/未知策略启动失败并写 `op_log[strategy:alloc]`。
+  `llm_context.strategy_allocations` + `strategy allocations` CLI。
+  验收：`tests/test_allocation_t114.py` 18 条。
+
+- [x] **T115 AI 风格审计（A4）**（2026-11-28）：`agent replay` 增加
+  `health_review`（健康度输入、是否 demote、AI 是否回应继续/放缓/停手）、
+  `strategy_allocations`、每动作 `strategy`；计划与决策结果持久化健康度/额度快照。
+  验收：`tests/test_health_replay_t115.py` 4 条。
+
+- [x] **T116 日/周报（A5）**（2026-11-28）：`report daily|weekly --out`
+  只读输出 NAV（日报对比上一净值日）、成交、标的级归因（成本口径，不宣称
+  单日因果）、持仓、风控事件、健康度变化（期初/期末 `as_of` 切片）。
+  验收：`tests/test_report_t116.py` 3 条；`health_payload` 新增 `as_of`
+  （回放/报告不读未来数据）。
+
+- [x] **T117 默认策略对照（A6）**（2026-11-28）：`strategy compare`
+  同窗口/同费用/同风控对照 MA20/60 与旧 MA5/20；全窗口 + 样本内 70% +
+  样本外 30%；明确“历史回测，不是收益承诺”。验收：`test_compare_t117.py` 2 条。
+
+- [x] **T118 账本备份/恢复/版本化（B1）**（2026-11-28）：
+  `ledger backup/inspect/restore/migrate/drill`；sqlite backup API；
+  restore 默认 dry-run、`--apply` 前自动 `.pre-restore` 安全副本；
+  `schema_meta` 版本化，未知高版本拒绝迁移；副本演练覆盖备份→损坏→恢复。
+  验收：`tests/test_ledger_backup_t118.py` 5 条。
+
+- [x] **T119 逐日审计（B2）**（2026-11-28）：`audit day --date` 串起
+  计划/决策/意图队列/成交/条件单/op_log；每条计划动作给最终归宿，
+  未成交写 `evidence_gap`（不推断原因）。验收：`test_audit_day_t119.py` 2 条。
+
+- [x] **T120 安全复核（B3）**（2026-11-28）：`security audit` 只读检查
+  secrets 忽略/跟踪/权限、admin_token 长度、config 误写 Key、面板监听提示；
+  `docs/security-review.md` 提供无口令写入/CSRF/跨实例接管/Key 泄露演练步骤。
+  验收：`test_security_t120.py` 2 条。
+
+- [x] **T121 公司行为建议（B4/B5）**（2026-11-28）：
+  `corporate tax` 分红税估算（≤30 天 20%、31–365 天 10%、>365 天 0%，
+  缺 entry_day 不按 0 税）；`corporate suggest` 母库优先、akshare 可选，
+  不猜除权日，只输出建议与 `corporate apply` 命令。验收：`test_corporate_t121.py` 6 条。
+
+- [x] **T122 v0.12 开发批次收口**（2026-11-28）：A3–A7 + B1–B5 全部落地；
+  新增 CLI `report`/`audit`/`security`、`ledger backup|inspect|restore|migrate|drill`、
+  `strategy allocations|compare`、`corporate tax|suggest`。全量 **1077 passed / 13 skipped**；
+  未打新 tag（post-release 开发）。
+
 
 
 

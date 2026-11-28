@@ -7,7 +7,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `iteration-plan-20261124.md` | **当前迭代队列**（I1 基准 → I2 行业 → I3 收尾 → I4 可靠性/治理 → I5+ 策略组合） |
+| `iteration-plan-20261124.md` | **当前迭代队列**（I1 基准 → I2 行业 → I3 收尾 → I4 治理 → I5 策略组合 → I6 审计/报告 → I7 运维/安全 → I8 公司行为） |
 | `ROADMAP.md` | 里程碑与进度真相源（M1/M2/M3/M4 + 进度记录） |
 | `WORKER.md` | 任务箱与交付证据（T 编号、验收、测试数） |
 | `TODO-p5-p7.md` | 母库长线与 P5/P6/P7 状态 |
@@ -21,9 +21,11 @@
 |---|---|
 | `CONTRACT.md` | 子项目三表契约（拥有/只读/永不碰）+ 接缝清单（vendor 门禁用） |
 | `mother-interface.md` | 母库只读接口、降级、来源标注、**价值策略位置/格式**、接口探针 |
-| `strategy-contract.md` | 子项目自己的策略注册表/参数/自定义/离线运行 |
+| `strategy-contract.md` | 子项目自己的策略注册表/参数/自定义/离线运行 + 四层边界与资金分配 |
 | `default-strategy.md` | general 默认通用中线策略（MA20/60 + 趋势/质量/风险） |
 | `ai-autonomy.md` | AI 自主权边界：框架管安全，AI 管风格；健康度默认 advisory |
+| `security-review.md` | 安全复核清单与攻防演练（无口令写入/CSRF/跨实例/Key 泄露） |
+| `ledger-backup.md` | 账本备份/恢复/版本化与回滚步骤（B1） |
 | `panel-information-architecture.md` | 面板信息架构与取舍（重要/可删/后置） |
 | `ui-iteration-20261119.md` | 面板 P0/P1/P2 的实现契约与变更记录 |
 | `architecture-map.md` | 模块依赖快照（2026-10-29 基线 + 11-24 复核计数） |

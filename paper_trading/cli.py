@@ -60,6 +60,17 @@ def _holdings_block(ctx: dict) -> str:
     return "\n".join(lines)
 
 
+def _alloc_payload(weights, book, nav_total) -> dict:
+    """多策略额度快照（只读；导入放函数内避免模块级循环依赖）。"""
+    try:
+        from paper_trading.strategy.allocation import allocations_payload
+
+        return allocations_payload(weights or {}, book, nav_total)
+    except Exception as exc:                    # noqa: BLE001 - 展示失败不拖垮上下文
+        return {"enabled": bool(weights), "available": False,
+                "reason": f"{type(exc).__name__}: {exc}"}
+
+
 ASK_RULES = """防幻觉硬规则（违反即视为答错）：
 1. 持仓 = 只有上面「当前真实持仓」里列出的股票，其他一律不是持仓。
    行情快照、股票池、基本面卡片里出现的股票都**只是候选/参考，绝不能说成持仓、已买入或已成交**。
@@ -213,6 +224,34 @@ class TradingBridge:
             except Exception:               # noqa: BLE001 - 留痕失败不掩盖原错误
                 pass
             raise
+        # 多策略资金分配（I5c-3）：空配置=旧行为；非法/未知策略名 fail-closed
+        from paper_trading.strategy.allocation import (
+            AllocationBook as _AllocationBook,
+        )
+        from paper_trading.strategy.allocation import (
+            AllocationError as _AllocationError,
+        )
+        from paper_trading.strategy.allocation import (
+            check_names as _check_alloc_names,
+        )
+        from paper_trading.strategy.allocation import (
+            load_allocations as _load_allocations,
+        )
+
+        try:
+            self.allocations = _load_allocations(self.config_path, _root)
+            _check_alloc_names(
+                self.allocations,
+                [s.name for s in getattr(self.strategy, "strategies", [self.strategy])])
+        except _AllocationError as exc:
+            try:
+                self.broker.log_operation(
+                    "strategy:alloc", {"config": str(self.config_path)},
+                    False, {"error": str(exc)}, None, None)
+            except Exception:               # noqa: BLE001 - 留痕失败不掩盖原错误
+                pass
+            raise
+        self.alloc_book = _AllocationBook(self.account_db_path)
         self.config = config or TradingConfig()
         self.stock_pool = stock_pool
         self.secrets_path = secrets_path
@@ -866,6 +905,9 @@ class TradingBridge:
                     **({"reason": _h.get("reason")} if _h.get("reason") else {}),
                 }
             }),
+            # 多策略资金分配：额度上限，按 strategy.allocations；空=未启用
+            "strategy_allocations": _alloc_payload(
+                self.allocations, self.alloc_book, st["total_value"]),
             "recent_nav": [
                 {"time": r["timestamp"], "total": r["total_value"], "pnl": r["pnl"]}
                 for r in nav_hist],
@@ -884,6 +926,9 @@ class TradingBridge:
                                 "零成交往往是这里拦的，不是行情或引擎故障。",
                 "strategy_health": "策略健康度（窗口超额/回撤/换手/费用）。"
                                    "advisory：参考，不是自动拦买命令；demote 时在计划里说明继续/放缓/停手。",
+                "strategy_allocations": "多策略资金额度（weight × NAV，成本口径）。"
+                                        "enabled=true 时买入必须给 strategy，且不得超该策略额度；"
+                                        "卖出/持有不受限。",
                 "recent_ops": "操作流水（含同步/问答/决策记录，不等于成交）。",
                 "value_view": "Stock Dashboard 只读富化（基本面/财务摘要/股息/论点/筛选/大盘/追踪），仅供参照。",
                 "data_provenance": "每个富化接口的数据来源与新鲜度（source/asof/stale）。"
@@ -1273,12 +1318,28 @@ def _replay_decision(bridge, decision_date: str, plan_id=None) -> dict:
             caliber = None
         comparison.append({"symbol": sym, "ai_action": ai_act,
                            "ai_status": a.get("status", ""),
+                           "strategy": a.get("strategy") or "",
                            "rule_signal": rule_dir, "agree": ai_act == rule_dir,
                            "ai_basis": a.get("basis") or [],
                            "caliber_warning": caliber})
     n_agree = sum(1 for c in comparison if c["agree"])
     caliber_warnings = [c["caliber_warning"] for c in comparison
                         if c.get("caliber_warning")]
+    # A4：健康度输入 → AI 选择 → 理由（advisory 是否被回应，可回放）
+    result = d.get("result") or {}
+    health = result.get("strategy_health") or {}
+    demote = bool(health.get("health") == "demote")
+    ack_text = " ".join([str(d.get("summary") or "")]
+                        + [str(a.get("reason") or "") for a in actions]
+                        + [str(a.get("thesis") or "") for a in actions])
+    ack_hits = [k for k in ("继续", "放缓", "停手", "降低", "暂停")
+                if k in ack_text]
+    health_review = {
+        "input": health or None,
+        "demote": demote,
+        "acknowledged": (bool(ack_hits) if demote else None),
+        "evidence": ack_hits,
+    }
     return {"ok": True, "date": decision_date, "plan_id": d.get("plan_id"),
             "mode": d.get("mode"), "from_plan": bool(d.get("from_plan")),
             "pool_source": d.get("pool_source"), "summary": d.get("summary"),
@@ -1286,6 +1347,8 @@ def _replay_decision(bridge, decision_date: str, plan_id=None) -> dict:
             "rule_signals": rule, "comparison": comparison,
             "agreement": f"{n_agree}/{len(comparison)}",
             "caliber_warnings": caliber_warnings,
+            "health_review": health_review,
+            "strategy_allocations": result.get("strategy_allocations"),
             "decision_id": d.get("id"), "created_at": d.get("created_at")}
 
 
@@ -1430,6 +1493,17 @@ def main() -> None:
     strategy_health.add_argument("--window", type=int, default=60,
                                  help="窗口（共同交易日数，默认 60）")
     strategy_health.add_argument("--json", action="store_true")
+    strategy_alloc = strategy_sub.add_parser(
+        "allocations", help="多策略资金额度（只读：权重/额度/已用/剩余）")
+    strategy_alloc.add_argument("--json", action="store_true")
+    strategy_compare = strategy_sub.add_parser(
+        "compare", help="默认策略对照（MA20/60 vs 旧 MA5/20，历史回测）")
+    strategy_compare.add_argument("--days", type=int, default=120,
+                                  help="评估交易日数（40-500）")
+    strategy_compare.add_argument("--symbols", nargs="*", default=None,
+                                  help="缺省=股票池+持仓")
+    strategy_compare.add_argument("--cash", type=float, default=100000.0)
+    strategy_compare.add_argument("--json", action="store_true")
 
     # llm
     llm_parser = subparsers.add_parser("llm", help="LLM 接入（只咨询，不交易）")
@@ -1634,6 +1708,33 @@ def main() -> None:
     ledger_rs.add_argument("--stamp", default=None,
                            help="会话目录改名的时间戳后缀（默认当前时刻）")
     ledger_rs.add_argument("--json", action="store_true")
+    # B1：账本备份/恢复/版本化（备份/演练只读；restore --apply 才写）
+    ledger_backup = ledger_sub.add_parser(
+        "backup", help="B1：sqlite backup API 冷备当前账本（不写账本）")
+    ledger_backup.add_argument("--out-dir", default=None)
+    ledger_backup.add_argument("--stamp", default=None)
+    ledger_backup.add_argument("--json", action="store_true")
+    ledger_inspect = ledger_sub.add_parser(
+        "inspect", help="B1：账本只读体检（完整性/版本/表/行数/哈希）")
+    ledger_inspect.add_argument("--db", default=None, help="缺省=当前账本")
+    ledger_inspect.add_argument("--json", action="store_true")
+    ledger_restore = ledger_sub.add_parser(
+        "restore", help="B1：从备份恢复（默认 dry-run；--apply 才覆盖）")
+    ledger_restore.add_argument("--backup", required=True)
+    ledger_restore.add_argument("--apply", action="store_true",
+                                help="真的覆盖目标账本（会先自动安全备份）")
+    ledger_restore.add_argument("--out-dir", default=None,
+                                help="安全副本目录（缺省=账本旁 backups/）")
+    ledger_restore.add_argument("--json", action="store_true")
+    ledger_migrate_p = ledger_sub.add_parser(
+        "migrate", help="B1：账本结构版本化（默认 dry-run；--apply 才写）")
+    ledger_migrate_p.add_argument("--db", default=None, help="缺省=当前账本")
+    ledger_migrate_p.add_argument("--apply", action="store_true")
+    ledger_migrate_p.add_argument("--json", action="store_true")
+    ledger_drill = ledger_sub.add_parser(
+        "drill", help="B1：在副本上做备份→损坏→恢复演练（不碰生产账本）")
+    ledger_drill.add_argument("--work-dir", required=True)
+    ledger_drill.add_argument("--json", action="store_true")
 
     # rq（T32：rqalpha 底座的一天一会话 / 双轨影子对照 / 状态体检）
     rq_parser = subparsers.add_parser(
@@ -1905,6 +2006,20 @@ def main() -> None:
     corp_apply.add_argument("--share-ratio", type=float, default=0.0,
                             dest="share_ratio", help="每股送转比例（10送3→0.3）")
     corp_apply.add_argument("--json", action="store_true")
+    corp_tax = corp_sub.add_parser(
+        "tax", help="B4：分红税估算（只建议；不写账本）")
+    corp_tax.add_argument("--symbol", required=True)
+    corp_tax.add_argument("--ex-date", required=True, dest="ex_date")
+    corp_tax.add_argument("--cash-per-share", type=float, required=True,
+                          dest="cash_per_share")
+    corp_tax.add_argument("--json", action="store_true")
+    corp_suggest = corp_sub.add_parser(
+        "suggest", help="B5：除权除息建议（只读；母库优先，可选 akshare）")
+    corp_suggest.add_argument("--source", choices=["auto", "mother", "akshare"],
+                              default="auto")
+    corp_suggest.add_argument("--akshare", action="store_true",
+                              help="母库无数据时允许访问 akshare（默认不联网）")
+    corp_suggest.add_argument("--json", action="store_true")
 
     # nav
     nav_parser = subparsers.add_parser("nav", help="查看 NAV 历史")
@@ -1915,6 +2030,37 @@ def main() -> None:
     history_parser.add_argument("--type", choices=["orders", "fills"], default="orders")
     history_parser.add_argument("--limit", type=int, default=20)
     history_parser.add_argument("--json", action="store_true", help="输出 JSON 格式")
+
+    # report（日/周报；只读）
+    report_parser = subparsers.add_parser(
+        "report", help="日/周报（持仓/成交/归因/风控/健康度；只读导出）")
+    report_sub = report_parser.add_subparsers(dest="report_command")
+    rep_daily = report_sub.add_parser("daily", help="日报")
+    rep_daily.add_argument("--date", default=None, help="YYYY-MM-DD，缺省今天")
+    rep_weekly = report_sub.add_parser("weekly", help="周报")
+    rep_weekly.add_argument("--end", default=None, help="YYYY-MM-DD，缺省今天")
+    rep_weekly.add_argument("--days", type=int, default=7, help="自然日跨度（1-31）")
+    for _p in (rep_daily, rep_weekly):
+        _p.add_argument("--out", default=None, help="另存 JSON 到该路径")
+        _p.add_argument("--json", action="store_true")
+
+    # audit（B2：任意一天为什么买/没买/卖）
+    audit_parser = subparsers.add_parser(
+        "audit", help="逐日审计（计划/决策/意图/成交/条件单串起来）")
+    audit_sub = audit_parser.add_subparsers(dest="audit_command")
+    audit_day_p = audit_sub.add_parser("day", help="某日审计")
+    audit_day_p.add_argument("--date", required=True, help="YYYY-MM-DD")
+    audit_day_p.add_argument("--out", default=None, help="另存 JSON 到该路径")
+    audit_day_p.add_argument("--json", action="store_true")
+
+    # security（B3：只读复核；攻防演练步骤见 docs/security-review.md）
+    sec_parser = subparsers.add_parser(
+        "security", help="安全复核（只读：secrets 权限/跟踪/口令/config 误写）")
+    sec_sub = sec_parser.add_subparsers(dest="security_command")
+    sec_audit = sec_sub.add_parser("audit", help="跑只读安全检查")
+    sec_audit.add_argument("--root", default=".")
+    sec_audit.add_argument("--secrets", default=None)
+    sec_audit.add_argument("--json", action="store_true")
 
     # cron-run
     cron_parser = subparsers.add_parser("cron-run", help="Cron 模式执行")
@@ -2096,15 +2242,84 @@ def main() -> None:
                                   for s in ss.values()],
                       "mother": mother_strategies()})
 
-        elif args.command == "strategy":
-            from paper_trading.strategy.health import health_payload
+        elif args.command == "report":
+            from paper_trading.report import (
+                daily_report,
+                weekly_report,
+                write_report,
+            )
 
-            out = health_payload(bridge.broker.db_path,
-                                 window=int(getattr(args, "window", 60) or 60))
-            emit(out, ok=bool(out.get("available")),
-                 error=None if out.get("available") else out.get("reason"))
-            if not out.get("available"):
-                sys.exit(3)
+            cmd = getattr(args, "report_command", None)
+            try:
+                if cmd == "weekly":
+                    end = getattr(args, "end", None) or datetime.now().date().isoformat()
+                    out = weekly_report(bridge, end,
+                                        int(getattr(args, "days", 7) or 7))
+                else:
+                    day = (getattr(args, "date", None)
+                           or datetime.now().date().isoformat())
+                    out = daily_report(bridge, day)
+            except ValueError as exc:
+                emit(None, ok=False, error=f"日期格式须为 YYYY-MM-DD：{exc}")
+                sys.exit(2)
+            if getattr(args, "out", None):
+                out["saved_to"] = write_report(out, args.out)
+            emit(out)
+
+        elif args.command == "security":
+            from paper_trading.utils.security_audit import audit as _sec_audit
+
+            out = _sec_audit(getattr(args, "root", ".") or ".",
+                             secrets_path=getattr(args, "secrets", None))
+            emit(out, ok=bool(out.get("ok")))
+            if not out.get("ok"):
+                sys.exit(1)
+
+        elif args.command == "audit":
+            from paper_trading.audit_day import audit_day
+
+            try:
+                out = audit_day(bridge, args.date)
+            except ValueError as exc:
+                emit(None, ok=False, error=f"日期格式须为 YYYY-MM-DD：{exc}")
+                sys.exit(2)
+            if getattr(args, "out", None):
+                from paper_trading.report import write_report
+
+                out["saved_to"] = write_report(out, args.out)
+            emit(out)
+
+        elif args.command == "strategy":
+            cmd = getattr(args, "strategy_command", None) or "health"
+            if cmd == "allocations":
+                from paper_trading.strategy.allocation import allocations_payload
+
+                st = bridge.get_status()
+                out = allocations_payload(
+                    getattr(bridge, "allocations", {}) or {},
+                    getattr(bridge, "alloc_book", None),
+                    st.get("total_value") or 0.0)
+                emit(out, ok=True)
+            elif cmd == "compare":
+                from paper_trading.strategy.compare import compare_default
+
+                out = compare_default(
+                    bridge, days=int(getattr(args, "days", 120) or 120),
+                    symbols=getattr(args, "symbols", None),
+                    cash=float(getattr(args, "cash", 100000.0) or 100000.0))
+                emit(out, ok=bool(out.get("ok")),
+                     error=out.get("error"))
+                if not out.get("ok"):
+                    sys.exit(3)
+            else:
+                from paper_trading.strategy.health import health_payload
+
+                out = health_payload(bridge.broker.db_path,
+                                     window=int(getattr(args, "window", 60) or 60))
+                emit(out, ok=bool(out.get("available")),
+                     error=None if out.get("available") else out.get("reason"))
+                if not out.get("available"):
+                    sys.exit(3)
 
         elif args.command == "llm":
             if args.llm_command == "config":
@@ -2564,6 +2779,29 @@ def main() -> None:
                 reds = out.get("red_reports") or [
                     k for k, v in (out.get("reports") or {}).items() if v.get("count")]
                 if reds:
+                    sys.exit(1)
+            elif lc in ("backup", "inspect", "restore", "migrate", "drill"):
+                from paper_trading.utils import ledger_backup as _lb
+
+                if lc == "backup":
+                    out = _lb.backup(bridge.broker.db_path,
+                                     out_dir=getattr(args, "out_dir", None),
+                                     stamp=getattr(args, "stamp", None))
+                elif lc == "inspect":
+                    out = _lb.inspect(getattr(args, "db", None)
+                                      or bridge.broker.db_path)
+                elif lc == "restore":
+                    out = _lb.restore(args.backup, bridge.broker.db_path,
+                                      apply=bool(getattr(args, "apply", False)),
+                                      out_dir=getattr(args, "out_dir", None))
+                elif lc == "migrate":
+                    out = _lb.migrate(getattr(args, "db", None)
+                                      or bridge.broker.db_path,
+                                      apply=bool(getattr(args, "apply", False)))
+                else:
+                    out = _lb.drill(bridge.broker.db_path, args.work_dir)
+                emit(out, ok=bool(out.get("ok")), error=out.get("error"))
+                if not out.get("ok"):
                     sys.exit(1)
             else:
                 parser.print_help()
@@ -3118,7 +3356,8 @@ def main() -> None:
             return
 
         elif args.command == "corporate":
-            if getattr(args, "corporate_command", None) == "apply":
+            cmd = getattr(args, "corporate_command", None)
+            if cmd == "apply":
                 out = bridge.broker.apply_corporate_action(
                     args.symbol, args.ex_date,
                     cash_per_share=args.cash_per_share,
@@ -3127,6 +3366,26 @@ def main() -> None:
                      error=None if out.get("ok") else out.get("why"))
                 if not out.get("ok"):
                     sys.exit(3)
+                return
+            if cmd == "tax":
+                from paper_trading.utils.corporate_actions import estimate_tax
+
+                pos = bridge.broker.get_all_positions()
+                one = [p for p in pos if p.symbol == str(args.symbol)]
+                out = estimate_tax(one, args.cash_per_share, args.ex_date)
+                if not one:
+                    out["error"] = f"无 {args.symbol} 持仓"
+                emit(out, ok=not out.get("error"), error=out.get("error"))
+                if out.get("error"):
+                    sys.exit(3)
+                return
+            if cmd == "suggest":
+                from paper_trading.utils.corporate_actions import suggest
+
+                out = suggest(bridge.broker.get_all_positions(),
+                              source=args.source,
+                              use_akshare=bool(getattr(args, "akshare", False)))
+                emit(out, ok=bool(out.get("ok")))
                 return
             parser.print_help()
             sys.exit(2)

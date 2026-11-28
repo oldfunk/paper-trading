@@ -9,13 +9,13 @@
 | 项 | 值 |
 |---|---|
 | 版本 | **v0.11.0（2026-11-28 发布）** |
-| 测试 | **1022 passed / 13 skipped** |
+| 测试 | **1077 passed / 13 skipped** |
 | 生产 | :8080 已部署 v0.11.0；:8081 仍 v0.10.1（待母侧 vendor） |
 | 母项目契约 | issue #10（基准/行业）**已关闭**；issue #11（v0.10.1 通知）**已关闭** |
 | 探针 | `data contract` 生产实测 `ok=true`（策略 20 只 / 行业 5527 行 / 指数 5 键） |
 | 已知黄 | `raw_gate`（母库参照滞后）；`parity_trace` 已退役（skip，不再每日黄） |
 | 已完成 | I1 基准 / I2 行业 / I3 收尾 / I4 治理（部分） |
-| 下一项 | **I5 多策略与组合风控**（v0.12.0） |
+| 下一项 | **v0.12 发布准备**（I5–I8 已落地；待生产验证/母侧 vendor 排期） |
 
 ## 1. 执行队列（按顺序）
 
@@ -73,31 +73,52 @@
 - **I5b 默认通用策略（2026-11-28 完成）**：旧默认 MA5/20 → **MA20/60 +
   趋势/质量/风险 playbook**；`GENERAL_RULES` 由 `SCHEME_TMPL` 注入 AI prompt；
   `general` 方案 title/desc/exits/signal 同步；详情 `docs/default-strategy.md`。
-- **I5c 待做（按 `docs/ai-autonomy.md`）**：
+- **I5c 完成（2026-11-28）**：
   1. ✅ 健康度进 AI 上下文（advisory），AI 自己决定“继续/放缓/停手”并写理由；
   2. ✅ `health_policy` 配置面（off/advisory/enforce，默认 advisory）+ 测试；
      `enforce` 是**用户显式策略**，不是框架默认；
-  3. 多策略资金分配框架（`strategy.allocations`，权重由用户/AI 配置，无默认偏好）；
-  4. 组合层统一风控入口 + 两级预算（单策略/组合）；
-  5. AI 风格审计：计划里必须有“看到健康度后的选择”可回放。
+  3. ✅ 多策略资金分配（`strategy.allocations`；额度=weight×NAV；计划/执行两处闸；
+     卖出不受限；配置后买入缺 strategy 拒单）；
+  4. ✅ 统一风控入口 + 两级预算：分配层只做额度，撮合/账户级风控仍走同一
+     `RiskManager` + 账本；组合上限由既有 `max_total_position_pct` 兜底；
+  5. ✅ AI 风格审计：`agent replay.health_review` 展示 demote 输入、AI 选择与
+     是否回应（继续/放缓/停手）；计划/决策结果持久化健康度与额度快照。
 
 ### I6 — AI 分工审计 + 报告（目标 v0.12.0）
 
 - AI 提名 → 程序校验 → 规则择时的全链路回放（现有 `agent replay` 补齐）；
 - 日/周报 CLI（持仓、成交、归因、风控事件），复用 CSV/性能数据；
 - 验收：任意一天可回答“为什么买/没买/卖”；报告可导出。
+- **状态：✅ 2026-11-28 完成**：
+  - `agent replay` 增加 `health_review`/`strategy_allocations`/每动作 strategy；
+  - `report daily|weekly --out`（NAV/成交/标的级归因/风控事件/健康度变化）；
+  - `audit day --date` 串计划/决策/意图/成交/条件单，未成交列 evidence_gap；
+  - 测试 `test_health_replay_t115.py`、`test_report_t116.py`、
+    `test_audit_day_t119.py`。
 
 ### I7 — M4 运维与审计（目标 v0.13）
 
 - 账户/风控状态备份恢复演练；`paper_account.db` 迁移工具与版本化；
 - 审计报告（任意一天）；安全复核（面板/Key/口令）；
 - 验收：演练记录 + 回滚步骤 + 审计样例。
+- **状态：✅ 2026-11-28 完成**：
+  - `ledger backup/inspect/restore/migrate/drill`（sqlite backup API；
+    restore 默认 dry-run，`--apply` 前自动安全副本；`schema_meta` 版本化，
+    未知高版本拒绝）；
+  - `audit day`（B2）；`security audit` + `docs/security-review.md`（B3）；
+  - 测试 `test_ledger_backup_t118.py`、`test_security_t120.py`。
 
 ### I8 — M1.5 公司行为（目标 v0.13，人工优先）
 
 - 分红税口径建模与调整建议（只建议，人工确认后落账）；
 - 自动除权除息仍不自动改账本，保持 `corporate apply` 人工口；
 - 验收：建议清单 + 人工落账留痕 + 单测。
+- **状态：✅ 2026-11-28 完成**：
+  - `corporate tax --symbol --ex-date --cash-per-share`：≤30 天 20%、
+    31–365 天 10%、>365 天 0%；缺 `entry_day` 不按 0 税；
+  - `corporate suggest`：母库 `dividend_annual` 优先，母库无除权日时明确
+    `needs_ex_date`；`--akshare` 才访问外网；只输出建议与 `corporate apply` 命令；
+  - 测试 `test_corporate_t121.py`。
 
 ## 2. 发布节奏
 

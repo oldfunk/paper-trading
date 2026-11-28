@@ -45,6 +45,25 @@ python -m paper_trading.cli history --type fills --limit 20 --json
 
 # 除权除息人工调整（M1：只检测+审计，不自动改账本）
 python -m paper_trading.cli corporate apply --symbol 600519 --ex-date 2026-06-20 --cash-per-share 0.5 --share-ratio 0.3 --json
+# B4/B5：分红税估算 / 除权除息建议（只建议，不落账）
+python -m paper_trading.cli corporate tax --symbol 600519 --ex-date 2026-06-20 --cash-per-share 0.5 --json
+python -m paper_trading.cli corporate suggest --json
+
+# A3：多策略资金额度（只读）/ 默认策略对照（历史回测，不承诺收益）
+python -m paper_trading.cli strategy allocations --json
+python -m paper_trading.cli strategy compare --days 120 --json
+
+# A5/B2：日/周报 + 逐日审计（只读）
+python -m paper_trading.cli report daily --date 2026-11-27 --json
+python -m paper_trading.cli audit day --date 2026-11-27 --json
+
+# B1：账本备份/体检/演练（restore 默认 dry-run；--apply 才覆盖）
+python -m paper_trading.cli ledger backup --json
+python -m paper_trading.cli ledger inspect --json
+python -m paper_trading.cli ledger drill --work-dir /tmp/ledger-drill --json
+
+# B3：安全复核（只读）
+python -m paper_trading.cli security audit --json
 
 # 行情质量守卫（M2）：缺日/重复/异常涨跌幅/停牌停滞/无数据；有发现会落 op_log[data:quality]
 python -m paper_trading.cli data quality --json

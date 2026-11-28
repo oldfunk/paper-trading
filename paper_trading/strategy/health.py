@@ -75,11 +75,17 @@ def _load(account_db) -> tuple[float, dict[str, float], list[dict]]:
 
 def health_payload(account_db, *, window: int = DEFAULT_WINDOW,
                    benchmark_code: str = DEFAULT_BENCHMARK,
-                   today: Optional[str] = None, mother=None) -> dict:
+                   today: Optional[str] = None, mother=None,
+                   as_of: Optional[str] = None) -> dict:
     from paper_trading.integration import mother as m
 
     today_s = str(today or date.today().isoformat())[:10]
     init, by_day, fills = _load(account_db)
+    if as_of:
+        # 回放/报告用：只看到 as_of 当天为止的净值与成交（不含未来数据）
+        cut = str(as_of)[:10]
+        by_day = {d: v for d, v in by_day.items() if d <= cut}
+        fills = [f for f in fills if str(f.get("timestamp"))[:10] <= cut]
     days = sorted(by_day)
     blk = (m.benchmark([benchmark_code], days=max(int(window) * 2, 120),
                        mother=mother) or {}).get(benchmark_code) or {}

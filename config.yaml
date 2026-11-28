@@ -39,6 +39,12 @@ strategy:
   long_window: 60
   buy_volume: 100
   sell_volume: 100
+  # 多策略资金分配（默认空 = 未启用，沿用单方案行为）
+  # 权重由用户/AI 显式配置，代码里没有默认偏好；权重和 >100% 会启动失败。
+  # 额度 = weight × NAV（累计净买入成本口径）；卖出/持有不受限。
+  # allocations:
+  #   ma_cross: 0.6
+  #   rsi_zone: 0.4
 
 risk:
   max_single_order_value: 30000.0

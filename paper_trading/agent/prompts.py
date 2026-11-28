@@ -19,7 +19,7 @@ TRADER_SYSTEM = """你是本地 A 股模拟盘的 AI 交易员。今天只做一
 "basis": ["recent_closes", "financial_summary.roe_5y_avg"],
 "thesis": "一句话论点", "catalyst": "催化（可空）",
 "risk_stop": 1450.0, "confidence": 72, "expected_hold_days": 20,
-"position_size_reason": "仓位理由"}}],
+"position_size_reason": "仓位理由", "strategy": "策略名（启用资金分配时必填）"}}],
 "conditions": [{{"symbol": "代码", "side": "buy|sell",
 "cond": {{"type": "price_below|price_above|pct_below|pct_above", "value": 数字}},
 "volume": 100, "value": 0, "expiry": "YYYY-MM-DD", "reason": "一句话理由"}}],
@@ -66,6 +66,11 @@ price 为 null 表示按最新收盘价成交；hold 也要写一行（说明为
     - 若 health=demote，必须在 summary 或相关 reason 里说明“继续/放缓/停手”的理由；
     - 框架不会因 demote 自动拦买；是否停手由你的风格与用户显式策略决定；
     - 不得只因为 20 日跑输就清掉仍有论点的仓位，也不得忽略它而不解释。
+13. 多策略资金分配（strategy_allocations）：
+    - `enabled=false` 时忽略此条；
+    - `enabled=true` 时，每条 buy 必须写 `strategy`，且必须是 items 里的策略名；
+    - 不得超出该策略的 remaining（额度 = weight × NAV，成本口径）；
+    - 卖出/持有不受额度限制；额度不足时降手数或换策略，不许绕过。
 """
 
 USER_TMPL = """股票池：{pool}

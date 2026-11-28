@@ -86,6 +86,7 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "long_window": int(strategy.get("long_window", 60)),
             "buy_volume": int(strategy.get("buy_volume", 100)),
             "sell_volume": int(strategy.get("sell_volume", 100)),
+            "allocations": strategy.get("allocations") or {},
         },
         "risk": {
             "max_single_order_value": float(risk.get("max_single_order_value", 200_000.0)),

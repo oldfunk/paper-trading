@@ -4,9 +4,9 @@
 > **每次迭代开始前先读本文件，完成后回来勾选复选框并补一行进度记录。**
 > 迭代时不得遗忘这里的事项；未完成的 P0 不进入下一里程碑。
 
-- 当前里程碑：**M1/M2/M3/M4 已验收**（M3 观察期 2026-11-16 签字；M4 收尾完成）；当前阶段 **P2 面板收尾 + 可靠性/治理**（目标 v0.11.0）
-- 当前版本：**v0.11.0**（2026-11-28 发布；+ I5a 健康 / I5b 默认策略 / I5c-1/2 上下文+策略；**1033 passed / 13 skipped**；生产 :8080 已部署）
-- 当前迭代计划：**`docs/iteration-plan-20261124.md`**（I1 基准曲线 → I2 行业分布 → I3 收尾 → I4 可靠性/治理 → I5+ 策略组合）
+- 当前里程碑：**M1/M2/M3/M4 已验收**（M3 观察期 2026-11-16 签字；M4 收尾完成）；当前阶段 **v0.12 开发批次（I5c + I6/I7/I8）**
+- 当前版本：**v0.11.0**（2026-11-28 发布；+ I5a 健康 / I5b 默认策略 / I5c 上下文+策略+额度 / A4–A7 / B1–B5；**1077 passed / 13 skipped**；生产 :8080 已部署）
+- 当前迭代计划：**`docs/iteration-plan-20261124.md`**（I1 基准曲线 → I2 行业分布 → I3 收尾 → I4 可靠性/治理 → I5 策略组合 → I6 审计/报告 → I7 运维/安全 → I8 公司行为）
 - 纪律：**M1 已验收，Pi 于 2026-10-23 开启引擎**（本机 `engine.local.yaml`；发布版 `config.yaml` 保持 `enabled: false`，防止母项目/新克隆被自动开启）
 - 相关：`README.md`（用法）、`AGENTS.md`（Agent 硬约束）、`docs/`（本文档）
 
@@ -216,6 +216,11 @@
 | 2026-11-28 | v0.11.0+ | I5b | **默认通用策略**：旧 MA5/20 → **MA20/60 + 趋势/质量/风险 playbook**；`GENERAL_RULES` 由 `SCHEME_TMPL` 注入 AI prompt，`general` 方案 title/desc/exits/signal 与 config fallback 同步；默认基线可被 `custom` 覆盖，健康度仍 advisory。全量 **1025 passed / 13 skipped**。 |
 | 2026-11-28 | v0.11.0+ | I5c-1 | **健康度进 AI 上下文**：`llm_context.strategy_health`（health/recommendation/reasons/window/metrics/stale）；`TRADER_SYSTEM` 第 12 条 advisory（demote 必须解释继续/放缓/停手，不自动拦买）。全量 **1028 passed / 13 skipped**。 |
 | 2026-11-28 | v0.11.0+ | I5c-2 | **health_policy**：`agent.health_policy=off/advisory/enforce`（默认 advisory）；enforce 且 demote 时计划/执行/买入条件三处拒新买，卖出/持有正常；健康不可用 fail-open。配置三件套 + 5 条测试；全量 **1033 passed / 13 skipped**。 |
+| 2026-11-28 | v0.11.0+ | I5c-3 / A3 | **多策略资金分配**：`strategy.allocations`（空=旧行为）；额度=weight×NAV（累计净买入成本）；计划/执行两处闸，卖出/持有不受限；配置后买入缺 strategy 拒单；非法配置启动失败。`strategy allocations` + 18 条测试。 |
+| 2026-11-28 | v0.11.0+ | A4/A5 | **AI 风格审计 + 日/周报**：`agent replay.health_review`（demote 是否回应）；`report daily/weekly --out`（NAV/成交/归因/风控/健康度变化）。7 条测试。 |
+| 2026-11-28 | v0.11.0+ | A6/A7 | **默认策略对照 + 文档**：`strategy compare`（MA20/60 vs MA5/20，同窗口/费用/风控，样本内外分段，非收益承诺）；`strategy-contract.md` §8 四层边界与分配口径。2 条测试。 |
+| 2026-11-28 | v0.11.0+ | B1/B2 | **账本备份/恢复/版本化 + 逐日审计**：`ledger backup/inspect/restore/migrate/drill`（restore 默认 dry-run，`--apply` 前自动安全副本）；`audit day` 串计划/决策/意图/成交/条件单。7 条测试。 |
+| 2026-11-28 | v0.11.0+ | B3/B4/B5 | **安全复核 + 公司行为建议**：`security audit` + `docs/security-review.md`；`corporate tax`（≤30天20%/31-365天10%/>365天0%，缺 entry_day 不按0）；`corporate suggest`（母库优先，akshare 可选，不猜除权日）。8 条测试。 |
 | 2026-11-24 | v0.10.1 | P2 + 接缝 | **第二实例面板修复**：内置方案切换免口令（custom/改指令仍要口令）、`/api/intents` 旧线实例降级；**母项目接口探针** `data contract`（策略/行业/基准形状+新鲜度，形状错误 exit 3）；母项目 issue #10（基准/行业契约）与 #11（v0.10.1 通知）关闭；新增面板信息架构与迭代计划。全量 **1005 passed / 13 skipped**；生产 :8080/:8081 已部署。 |
 | 2026-11-23 | v0.10.0 | M3/M4 + P2 | **v0.10.0** 合流与发布（母项目 vendor）：母策略闸门/AVOID 强制离场、T96 计划新鲜度、执行顺序 卖→买→hold、面板 P1/P2（曲线/分时/FIFO/CSV）、T101 丢单修复、T102 `action_funnel` 终态门禁。全量 993→996；引擎接单沙箱复验（SELL 000426 100 成交，生产账本 md5 未变）。 |
 | 2026-10-29 | — | **重构 M1 关闭**（`refactor-plan-open-source.md` 里程碑体系，与本文件旧 M1/M2 编号并存待 T27 统一） | **M1（rqalpha 数据适配与 parity）正式签字关闭**：七条门禁+第 8 条+四条件全满足（`docs/m1-signoff.md` 终评）。关键证据：判定层 111/111 全等（T19）、S 级 97.3%/100%、26+1 笔缺口全归因（T19-F 表+T12 收尾）、T16 钱类双侧双跑（T29：事故尺度/涨跌停带实测等价、费用差=过户费 0.001% 量化到分、3 条 L2 N/A 论证）、D1 终局裁决（T18：current_bar+F 级书面容差，T+1=M2 路径）。生产迁 NEC（Pi 过劳，sha256 数据零丢失）；心跳看门狗上线。340 passed。**下一步 M2 拍板（前置 T13）**。 |
