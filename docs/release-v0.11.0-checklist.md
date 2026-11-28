@@ -52,3 +52,13 @@
 - 代码回滚：生产 `git pull` 到上一个 tag `v0.10.1` 并重启面板；
 - 不重写已发布 tag（`v*` 已有 ruleset 保护：禁删/禁移/禁强推）；
 - 账本不回滚；若有成交异常，按事故流程单独处理并留痕。
+
+## 6. 发布结果（2026-11-28）
+
+- tag：`v0.11.0`（commit `2ce67ef`）；
+- Release：https://github.com/oldfunk/paper-trading/releases/tag/v0.11.0
+  （子项目自行发布，非母项目代发）；
+- 生产 :8080：`2ce67ef`，dashboard active，`paper_trading.__version__ = 0.11.0`；
+- 接口复核：`/api/benchmark` available（asof 11-27，超额 +3.40pp）、
+  `/api/sectors` 覆盖 4/4 / 合计 37,604、`/api/contract` 三组 OK；
+- 母项目 :8081 仍 v0.10.1，vendor 待母侧排期。
