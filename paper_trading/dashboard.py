@@ -805,10 +805,11 @@ function renderScorecard(){
   const pick=k=>sig[k]||{};
   const b=pick("BUY"),h=pick("HOLD"),a=pick("AVOID");
   if(cnt)cnt.textContent=`${SCORE.n||0} 条 · ${(SCORE.window&&SCORE.window.start)||"—"} → ${(SCORE.window&&SCORE.window.end)||"—"}`;
+  const ex2=v=>v==null?"—":`${Number(v).toFixed(2)}%`;
   if(sum)sum.textContent=(SCORE.sufficient?"样本足够":"样本不足（只展示，不结论）")
-    +` · BUY−AVOID ${SCORE.spread_buy_minus_avoid==null?"—":pct(SCORE.spread_buy_minus_avoid)}`
+    +` · BUY−AVOID ${SCORE.spread_buy_minus_avoid==null?"—":Number(SCORE.spread_buy_minus_avoid).toFixed(2)+"pp"}`
     +` · 截至 ${SCORE.asof||"—"}`;
-  const line=(label,x)=>[label,x.n??0,x.avg_excess_20==null?"—":pct(x.avg_excess_20),
+  const line=(label,x)=>[label,x.n??0,ex2(x.avg_excess_20),
     x.hit_rate==null?"—":pct(x.hit_rate)];
   const body=[line("BUY",b),line("HOLD",h),line("AVOID",a)].map(r=>
     `<tr><td><b>${r[0]}</b></td><td class="num">${r[1]}</td>`+

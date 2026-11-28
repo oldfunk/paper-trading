@@ -158,6 +158,7 @@ def build_calibration(*, benchmark: str = DEFAULT_BENCHMARK,
                                - (blk.get("data") or {}).get("unique_count", 0)),
         "asof": blk.get("asof"),
         "warnings": warnings,
+        "units": "excess_20/ret_20 为百分点（10.39 = +10.39%）；hit_rate 为 0-1 小数",
         "note": ("历史统计，不是未来收益承诺；BUY 命中=20日超额>0，"
                  "AVOID 命中=20日超额<0；旧样本无 verdict 时按 signal 统计；"
                  "样本不足时不据此下结论"),

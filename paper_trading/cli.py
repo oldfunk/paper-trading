@@ -95,6 +95,7 @@ def _scorecard_payload() -> dict:
         "spread_buy_minus_avoid": c.get("spread_buy_minus_avoid"),
         "asof": c.get("asof"),
         "warnings": c.get("warnings") or [],
+        "units": "excess 为百分点；hit_rate 为 0-1",
         "note": "历史统计，不是命令；不要用历史命中率替代本次论据",
     }
 
