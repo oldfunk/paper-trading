@@ -738,10 +738,11 @@ function renderStrategyHealth(){
   const sum=document.getElementById("shealth-sum");
   const cnt=document.getElementById("c-shealth");
   if(!t)return;
+  const head=[["指标"],["值"],["说明"]];
   if(!SHEALTH||!SHEALTH.available){
     if(sum)sum.textContent="策略健康不可用："+((SHEALTH&&SHEALTH.reason)||"母库基准不可用");
     if(cnt)cnt.textContent="—";
-    rowsC(t,[["指标"],["值"],["说明"]],[],3,"暂无数据");
+    rows(t,head,`<tr><td colspan="3" class="mut">暂无数据</td></tr>`);
     return;
   }
   const m=SHEALTH.metrics||{},w=SHEALTH.window||{};
@@ -749,14 +750,15 @@ function renderStrategyHealth(){
   const recTxt={active:"正常",watch:"观察",observe:"只观察，不新增买入"}[SHEALTH.recommendation]||SHEALTH.recommendation;
   if(cnt)cnt.textContent=`${w.start||"—"} → ${w.end||"—"} · ${w.days||0} 日`;
   if(sum)sum.textContent=`建议：${recTxt}${SHEALTH.reasons&&SHEALTH.reasons.length?" · "+SHEALTH.reasons.join("；"):""}${SHEALTH.stale?" · 基准 stale":""}`;
-  rowsC(t,[["指标"],["值"],["说明"]], [
+  const body=[
     ["组合 / 基准 / 超额",`${pct(m.portfolio_return)} / ${pct(m.benchmark_return)} / ${pct(m.excess)}`,"窗口内累计"],
     ["20 日超额",pct(m.excess_20),"滚动 20 个共同日"],
     ["最大回撤",pct(m.max_drawdown),"窗口内"],
     ["换手",pct(m.turnover),"成交额 / 平均 NAV"],
     ["费用拖累",`${(Number(m.fee_drag||0)*10000).toFixed(1)} bp`,"三项费用 / 平均 NAV"],
     ["状态",labels[SHEALTH.health]||esc(SHEALTH.health||"—"),(SHEALTH.reasons||[]).join("；")||"阈值内"],
-  ],3,"暂无数据");
+  ].map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td><td class="mut">${r[2]}</td></tr>`).join("");
+  rows(t,head,body);
 }
 function renderOpsPanels(){
   const h=(OV&&OV.health)||{},ck=h.checks||{};
