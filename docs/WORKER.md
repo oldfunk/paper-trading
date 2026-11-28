@@ -1976,7 +1976,9 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   串起 pytest/ops/备份/data contract/raw-coverage/qfq/daily-check/面板三接口，
   输出 GO/NO-GO；`.github/CODEOWNERS` + `SECURITY.md` 治理/签名说明。
   `data qfq-check` 现在也作为 `engine backtest/optimize/walkforward` 前置门禁
-  （scale_mismatch 拒绝，anchor warn 放行）；全量 **1106 passed / 13 skipped**。
+  （scale_mismatch 拒绝，anchor warn 放行）；全量 **1107 passed / 13 skipped**。
+  生产 `release-gate --skip-tests`（PT_RUN_SCENES=0）：GO；daily-check
+  10 绿 / 5 黄 / 0 红，ops 仅 qfq warn，面板三接口 200，钱类快照未变。
 
 
 
