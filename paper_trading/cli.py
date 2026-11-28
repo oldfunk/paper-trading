@@ -827,6 +827,13 @@ class TradingBridge:
 
         nav_hist = self.get_nav_history(limit=max_nav)
         ops = self.broker.get_op_log(limit=max_ops)
+        try:
+            from paper_trading.strategy.health import health_payload as _health
+
+            _h = _health(self.account_db_path)
+        except Exception as exc:            # noqa: BLE001 - 健康度失败不拖垮上下文
+            _h = {"available": False,
+                  "reason": f"{type(exc).__name__}: {exc}"}
         out: dict = {
             "account": {
                 "cash": st["cash"], "total_value": st["total_value"],
@@ -844,6 +851,20 @@ class TradingBridge:
             # 孤儿峰值回撤熔断、全天零成交，而上下文里没有这件事——用户问"为什么没交易"，
             # 模型只能猜。只读 describe()，不在问答路径里锚定日亏基线。
             "risk_control": self.risk.describe(st["total_value"]),
+            # 策略健康度：只读参考，不是命令（见 docs/ai-autonomy.md）
+            **({
+                "strategy_health": {
+                    "available": bool(_h.get("available")),
+                    "health": _h.get("health"),
+                    "recommendation": _h.get("recommendation"),
+                    "reasons": _h.get("reasons") or [],
+                    "window": _h.get("window"),
+                    "metrics": _h.get("metrics") or {},
+                    "stale": _h.get("stale"),
+                    "note": "参考，不是命令；demote 时请在计划里说明继续/放缓/停手",
+                    **({"reason": _h.get("reason")} if _h.get("reason") else {}),
+                }
+            }),
             "recent_nav": [
                 {"time": r["timestamp"], "total": r["total_value"], "pnl": r["pnl"]}
                 for r in nav_hist],
@@ -852,7 +873,7 @@ class TradingBridge:
                  "params": str(o["params"] or "")[:200],
                  "ok": bool(o["ok"]), "result": str(o["result"] or "")[:300]}
                 for o in ops],
-            "note": "模拟盘。策略为MA5/MA20均线信号+风控。只做分析建议，不下单。",
+            "note": "模拟盘。策略为通用中线（MA20/60 参考）+风控；健康度仅作参考，不是命令。只做分析建议，不下单。",
             "legend": {
                 "positions": "真实持仓（唯一权威口径）；其他 key 里的股票都不是持仓。",
                 "recent_closes": "行情收盘价参考（覆盖股票池全部标的），仅供分析，不代表持仓。",
@@ -860,6 +881,8 @@ class TradingBridge:
                 "risk_control": "风控熔断态（peak=落库峰值、drawdown_pct 为自峰值回撤；"
                                 "*_halt=true 表示当前被该条规则拦住不下单）。"
                                 "零成交往往是这里拦的，不是行情或引擎故障。",
+                "strategy_health": "策略健康度（窗口超额/回撤/换手/费用）。"
+                                   "advisory：参考，不是自动拦买命令；demote 时在计划里说明继续/放缓/停手。",
                 "recent_ops": "操作流水（含同步/问答/决策记录，不等于成交）。",
                 "value_view": "Stock Dashboard 只读富化（基本面/财务摘要/股息/论点/筛选/大盘/追踪），仅供参照。",
                 "data_provenance": "每个富化接口的数据来源与新鲜度（source/asof/stale）。"

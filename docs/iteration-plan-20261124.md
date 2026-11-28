@@ -74,7 +74,7 @@
   趋势/质量/风险 playbook**；`GENERAL_RULES` 由 `SCHEME_TMPL` 注入 AI prompt；
   `general` 方案 title/desc/exits/signal 同步；详情 `docs/default-strategy.md`。
 - **I5c 待做（按 `docs/ai-autonomy.md`）**：
-  1. 健康度进 AI 上下文（advisory），AI 自己决定“继续/放缓/停手”并写理由；
+  1. ✅ 健康度进 AI 上下文（advisory），AI 自己决定“继续/放缓/停手”并写理由；
   2. `health_policy` 配置面（off/advisory/enforce，默认 advisory）+ 测试；
      `enforce` 是**用户显式策略**，不是框架默认；
   3. 多策略资金分配框架（`strategy.allocations`，权重由用户/AI 配置，无默认偏好）；

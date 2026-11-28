@@ -40,11 +40,13 @@
 - 若用户希望“看到 demote 就不新增买入”，显式设 `health_policy=enforce` 即可，
   这是用户策略，不是框架默认；
 - `general` 默认策略已更新为 **MA20/60 + 趋势/质量/风险**（`docs/default-strategy.md`），
-  它只是默认基线，`custom` 可完全覆盖。
+  它只是默认基线，`custom` 可完全覆盖；
+- 健康度已进入 AI 上下文（`llm_context.strategy_health`），**advisory**：
+  AI 看到 `demote` 必须解释继续/放缓/停手；框架不自动拦买。
 
 ## 5. 下一步
 
-1. 把健康度接进 AI 上下文（advisory），让 AI 自己决定是否放缓；
+1. ✅ 把健康度接进 AI 上下文（advisory），让 AI 自己决定是否放缓；
 2. `health_policy` 配置面（off/advisory/enforce，默认 advisory）+ 测试；
 3. 多策略资金分配框架（权重由用户/AI 配置）；
 4. AI 风格审计：计划里必须有“继续/放缓/停手”的理由，可回放。

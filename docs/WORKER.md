@@ -1805,6 +1805,14 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   **定位：只读 / advisory，不自动拦买**；11-30 计划 #32 的买单不受影响；
   `enforce` 是用户显式策略（见 `docs/ai-autonomy.md`）。
 
+- [x] **T112 健康度进 AI 上下文（I5c-1）**（2026-11-28）：
+  `llm_context` 新增 `strategy_health`（health/recommendation/reasons/window/
+  metrics/stale/note）；`TRADER_SYSTEM` 第 12 条声明 **advisory**：
+  `demote` 时必须在 summary/reason 说明“继续/放缓/停手”，框架不自动拦买；
+  健康度失败不拖垮上下文（`available=false` + reason）。
+  验收：`tests/test_health_context_t112.py` 3 条；全量 **1028 passed / 13 skipped**；
+  生产 `llm_context` 实测包含 `strategy_health`（不调用 LLM）。
+
 - [x] **T111 默认通用策略（I5b）**（2026-11-28）：把旧默认 MA5/20 更新为
   **MA20/60 + 趋势/质量/风险**的通用中线手册（10–30 个交易日）：
   - `strategy/general_playbook.py` 的 `GENERAL_RULES` 是唯一真相源；
