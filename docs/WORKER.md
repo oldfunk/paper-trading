@@ -1,4 +1,4 @@
-﻿# WORKER — 协作协议与任务箱（主 AI ↔ 员工 AI）
+# WORKER — 协作协议与任务箱（主 AI ↔ 员工 AI）
 
 > 你是本仓库的员工 AI（打下手 + 找问题）。主 AI（我）负责交易代码的最终把关、
 > 部署与发布。本文件通过 git 同步——**开工先 `git pull --ff-only`，完工推回去**。
@@ -1878,8 +1878,15 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
 
 - [x] **T122 v0.12 开发批次收口**（2026-11-28）：A3–A7 + B1–B5 全部落地；
   新增 CLI `report`/`audit`/`security`、`ledger backup|inspect|restore|migrate|drill`、
-  `strategy allocations|compare`、`corporate tax|suggest`。全量 **1077 passed / 13 skipped**；
+  `strategy allocations|compare`、`corporate tax|suggest`。全量 **1078 passed / 13 skipped**；
   未打新 tag（post-release 开发）。
+  生产验证（2026-11-28，部署 `0f4ba0c`）：`ledger backup` 成功
+  （sha256 `c2a194fe…`）；`ledger migrate` 0→1；部署前后钱类快照一致
+  （cash 59385.96 / 持仓 1900 股 / 成本 36365.36 / fills 46 / nav 40 /
+  nav_last 96989.96）；`ledger drill` 各表行数匹配；`report daily` 11-27
+  NAV +2.56% / 基准 +4.17%；`audit day` 11-27（plans=1/decisions=1/fills=4/
+  conditions=7/intents=4）；`security audit` 0 fail；`strategy compare`
+  60 日可跑。dashboard :8080 active、`/api/health` healthy。
 
 
 

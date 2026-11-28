@@ -9,6 +9,8 @@
 - 额度口径：`weight × 当前 NAV` 为某策略的**累计净买入成本额度**。
   `AllocationBook` 在成交后累加买入金额、卖出时按标的归属回冲；
   这是可审计的近似（成本口径，不是逐日盯市市值），面板/CLI 会明确标注；
+  同一标的先后归属不同策略时，卖出按**最近一次买入**归属回冲（近似，
+  组合层真实风控仍由账户级 RiskManager 按全账户计算）；
 - 卖出永远不受分配额度限制（止损不能被预算卡住）；
 - 分配层只做"额度"，撮合与账户级风控仍走同一个 `RiskManager` + 账本。
 
@@ -260,4 +262,4 @@ def allocations_payload(weights: Mapping[str, float], book: Optional[AllocationB
             "total_weight": round(sum(weights.values()), 6),
             "items": items,
             "basis": "累计净买入成本额度（weight × NAV；卖出按标的归属回冲）",
-            "note": "额度只约束新买入；卖出/持有不受限"}
+            "note": "额度只约束新买入；卖出/持有不受限；同标的跨策略换手按最近买入归属回冲"}
