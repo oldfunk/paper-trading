@@ -1794,6 +1794,16 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   全量 **1017 passed / 13 skipped**。tag `v0.11.0` + GitHub Release；:8080 已部署；
   母项目 :8081 仍 v0.10.1，vendor 待母侧排期。
 
+- [x] **T110 策略健康度（I5a）**（2026-11-28）：
+  `strategy/health.py`：共同交易日窗口，组合/基准/超额、20 日超额、窗口回撤、
+  换手（成交额/平均 NAV）、费用拖累；`classify` → healthy/watch/demote。
+  CLI `strategy health [--window 60]`；运维页“策略健康”卡 + `/api/strategy-health`
+  （30s 缓存）。**只读建议，不直接改交易**；自动降级在 I5b 接入。
+  验收：`tests/test_strategy_health_t110.py` 5 条；全量 **1022 passed / 13 skipped**；
+  生产实测窗口 09-28..11-27（32 日）：组合 −3.00% / 基准 −6.40% / 超额 **+3.40%**，
+  20 日超额 **−5.14%** → `demote`（只观察）、回撤 9.13%、换手 366.72%、费用 32.0bp。
+
+
 
 
 
