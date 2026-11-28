@@ -2,7 +2,7 @@
 
 > 目标：策略组合 + 审计/报告 + 运维自动化 + 数据校准。
 > 发布权归子项目；母项目只 `subtree pull <tag>`。
-> 当前版本：`0.11.0`（未 bump）；基线 **1094 passed / 13 skipped**。
+> 当前版本：`0.11.0`（未 bump）；基线 **1101 passed / 13 skipped**。
 
 ## 1. 范围
 
@@ -21,11 +21,11 @@
 | NAV 每日恰 1 行 | `nav_history` 按日计数 = 1 |
 | 无丢单/反向单 | `agent_decisions` 无管道拒绝；`intent_chain` 绿 |
 | 新默认策略首个计划 | 12-01 16:30 生成、12-02 执行；`plan` 带 strategy/health/scorecard |
-| 全量测试 | `python -m pytest -q`（期望 1094 passed / 13 skipped） |
+| 全量测试 | `python -m pytest -q`（期望 1101 passed / 13 skipped） |
 | 面板 | `/api/ai-scorecard`、`/api/strategy-allocations`、`/api/ops-status` 200；0 console error；800px 无横向溢出 |
 | 运维 | `ops check` 0 red；`ledger backup-status` ok；cron 两条存在 |
 | 钱类 | 发布前后 cash/持仓股数/fills/nav 行数一致（记录快照） |
-| 母库 | `data contract` ok；`raw-coverage --gate` 0 violations |
+| 母库 | `data contract` ok；`raw-coverage --gate` 0 violations；`qfq-check` 无 red（anchor warn 需记录） |
 
 ## 3. 发布步骤
 

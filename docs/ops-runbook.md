@@ -54,6 +54,8 @@ bash deploy/install-ops-cron.sh --install
   `max_dev`，先跑 `data repair-qfq --symbols ... --json`（dry-run）确认本地是否需要重拉，
   再 `--apply`；两边锚点谁新谁旧需人工核对，**不自动改数据**。
   `qfq=red`（scale_mismatch）优先。若只是母库回填滞后，提交/跟踪母侧问题。
+  2026-11-28 实测：`anchor_shift` 也可能是 **akshare 与母库 qfq 锚点差异**，
+  执行侧 `auto` 用母库、本地仅兜底；`repair-qfq` 修复本地后仍 warning 属预期。
 - `risk=red`：查 `risk_state` 与 `ai:decide` 拒因；**不要手工改峰值/基线**，
   按事故流程核对钱类口径。
 

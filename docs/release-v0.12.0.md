@@ -54,6 +54,8 @@
 - `strategy.allocations` 的已用额度是**成本口径近似**（卖出按最近买入归属回冲）；
 - AI 成绩样本窗口 2026-07-08..09-29，BUY 仅 23 条，输出带警告；
 - `raw_gate` 用 `daily_close` 补参照；母库 `kline_daily` 自身仍按标的滞后；
+- `qfq` 巡检可能为 **warn**：本地 akshare 与母库 `close_qfq` 锚点不一致
+  （2026-11-28 实测 4 只）；执行侧 `auto` 用母库，本地仅兜底，不自动互改；
 - 母项目 `:8081` vendor 仍 v0.10.1，需发 tag 后由母侧 `subtree pull`；
 - 第二实例 NAV 10-23..11-19 历史缺口不插值；
 - 撮合细化（成交量/排队/竞价）**不在本版本**，见 `docs/matching-refinement.md`。

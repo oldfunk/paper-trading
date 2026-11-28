@@ -1952,7 +1952,13 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   `anchor_shift`（黄，两边锚点谁新谁旧需人工/重拉确认）；母库不是 qfq →
   `uncomparable`（不猜）。`data repair-qfq` 默认 dry-run，`--apply` 才重拉历史
   并写 `data:revision`；只告警/退出码，不自动改账户。`ops check` 增加 `qfq` 项。
-  验收：`test_qfq_check_t129.py` 7 条。
+  验收：`test_qfq_check_t129.py` 7 条；全量 **1101 passed / 13 skipped**。
+  生产实测（2026-11-28）：`data qfq-check` 对 13 只给出 **warn**：
+  600036/600900/601318/601888 比值漂移 0.46%/2.28%/1.19%/2.09%；
+  `repair-qfq` dry-run 显示前 3 只与 akshare 重拉一致（0 修订），
+  601888 有 125 个历史日期被重锚并已 `--apply`；之后仍与母库不一致
+  ⇒ 属于**本地 akshare 与母库 qfq 锚点差异**，执行侧 `auto` 用母库、
+  本地仅兜底；`ops check` 保持 qfq=warn，不自动改写两边数据。
 
 
 
