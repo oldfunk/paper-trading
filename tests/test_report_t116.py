@@ -85,6 +85,36 @@ def test_daily_benchmark_uses_previous_trading_day(monkeypatch, tmp_path):
     assert round(out["excess_return"], 6) == round(0.01 - (-0.01), 6)
 
 
+def test_sector_attribution_unknown_and_known(monkeypatch):
+    import paper_trading.report as r
+
+    def fake_sectors(symbols):
+        return {"available": True, "source": "mother:stock_snapshot",
+                "asof": "2026-11-27", "stale": False,
+                "data": {"600519": "食品饮料"}}
+
+    monkeypatch.setattr("paper_trading.integration.mother.sectors",
+                        fake_sectors)
+    out = r._sector_attribution([
+        {"symbol": "600519", "market_value": 30000},
+        {"symbol": "000001", "market_value": 10000},
+    ])
+    assert out["available"] is True
+    assert out["unknown"] == 1 and out["known"] == 1
+    items = {x["sector"]: x for x in out["items"]}
+    assert items["食品饮料"]["weight"] == 0.75
+    assert items["未知"]["weight"] == 0.25
+
+
+def test_sector_attribution_unavailable(monkeypatch):
+    import paper_trading.report as r
+
+    monkeypatch.setattr("paper_trading.integration.mother.sectors",
+                        lambda syms: {"available": False, "note": "no"})
+    out = r._sector_attribution([{"symbol": "600519", "market_value": 1}])
+    assert out["available"] is False and out["reason"] == "no"
+
+
 def test_report_write_json(tmp_path):
     b = _bridge(tmp_path)
     _seed(b)

@@ -182,6 +182,7 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
   <button data-tab="overview" class="on" role="tab">总览</button>
   <button data-tab="trading" role="tab">交易</button>
   <button data-tab="ops" role="tab">运维</button>
+  <button data-tab="report" role="tab">报告</button>
   <button data-tab="control" role="tab">控制台</button>
 </nav>
 
@@ -415,6 +416,35 @@ tfoot .more-cell{padding:0;border-bottom:none;text-align:center}
 <section data-tab="ops">
   <div class="section-header"><h2 class="section-title">AI 操作流水</h2><span class="section-count" id="c-ops"></span></div>
   <div class="scroll"><table id="ops"></table></div>
+</section>
+
+<section data-tab="report">
+  <div class="section-header"><h2 class="section-title">日/周报</h2><span class="section-count" id="c-report"></span></div>
+  <div class="ai-panel">
+    <div class="ai-row">
+      <select id="rep-kind"><option value="daily">日报</option><option value="weekly">周报</option></select>
+      <input id="rep-date" type="date" style="width:150px">
+      <input id="rep-days" type="number" min="1" max="31" value="7" style="width:80px" title="周报自然日跨度">
+      <select id="rep-bench"><option value="sh000300">沪深300</option><option value="sh000922">中证红利</option></select>
+      <button id="btn-report" class="primary">生成</button>
+      <a class="csv-btn" id="rep-csv" href="#" onclick="return false" title="报告 JSON 导出用 CLI --out">JSON 说明</a>
+    </div>
+    <div class="s" id="report-sum">选日期后生成；只读，不写账本。</div>
+    <div class="scroll"><table id="report-trades"></table></div>
+    <div class="scroll"><table id="report-sector"></table></div>
+  </div>
+</section>
+
+<section data-tab="report">
+  <div class="section-header"><h2 class="section-title">逐日审计</h2><span class="section-count" id="c-audit"></span></div>
+  <div class="ai-panel">
+    <div class="ai-row">
+      <input id="audit-date" type="date" style="width:150px">
+      <button id="btn-audit" class="primary">查这一天</button>
+    </div>
+    <div class="s" id="audit-sum">选日期查“为什么买/没买/卖”；只读。</div>
+    <div class="scroll"><table id="audit-symbols"></table></div>
+  </div>
 </section>
 
 <section data-tab="control">
@@ -1137,7 +1167,7 @@ async function refresh(){
  }catch(e){document.getElementById("clock").textContent="刷新失败: "+e}
 }
 /* ---- P1：任务视图（总览 / 交易 / 运维 / 控制台） ---- */
-const TAB_IDS=["overview","trading","ops","control"];
+const TAB_IDS=["overview","trading","ops","report","control"];
 function applyTab(tab){
   const t=TAB_IDS.includes(tab)?tab:"overview";
   document.querySelectorAll("#tabs button").forEach(b=>{
@@ -1473,6 +1503,72 @@ document.getElementById("btn-cond-design").onclick=async()=>{
   st.textContent=`已挂 ${d.n_created??0} 条${(d.n_rejected||[]).length?`，${d.n_rejected.length} 条未通过校验`:""}`;
   await condStatus();refresh();
 };
+function todayStr(){const d=new Date();const z=n=>String(n).padStart(2,"0");return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`;}
+async function loadReport(){
+  const sum=document.getElementById("report-sum");
+  const dateEl=document.getElementById("rep-date");
+  const day=dateEl.value||todayStr();
+  const kind=document.getElementById("rep-kind").value;
+  const days=Number(document.getElementById("rep-days").value)||7;
+  const bench=document.getElementById("rep-bench").value;
+  sum.textContent="生成中…";
+  const q=new URLSearchParams({kind,date:day,days:String(days),benchmark:bench});
+  const r=await get("/api/report?"+q.toString()).catch(e=>({ok:false,error:String(e)}));
+  if(!r.ok){sum.textContent="报告失败："+(r.error||"接口不可用");return;}
+  const d=r.data||{};
+  const nav=d.nav||{},b=d.benchmark||{};
+  document.getElementById("c-report").textContent=(d.period&&d.period.label)||"";
+  sum.textContent=`${(d.period&&d.period.start)||"—"} → ${(d.period&&d.period.end)||"—"}`
+    +` · NAV ${nav.start==null?"—":fmt(nav.start)} → ${nav.end==null?"—":fmt(nav.end)}`
+    +`（${nav.change==null?"—":pct(nav.change)}）`
+    +` · 基准 ${b.available?pct(b.return):"不可用"}`
+    +` · 超额 ${d.excess_return==null?"—":pct(d.excess_return)}`
+    +` · 健康 ${(d.health&&d.health.health)||"—"}`;
+  rows(document.getElementById("report-trades"),
+    [["时间"],["标的"],["方向"],["股数",1],["价格",1],["费用",1]],
+    (d.trades||[]).map(t=>`<tr><td class="mut">${esc(String(t.time||"").replace("T"," ").slice(0,16))}</td>`+
+      `<td><b>${esc(sym(t.symbol||""))}</b></td>`+
+      `<td><span class="tag ${t.direction==="buy"?"buy":"sell"}">${t.direction==="buy"?"买入":"卖出"}</span></td>`+
+      `<td class="num">${t.volume||0}</td><td class="num">${fmt(t.price)}</td>`+
+      `<td class="num">${fmt(t.fees)}</td></tr>`).join("") ||
+    `<tr><td colspan="6" class="mut">区间内无成交</td></tr>`);
+  const sa=d.sector_attribution||{};
+  rows(document.getElementById("report-sector"),
+    [["行业"],["市值",1],["权重",1]],
+    sa.available?(sa.items||[]).map(x=>`<tr><td>${esc(x.sector)}</td>`+
+      `<td class="num">${fmt(x.market_value)}</td><td class="num">${x.weight==null?"—":pct(x.weight)}</td></tr>`).join("")
+      :`<tr><td colspan="3" class="mut">${esc(sa.reason||"行业不可用")}</td></tr>`);
+}
+async function loadAudit(){
+  const sum=document.getElementById("audit-sum");
+  const day=document.getElementById("audit-date").value||todayStr();
+  sum.textContent="查询中…";
+  const r=await get("/api/audit?date="+encodeURIComponent(day)).catch(e=>({ok:false,error:String(e)}));
+  if(!r.ok){sum.textContent="审计失败："+(r.error||"接口不可用");return;}
+  const d=r.data||{},c=d.counts||{};
+  document.getElementById("c-audit").textContent=day;
+  sum.textContent=`计划 ${c.plans||0} / 决策 ${c.decisions||0} / 成交 ${c.fills||0}`
+    +` / 条件单 ${c.conditions||0} / 意图 ${c.intents||0}`
+    +` · 标的 ${(d.symbols||[]).length} 只`;
+  const tl=d.timeline||[];
+  rows(document.getElementById("audit-symbols"),
+    [["标的"],["结果"],["执行状态"],["证据"]],
+    tl.map(x=>{
+      const w=(x.why||[]).slice(0,2).map(y=>y.exec_status||y.reason||"").filter(Boolean).join("；");
+      return `<tr><td><b>${esc(sym(x.symbol||""))}</b></td>`+
+        `<td>${esc(x.outcome||"—")}</td>`+
+        `<td class="mut">${esc(w||"—")}</td>`+
+        `<td class="mut">${esc(x.evidence_gap||"")}</td></tr>`;
+    }).join("") || `<tr><td colspan="4" class="mut">当日无计划/决策/成交</td></tr>`);
+}
+document.getElementById("btn-report").onclick=loadReport;
+document.getElementById("btn-audit").onclick=loadAudit;
+(function initReportDates(){
+  const t=todayStr();
+  const a=document.getElementById("rep-date"),b=document.getElementById("audit-date");
+  if(a&&!a.value)a.value=t;
+  if(b&&!b.value)b.value=t;
+})();
 condStatus();
 </script>
 </body>
@@ -2709,6 +2805,41 @@ class Handler(BaseHTTPRequestHandler):
                 # 运维巡检（只读；60s 缓存；不写 ops_status.json）
                 self._json({"ok": True,
                             "data": _ops_status_payload(self._bridge())})
+            elif u.path == "/api/report":
+                from paper_trading.report import daily_report, weekly_report
+
+                q = parse_qs(u.query)
+                kind = (q.get("kind") or ["daily"])[0]
+                day = (q.get("date") or [date.today().isoformat()])[0]
+                try:
+                    days = int((q.get("days") or ["7"])[0] or 7)
+                except (TypeError, ValueError):
+                    days = 7
+                bench = (q.get("benchmark") or ["sh000300"])[0]
+                try:
+                    if kind == "weekly":
+                        data = weekly_report(self._bridge(), day, days,
+                                             benchmark=bench)
+                    else:
+                        data = daily_report(self._bridge(), day,
+                                            benchmark=bench)
+                except ValueError as exc:
+                    self._json({"ok": False, "error": f"日期格式须为 YYYY-MM-DD：{exc}"},
+                               code=400)
+                    return
+                self._json({"ok": True, "data": data})
+            elif u.path == "/api/audit":
+                from paper_trading.audit_day import audit_day
+
+                q = parse_qs(u.query)
+                day = (q.get("date") or [date.today().isoformat()])[0]
+                try:
+                    data = audit_day(self._bridge(), day)
+                except ValueError as exc:
+                    self._json({"ok": False, "error": f"日期格式须为 YYYY-MM-DD：{exc}"},
+                               code=400)
+                    return
+                self._json({"ok": True, "data": data})
             elif u.path == "/api/performance":
                 # 收益曲线 + KPI 指标：只读 account db，不构造 bridge（快）
                 self._json({"ok": True, "data": _perf_payload(self.account_db)})

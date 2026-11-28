@@ -38,6 +38,8 @@ def test_dashboard_imports():
     assert "AI 成绩" in d.PAGE and "/api/ai-scorecard" in d.PAGE
     assert "策略资金额度" in d.PAGE and "/api/strategy-allocations" in d.PAGE
     assert "运维巡检" in d.PAGE and "/api/ops-status" in d.PAGE
+    assert "报告" in d.PAGE and "/api/report" in d.PAGE
+    assert "逐日审计" in d.PAGE and "/api/audit" in d.PAGE
     assert "已实现" in d.PAGE
     assert "🔴" not in d.PAGE and "✅" not in d.PAGE
 
@@ -400,7 +402,9 @@ def test_intents_endpoint_degrades_without_rq_table(tmp_path):
         assert body["ok"] is True and body["data"] == []
         assert "rq_intents" in body.get("unavailable", "")
         for path in ("/api/ai-scorecard", "/api/strategy-allocations",
-                     "/api/ops-status"):
+                     "/api/ops-status",
+                     "/api/report?kind=daily&date=2026-11-27",
+                     "/api/audit?date=2026-11-27"):
             with urllib.request.urlopen(
                     f"http://127.0.0.1:{srv.server_port}{path}", timeout=20) as r:
                 assert r.status == 200

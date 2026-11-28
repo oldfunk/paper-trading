@@ -1543,6 +1543,19 @@ def main() -> None:
     strategy_cal.add_argument("--since", default=None,
                               help="只统计该日期之后的样本 YYYY-MM-DD")
     strategy_cal.add_argument("--json", action="store_true")
+    strategy_research = strategy_sub.add_parser(
+        "research", help="参数研究（样本内→样本外→前向占位；不自动写生产）")
+    strategy_research.add_argument("--grid", default="ma_cross",
+                                   help="网格名（默认 ma_cross）")
+    strategy_research.add_argument("--symbols", nargs="*", default=None)
+    strategy_research.add_argument("--days", type=int, default=250)
+    strategy_research.add_argument("--cash", type=float, default=100000.0)
+    strategy_research.add_argument("--top", type=int, default=5)
+    strategy_research.add_argument("--split", type=float, default=0.6)
+    strategy_research.add_argument("--value", type=float, default=10000.0)
+    strategy_research.add_argument("--min-oos-trades", type=int, default=5,
+                                   dest="min_oos_trades")
+    strategy_research.add_argument("--json", action="store_true")
 
     # llm
     llm_parser = subparsers.add_parser("llm", help="LLM 接入（只咨询，不交易）")
@@ -2112,6 +2125,8 @@ def main() -> None:
     rep_weekly.add_argument("--end", default=None, help="YYYY-MM-DD，缺省今天")
     rep_weekly.add_argument("--days", type=int, default=7, help="自然日跨度（1-31）")
     for _p in (rep_daily, rep_weekly):
+        _p.add_argument("--benchmark", default="sh000300",
+                        help="基准代码（默认 sh000300；可选 sh000922 等）")
         _p.add_argument("--out", default=None, help="另存 JSON 到该路径")
         _p.add_argument("--json", action="store_true")
 
@@ -2339,11 +2354,17 @@ def main() -> None:
                 if cmd == "weekly":
                     end = getattr(args, "end", None) or datetime.now().date().isoformat()
                     out = weekly_report(bridge, end,
-                                        int(getattr(args, "days", 7) or 7))
+                                        int(getattr(args, "days", 7) or 7),
+                                        benchmark=str(
+                                            getattr(args, "benchmark",
+                                                    "sh000300") or "sh000300"))
                 else:
                     day = (getattr(args, "date", None)
                            or datetime.now().date().isoformat())
-                    out = daily_report(bridge, day)
+                    out = daily_report(
+                        bridge, day,
+                        benchmark=str(getattr(args, "benchmark", "sh000300")
+                                      or "sh000300"))
             except ValueError as exc:
                 emit(None, ok=False, error=f"日期格式须为 YYYY-MM-DD：{exc}")
                 sys.exit(2)
@@ -2426,6 +2447,22 @@ def main() -> None:
                 emit(out, ok=bool(out.get("available")),
                      error=None if out.get("available") else out.get("reason"))
                 if not out.get("available"):
+                    sys.exit(3)
+            elif cmd == "research":
+                from paper_trading.strategy.research import run_research
+
+                out = run_research(
+                    bridge,
+                    grid=str(getattr(args, "grid", "ma_cross") or "ma_cross"),
+                    symbols=getattr(args, "symbols", None),
+                    days=int(getattr(args, "days", 250) or 250),
+                    cash=float(getattr(args, "cash", 100000.0) or 100000.0),
+                    top=int(getattr(args, "top", 5) or 5),
+                    split=float(getattr(args, "split", 0.6) or 0.6),
+                    value=float(getattr(args, "value", 10000.0) or 10000.0),
+                    min_oos_trades=int(getattr(args, "min_oos_trades", 5) or 5))
+                emit(out, ok=bool(out.get("ok")), error=out.get("error"))
+                if not out.get("ok"):
                     sys.exit(3)
             else:
                 from paper_trading.strategy.health import health_payload
@@ -3243,6 +3280,21 @@ def main() -> None:
 
             cfg = load_engine_config(args.config)
             ok, msg = validate(cfg)
+
+            def _qfq_gate(symbols: list[str], days_n: int) -> dict:
+                from paper_trading.data.qfq_check import preflight
+
+                g = preflight(bridge.data_db, symbols,
+                              days=max(int(days_n), 120))
+                if not g.get("ok"):
+                    emit(None, ok=False,
+                         error=("qfq 尺度门禁拒绝回测/研究："
+                                + (g.get("note") or "")
+                                + ("；标的 " + "、".join(g.get("bad") or [])
+                                   if g.get("bad") else "")))
+                    sys.exit(3)
+                return g
+
             if args.engine_command == "config" or not args.engine_command:
                 emit({"enabled": bool(cfg.get("enabled")),
                       "interval_sec": cfg.get("interval_sec"),
@@ -3269,6 +3321,7 @@ def main() -> None:
                 if not syms:
                     emit(None, ok=False, error="请用 --symbols 指定标的")
                     sys.exit(2)
+                qfq_gate = _qfq_gate(syms, days_n)
                 bars_by_sym, all_days = {}, set()
                 for s in syms:
                     bars = bridge.data_db.get_bars(s, limit=days_n + 10)
@@ -3309,6 +3362,7 @@ def main() -> None:
 
                 out["data_fingerprint"] = bars_fingerprint(
                     bars_by_sym, grid_days, grid_minutes or None)
+                out["qfq_gate"] = qfq_gate
                 emit(out, ok=not out.get("error"), error=out.get("error"))
                 return
             # backtest
@@ -3323,6 +3377,7 @@ def main() -> None:
             if not syms:
                 emit(None, ok=False, error="规则集为空或未指定 --symbols")
                 sys.exit(2)
+            qfq_gate = _qfq_gate(syms, args.days)
             bars_by_sym, all_days = {}, set()
             for s in syms:
                 bars = bridge.data_db.get_bars(s, limit=max(args.days, 30) + 5)
@@ -3350,6 +3405,7 @@ def main() -> None:
                                  bars_by_sym, days, initial_cash=args.cash,
                                  minutes_by_day=minutes_by_day)
             m = metrics(res, len(days))
+            m["qfq_gate"] = qfq_gate
             m["trades_detail"] = res.trades[-50:]
             m["per_rule"] = res.per_rule
             m["skipped_sample"] = res.skipped[:20]

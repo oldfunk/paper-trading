@@ -192,7 +192,48 @@ def _attribution(fills: list[dict], positions: list[dict]) -> list[dict]:
     return out
 
 
-def build_report(bridge, start: str, end: str, *, label: str = "") -> dict:
+def _sector_attribution(positions: list[dict]) -> dict:
+    """按持仓市值聚合行业；母库不可用时显式 unavailable，不填 0。"""
+    if not positions:
+        return {"available": False, "reason": "无持仓", "items": [],
+                "total_market_value": 0.0}
+    from paper_trading.integration import mother as m
+
+    syms = [str(p.get("symbol")) for p in positions if p.get("symbol")]
+    try:
+        blk = m.sectors(syms)
+    except Exception as exc:                    # noqa: BLE001
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}",
+                "items": [], "total_market_value": 0.0}
+    if not blk.get("available"):
+        return {"available": False, "reason": blk.get("note") or "行业数据不可用",
+                "items": [], "total_market_value": 0.0}
+    data = blk.get("data") or {}
+    agg: dict[str, float] = {}
+    total = 0.0
+    known = 0
+    for p in positions:
+        sym = str(p.get("symbol") or "")
+        mv = _num(p.get("market_value"))
+        total += mv
+        sec = data.get(sym)
+        if sec:
+            agg[str(sec)] = agg.get(str(sec), 0.0) + mv
+            known += 1
+        else:
+            agg["未知"] = agg.get("未知", 0.0) + mv
+    items = [{"sector": k, "market_value": round(v, 2),
+              "weight": round(v / total, 6) if total else None}
+             for k, v in sorted(agg.items(), key=lambda kv: -kv[1])]
+    return {"available": True, "source": blk.get("source"),
+            "asof": blk.get("asof"), "stale": bool(blk.get("stale")),
+            "items": items, "total_market_value": round(total, 2),
+            "known": known, "unknown": len(positions) - known,
+            "basis": "持仓市值按 stock_snapshot.sector 聚合；NULL 归未知"}
+
+
+def build_report(bridge, start: str, end: str, *, label: str = "",
+                 benchmark: str = "sh000300") -> dict:
     account_db = bridge.account_db_path
     navs = _navs(account_db, start, end)
     fills = _fills(account_db, start, end)
@@ -216,7 +257,7 @@ def build_report(bridge, start: str, end: str, *, label: str = "") -> dict:
             nav_start = _num(prev[0]["total_value"])
     nav_change = (round(nav_end / nav_start - 1, 6)
                   if nav_start and nav_end else None)
-    bench = _benchmark_return("sh000300", days, start, end)
+    bench = _benchmark_return(benchmark, days, start, end)
     excess = (round(nav_change - bench["return"], 6)
               if nav_change is not None and bench.get("available") else None)
 
@@ -264,6 +305,7 @@ def build_report(bridge, start: str, end: str, *, label: str = "") -> dict:
                               ("commission", "stamp_duty", "transfer_fee")), 2),
         } for f in fills],
         "attribution": _attribution(fills, positions),
+        "sector_attribution": _sector_attribution(positions),
         "positions": positions,
         "risk": {"current": risk_now, "events": risk_events},
         "health_change": health,
@@ -281,14 +323,16 @@ def build_report(bridge, start: str, end: str, *, label: str = "") -> dict:
     return report
 
 
-def daily_report(bridge, day: str) -> dict:
-    return build_report(bridge, day, day, label="daily")
+def daily_report(bridge, day: str, *, benchmark: str = "sh000300") -> dict:
+    return build_report(bridge, day, day, label="daily", benchmark=benchmark)
 
 
-def weekly_report(bridge, end: str, days: int = 7) -> dict:
+def weekly_report(bridge, end: str, days: int = 7,
+                  *, benchmark: str = "sh000300") -> dict:
     days = max(1, min(int(days), 31))
     start = (date.fromisoformat(end) - timedelta(days=days - 1)).isoformat()
-    return build_report(bridge, start, end, label=f"weekly({days}d)")
+    return build_report(bridge, start, end, label=f"weekly({days}d)",
+                        benchmark=benchmark)
 
 
 def write_report(report: dict, out: str | Path) -> str:

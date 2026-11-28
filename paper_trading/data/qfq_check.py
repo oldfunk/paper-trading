@@ -113,6 +113,22 @@ def check(data_db, symbols: Iterable[str], *, days: int = 120,
     }
 
 
+def preflight(data_db, symbols: Iterable[str], *, days: int = 120,
+              tol: float = 0.001, mother=None) -> dict:
+    """回测/研究前的轻量门禁：scale_mismatch 拒绝，anchor_shift 放行但带警告。"""
+    r = check(data_db, symbols, days=days, tol=tol, mother=mother)
+    return {
+        "ok": r.get("status") != "red",
+        "status": r.get("status"),
+        "warn": r.get("warn") or [],
+        "bad": r.get("bad") or [],
+        "note": ("qfq 尺度不一致，拒绝回测" if r.get("status") == "red"
+                 else ("qfq 锚点不一致（执行用母库/本地兜底），回测结论需留意"
+                       if r.get("status") == "warn" else "qfq 比值稳定")),
+        "detail": r,
+    }
+
+
 def repair(data_db, symbols: Iterable[str], *, days: int = 120,
            apply: bool = False, fetch: Optional[Callable] = None,
            tol: float = 0.001, mother=None) -> dict:

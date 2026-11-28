@@ -34,7 +34,8 @@
 - **AI 成绩校准**：`strategy calibration` 读母库 `analysis_outcome`（旧样本无 verdict 时按 signal+20日超额），输出 BUY/HOLD/AVOID 命中率与超额；样本足够才进 AI 上下文（advisory）
 - **默认通用策略**：`general` 方案为 **MA20/60 + 趋势/质量/风险** 中线手册（10–30 个交易日）；可用 `custom` 覆盖
 - **多策略资金分配**：`strategy.allocations`（权重由用户/AI 配置，无默认偏好；额度=weight×NAV）；计划/执行两处闸，卖出/持有不受限，超限 fail-closed
-- **审计与报告**：`agent replay` 可回放“健康度输入→选择→理由”；`report daily|weekly --out`；`audit day` 串计划/决策/意图/成交/条件单
+- **审计与报告**：`agent replay` 可回放“健康度输入→选择→理由”；`report daily|weekly --out`（可选基准/行业归因）；`audit day` 串计划/决策/意图/成交/条件单；面板“报告”页可查日/周报与逐日审计
+- **参数研究**：`strategy research` 样本内→样本外→前向占位，输出候选/过拟合/拒绝，不自动写生产
 - **运维与安全**：`ledger backup/inspect/restore/migrate/drill`（恢复默认 dry-run）；`security audit` + `docs/security-review.md`
 - **公司行为建议**：`corporate tax`（分红税口径，缺持有时长不按 0 税）；`corporate suggest`（母库优先，akshare 可选；不自动改账）
 - **默认策略对照**：`strategy compare`（MA20/60 vs 旧 MA5/20，同窗口/费用/风控，样本内外分段；历史回测，不是收益承诺）

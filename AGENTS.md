@@ -53,10 +53,14 @@ python -m paper_trading.cli corporate suggest --json
 python -m paper_trading.cli strategy allocations --json
 python -m paper_trading.cli strategy compare --days 120 --json
 python -m paper_trading.cli strategy calibration --json
+python -m paper_trading.cli strategy research --grid ma_cross --days 250 --json
 
 # A5/B2：日/周报 + 逐日审计（只读）
 python -m paper_trading.cli report daily --date 2026-11-27 --json
 python -m paper_trading.cli audit day --date 2026-11-27 --json
+
+# v0.12 发布门禁（生产：全量+ops+daily-check+qfq；--skip-tests 可跳过 pytest）
+bash deploy/release-gate.sh
 
 # B1：账本备份/体检/演练（restore 默认 dry-run；--apply 才覆盖）
 python -m paper_trading.cli ledger backup --json

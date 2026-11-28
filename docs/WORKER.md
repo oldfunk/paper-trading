@@ -1960,6 +1960,24 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   ⇒ 属于**本地 akshare 与母库 qfq 锚点差异**，执行侧 `auto` 用母库、
   本地仅兜底；`ops check` 保持 qfq=warn，不自动改写两边数据。
 
+- [x] **T130 参数研究流程（D3）**（2026-11-28）：`strategy/research.py` +
+  `strategy research`：复用 `walk_forward`，输出样本内/样本外/过拟合差距/
+  `data_fingerprint`；`classify` → candidate/overfit_risk/reject；
+  `auto_apply=false`、`forward=pending`，不写配置/规则。文档
+  `docs/research-process.md`。验收：`test_research_t130.py` 3 条。
+
+- [x] **T131 基准/行业归因 + 报告页**（2026-11-28）：`report` 支持
+  `--benchmark sh000922` 等；新增 `sector_attribution`（持仓市值按
+  `stock_snapshot.sector` 聚合，NULL 归未知，母库不可用显式 unavailable）；
+  面板新增“报告”页：日报/周报（可选基准/行业）与逐日审计，接口
+  `/api/report`、`/api/audit`。验收：`test_report_t116.py` 6 条。
+
+- [x] **T132 发布门禁 + 安全治理**（2026-11-28）：`deploy/release-gate.sh`
+  串起 pytest/ops/备份/data contract/raw-coverage/qfq/daily-check/面板三接口，
+  输出 GO/NO-GO；`.github/CODEOWNERS` + `SECURITY.md` 治理/签名说明。
+  `data qfq-check` 现在也作为 `engine backtest/optimize/walkforward` 前置门禁
+  （scale_mismatch 拒绝，anchor warn 放行）；全量 **1106 passed / 13 skipped**。
+
 
 
 

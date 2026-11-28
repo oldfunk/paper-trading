@@ -24,7 +24,10 @@
   计划/执行两处闸，卖出/持有不受限；
 - `ai_scorecard`：母库 570 个 analysis 去重后的 20 日成绩，样本足够才注入；
 - `strategy calibration`：BUY/HOLD/AVOID 样本、超额、命中率；
-- `strategy compare`：MA20/60 vs 旧 MA5/20，同窗口/费用/风控，样本内外分段。
+- `strategy compare`：MA20/60 vs 旧 MA5/20，同窗口/费用/风控，样本内外分段；
+- `strategy research`：样本内→样本外→前向占位，输出 candidate/overfit/reject，
+  不自动写生产；
+- `report --benchmark sh000922` + 行业归因；面板“报告”页可查日/周报与逐日审计。
 
 ### 审计与报告
 
@@ -40,7 +43,8 @@
 - `ledger migrate`：`schema_meta` 版本化（生产已 0→1）；
 - `ops check`：备份/心跳/raw_gate/熔断；red 退出 1；
 - `deploy/install-ops-cron.sh`：21:10 备份 + 21:20 巡检；
-- `security audit` + `docs/security-review.md`；
+- `deploy/release-gate.sh`：发布前一键 pytest/ops/备份/数据门禁/daily-check；
+- `security audit` + `docs/security-review.md`；`.github/CODEOWNERS`；
 - `corporate tax/suggest`：分红税与除权除息建议（只建议，不自动改账）。
 
 ### 数据

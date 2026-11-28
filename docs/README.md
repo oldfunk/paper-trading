@@ -28,6 +28,7 @@
 | `ledger-backup.md` | 账本备份/恢复/版本化与回滚步骤（B1） |
 | `ops-runbook.md` | 每日自动备份/巡检 cron、告警处理与回滚（M4） |
 | `matching-refinement.md` | 撮合细化设计（成交量/涨跌停排队/竞价）与回归清单（未改代码） |
+| `research-process.md` | 参数研究流程（样本内→样本外→前向；不自动上生产） |
 | `release-v0.12.0.md` | v0.12.0 发布说明草案（未打 tag） |
 | `release-v0.12.0-checklist.md` | v0.12.0 发布检查单（等 12-01 收盘链） |
 | `panel-information-architecture.md` | 面板信息架构与取舍（重要/可删/后置） |
