@@ -61,7 +61,8 @@ def audit_day(bridge, day: str) -> dict:
         ops = _q(conn, "SELECT * FROM op_log WHERE substr(timestamp,1,10)=?"
                  " ORDER BY id", (day,))
         intents = (_q(conn, "SELECT * FROM rq_intents"
-                            " WHERE substr(created_at,1,10)=? ORDER BY id", (day,))
+                            " WHERE substr(created_at,1,10)=?"
+                            " ORDER BY created_at, rowid", (day,))
                    if "rq_intents" in tables else [])
     finally:
         conn.close()

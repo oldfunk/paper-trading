@@ -49,14 +49,25 @@ def test_audit_day_links_plan_decision_fill(tmp_path):
                      "status,note) VALUES('2026-11-27T09:00:00','2026-11-27',"
                      "'ai','000858','buy','price_below',90.0,100,0,"
                      "'2026-11-30T15:00:00','armed','等回调')")
+        conn.execute("CREATE TABLE IF NOT EXISTS rq_intents("
+                     "biz_id TEXT PRIMARY KEY, symbol TEXT NOT NULL,"
+                     "side TEXT NOT NULL, volume INTEGER NOT NULL,"
+                     "rule_ref TEXT, detail TEXT,"
+                     "status TEXT NOT NULL DEFAULT 'pending',"
+                     "created_at TEXT NOT NULL, result TEXT)")
+        conn.execute("INSERT INTO rq_intents(biz_id,symbol,side,volume,status,"
+                     "created_at) VALUES('600519_BUY_100','600519','BUY',100,"
+                     "'executed','2026-11-27T09:31:00')")
 
     out = audit_day(b, "2026-11-27")
     assert out["ok"] is True
     assert out["counts"]["plans"] == 1
     assert out["counts"]["decisions"] == 1
+    assert out["counts"]["intents"] == 1
     syms = {t["symbol"]: t for t in out["timeline"]}
     buy = syms["600519"]
     assert buy["outcome"] == "有买入成交"
+    assert buy["intents"][0]["status"] == "executed"
     assert any(w["exec_status"].startswith("已成交") for w in buy["why"])
     assert buy["plan_health"]["health"] == "demote"
     rej = syms["601318"]
