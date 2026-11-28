@@ -14,12 +14,24 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 ACCOUNT_SCHEMA_VERSION = 1
+#: 自动备份命名：`<stem>.<YYYYmmddTHHMMSS>.db`；安全副本/演练副本不参与轮转。
+_BACKUP_RE = re.compile(r"^.+\.\d{8}T\d{6}\.db$")
+
+
+def _is_primary_backup(p: Path, stem: str) -> bool:
+    """自动轮转的候选：`stem.<stamp>.db`；安全副本/演练副本不算。"""
+    name = p.name
+    if ".pre-restore." in name or name.endswith(".drill.db"):
+        return False
+    return bool(_BACKUP_RE.match(name)) and name.startswith(stem + ".")
+
 
 #: 账本核心表（缺任何一张都不能当成“可恢复账本”）
 REQUIRED_TABLES = ("account", "positions", "orders", "fills", "nav_history",
@@ -113,6 +125,16 @@ def _copy_api(src: str | Path, dst: str | Path) -> None:
         s.close()
 
 
+def _restrict(path: str | Path, mode: int) -> None:
+    """POSIX 下收紧备份文件/目录权限；Windows 无 POSIX mode，忽略。"""
+    if os.name == "nt":
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
 def _checkpoint_and_clear_wal(db_path: str | Path) -> None:
     """恢复后清掉目标残留的 -wal/-shm，防旧帧在下次打开时被重放。"""
     p = Path(db_path)
@@ -134,7 +156,7 @@ def _checkpoint_and_clear_wal(db_path: str | Path) -> None:
 
 
 def backup(db_path: str | Path, out_dir: str | Path | None = None,
-           stamp: Optional[str] = None) -> dict:
+           stamp: Optional[str] = None, keep: Optional[int] = None) -> dict:
     src = Path(db_path)
     if not src.exists():
         return {"ok": False, "error": f"账本不存在：{src}"}
@@ -147,13 +169,88 @@ def backup(db_path: str | Path, out_dir: str | Path | None = None,
     d.mkdir(parents=True, exist_ok=True)
     dst = d / f"{src.stem}.{stamp}.db"
     _copy_api(src, dst)
+    _restrict(dst, 0o600)
+    _restrict(d, 0o700)
     chk = inspect(dst)
     if not chk.get("ok"):
         return {"ok": False, "error": "备份副本体检未通过", "backup": str(dst),
                 "inspect": chk}
-    return {"ok": True, "source": str(src), "backup": str(dst),
-            "size_bytes": chk["size_bytes"], "sha256": chk["sha256"],
-            "row_counts": chk["row_counts"], "schema_version": chk["schema_version"]}
+    out = {"ok": True, "source": str(src), "backup": str(dst),
+           "size_bytes": chk["size_bytes"], "sha256": chk["sha256"],
+           "row_counts": chk["row_counts"], "schema_version": chk["schema_version"]}
+    if keep is not None:
+        out.update(prune_backups(src, out_dir=d, keep=keep))
+    return out
+
+
+def prune_backups(db_path: str | Path, *, out_dir: str | Path,
+                  keep: int) -> dict:
+    """只删符合自动备份命名的旧文件；安全副本/演练副本永不删。
+
+    `keep` 必须 ≥1：自动轮转最差也保留最新一份；要“全删”请人工处理。
+    """
+    keep = int(keep)
+    if keep < 1:
+        return {"pruned": [], "kept": None,
+                "prune_error": f"keep 必须 ≥1（收到 {keep}）"}
+    d = Path(out_dir)
+    stem = Path(db_path).stem
+    if not d.exists():
+        return {"pruned": [], "kept": 0}
+    primaries = sorted(
+        [p for p in d.glob(f"{stem}.*.db") if _is_primary_backup(p, stem)],
+        key=lambda p: p.name)
+    old = primaries[:-keep] if len(primaries) > keep else []
+    pruned = []
+    for p in old:
+        try:
+            p.unlink()
+            pruned.append(p.name)
+        except OSError:
+            continue
+    return {"pruned": pruned, "kept": min(len(primaries), keep)}
+
+
+def backup_status(db_path: str | Path, out_dir: str | Path | None = None,
+                  *, max_age_hours: float = 26.0,
+                  now: Optional[datetime] = None) -> dict:
+    """最近一份自动备份的新鲜度/完整性；只读。"""
+    src = Path(db_path)
+    d = Path(out_dir) if out_dir else src.parent / "backups"
+    stem = src.stem
+    if not d.exists():
+        return {"ok": False, "available": False, "dir": str(d),
+                "reason": "备份目录不存在", "max_age_hours": max_age_hours}
+    primaries = sorted(
+        [p for p in d.glob(f"{stem}.*.db") if _is_primary_backup(p, stem)],
+        key=lambda p: p.name)
+    if not primaries:
+        return {"ok": False, "available": False, "dir": str(d),
+                "count": 0, "reason": "没有自动备份",
+                "max_age_hours": max_age_hours}
+    latest = primaries[-1]
+    try:
+        age_h = ((now or datetime.now()) - datetime.fromtimestamp(
+            latest.stat().st_mtime)).total_seconds() / 3600.0
+    except OSError as exc:
+        return {"ok": False, "available": False, "dir": str(d),
+                "latest": str(latest), "reason": f"{type(exc).__name__}: {exc}"}
+    chk = inspect(latest)
+    ok = bool(chk.get("ok")) and age_h <= float(max_age_hours)
+    reason = []
+    if not chk.get("ok"):
+        reason.append("备份体检未通过")
+    if age_h > float(max_age_hours):
+        reason.append(f"备份已 {age_h:.1f}h 未更新（阈值 {max_age_hours}h）")
+    return {"ok": ok, "available": True, "dir": str(d),
+            "latest": latest.name, "age_hours": round(age_h, 2),
+            "count": len(primaries), "size_bytes": chk.get("size_bytes"),
+            "sha256": chk.get("sha256"), "integrity": chk.get("integrity"),
+            "row_counts": chk.get("row_counts"),
+            "schema_version": chk.get("schema_version"),
+            "max_age_hours": float(max_age_hours),
+            "reason": "；".join(reason) or None}
+
 
 
 def restore(backup_path: str | Path, target_db: str | Path, *,
@@ -181,6 +278,7 @@ def restore(backup_path: str | Path, target_db: str | Path, *,
         safety = d / (f"{tgt.stem}.pre-restore."
                       f"{datetime.now().strftime('%Y%m%dT%H%M%S')}.db")
         _copy_api(tgt, safety)
+        _restrict(safety, 0o600)
     # 用源覆盖目标（backup API：源 → 目标连接）
     _copy_api(src, tgt)
     _checkpoint_and_clear_wal(tgt)

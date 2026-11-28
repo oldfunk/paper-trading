@@ -1751,7 +1751,15 @@ def main() -> None:
         "backup", help="B1：sqlite backup API 冷备当前账本（不写账本）")
     ledger_backup.add_argument("--out-dir", default=None)
     ledger_backup.add_argument("--stamp", default=None)
+    ledger_backup.add_argument("--keep", type=int, default=None,
+                               help="只保留最近 N 份自动备份（≥1；不给=不轮转）")
     ledger_backup.add_argument("--json", action="store_true")
+    ledger_bstatus = ledger_sub.add_parser(
+        "backup-status", help="B1：最近自动备份的新鲜度/完整性（只读）")
+    ledger_bstatus.add_argument("--out-dir", default=None)
+    ledger_bstatus.add_argument("--max-age-hours", type=float, default=26.0,
+                                dest="max_age_hours")
+    ledger_bstatus.add_argument("--json", action="store_true")
     ledger_inspect = ledger_sub.add_parser(
         "inspect", help="B1：账本只读体检（完整性/版本/表/行数/哈希）")
     ledger_inspect.add_argument("--db", default=None, help="缺省=当前账本")
@@ -2100,6 +2108,20 @@ def main() -> None:
     sec_audit.add_argument("--secrets", default=None)
     sec_audit.add_argument("--json", action="store_true")
 
+    # ops（M4：备份/心跳/行情/熔断一次巡检；只读）
+    ops_parser = subparsers.add_parser(
+        "ops", help="运维巡检（备份/心跳/行情/熔断；只读，red 退出 1）")
+    ops_sub = ops_parser.add_subparsers(dest="ops_command")
+    ops_check = ops_sub.add_parser("check", help="跑一次巡检并写 var/ops_status.json")
+    ops_check.add_argument("--backup-dir", default=None)
+    ops_check.add_argument("--max-backup-age-hours", type=float, default=26.0,
+                           dest="max_backup_age_hours")
+    ops_check.add_argument("--today", default=None)
+    ops_check.add_argument("--skip-quote", action="store_true")
+    ops_check.add_argument("--status-path", default=None,
+                           help="ops_status.json 路径（默认 var/ops_status.json）")
+    ops_check.add_argument("--json", action="store_true")
+
     # cron-run
     cron_parser = subparsers.add_parser("cron-run", help="Cron 模式执行")
     cron_parser.add_argument("--symbols", nargs="*", default=None,
@@ -2303,6 +2325,26 @@ def main() -> None:
             if getattr(args, "out", None):
                 out["saved_to"] = write_report(out, args.out)
             emit(out)
+
+        elif args.command == "ops":
+            from paper_trading.utils.ops_status import build_status, write_status
+
+            if getattr(args, "ops_command", None) not in (None, "check"):
+                parser.print_help()
+                sys.exit(2)
+            out = build_status(
+                bridge,
+                backup_dir=getattr(args, "backup_dir", None),
+                max_backup_age_hours=float(
+                    getattr(args, "max_backup_age_hours", 26.0) or 26.0),
+                today=getattr(args, "today", None),
+                check_quote=not bool(getattr(args, "skip_quote", False)))
+            saved = write_status(out, getattr(args, "status_path", None))
+            if saved:
+                out["saved_to"] = saved
+            emit(out, ok=bool(out.get("ok")))
+            if not out.get("ok"):
+                sys.exit(1)
 
         elif args.command == "security":
             from paper_trading.utils.security_audit import audit as _sec_audit
@@ -2829,13 +2871,21 @@ def main() -> None:
                     k for k, v in (out.get("reports") or {}).items() if v.get("count")]
                 if reds:
                     sys.exit(1)
-            elif lc in ("backup", "inspect", "restore", "migrate", "drill"):
+            elif lc in ("backup", "backup-status", "inspect", "restore",
+                        "migrate", "drill"):
                 from paper_trading.utils import ledger_backup as _lb
 
                 if lc == "backup":
                     out = _lb.backup(bridge.broker.db_path,
                                      out_dir=getattr(args, "out_dir", None),
-                                     stamp=getattr(args, "stamp", None))
+                                     stamp=getattr(args, "stamp", None),
+                                     keep=getattr(args, "keep", None))
+                elif lc == "backup-status":
+                    out = _lb.backup_status(
+                        bridge.broker.db_path,
+                        out_dir=getattr(args, "out_dir", None),
+                        max_age_hours=float(
+                            getattr(args, "max_age_hours", 26.0) or 26.0))
                 elif lc == "inspect":
                     out = _lb.inspect(getattr(args, "db", None)
                                       or bridge.broker.db_path)

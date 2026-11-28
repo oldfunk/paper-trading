@@ -5,7 +5,7 @@
 > 迭代时不得遗忘这里的事项；未完成的 P0 不进入下一里程碑。
 
 - 当前里程碑：**M1/M2/M3/M4 已验收**（M3 观察期 2026-11-16 签字；M4 收尾完成）；当前阶段 **v0.12 开发批次（I5c + I6/I7/I8）**
-- 当前版本：**v0.11.0**（2026-11-28 发布；+ I5a 健康 / I5b 默认策略 / I5c 上下文+策略+额度 / A4–A7 / B1–B5；**1088 passed / 13 skipped**；生产 :8080 已部署）
+- 当前版本：**v0.11.0**（2026-11-28 发布；+ I5a 健康 / I5b 默认策略 / I5c 上下文+策略+额度 / A4–A7 / B1–B5；**1091 passed / 13 skipped**；生产 :8080 已部署）
 - 当前迭代计划：**`docs/iteration-plan-20261124.md`**（I1 基准曲线 → I2 行业分布 → I3 收尾 → I4 可靠性/治理 → I5 策略组合 → I6 审计/报告 → I7 运维/安全 → I8 公司行为）
 - 纪律：**M1 已验收，Pi 于 2026-10-23 开启引擎**（本机 `engine.local.yaml`；发布版 `config.yaml` 保持 `enabled: false`，防止母项目/新克隆被自动开启）
 - 相关：`README.md`（用法）、`AGENTS.md`（Agent 硬约束）、`docs/`（本文档）
@@ -191,7 +191,9 @@
 ## 4. M4 — 可运维与可审计
 
 - [x] 账户与风控状态备份/恢复演练；`paper_account.db` 迁移工具与版本化。✅ 2026-11-28 `ledger backup/inspect/restore/migrate/drill`
-- [ ] 任务监控：cron/守护进程心跳、报价源健康、熔断事件通知。
+- [x] 任务监控：cron/守护进程心跳、报价源健康、熔断事件通知。✅ 2026-11-28
+  `ops check`（heartbeat + raw_gate + risk halt + backup）；cron 日志/退出码 +
+  `var/ops_status.json`；外部推送未接（用户未要求）
 - [x] 审计报告：任意一天可回答「为什么买/为什么没买/为什么卖」。✅ 2026-11-28 `audit day`
 - [x] 安全复核：本地面板、Key、口令的攻防演练与文档更新。✅ 2026-11-28 `security audit` + `docs/security-review.md`
 

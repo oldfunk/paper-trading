@@ -26,6 +26,7 @@
 | `ai-autonomy.md` | AI 自主权边界：框架管安全，AI 管风格；健康度默认 advisory |
 | `security-review.md` | 安全复核清单与攻防演练（无口令写入/CSRF/跨实例/Key 泄露） |
 | `ledger-backup.md` | 账本备份/恢复/版本化与回滚步骤（B1） |
+| `ops-runbook.md` | 每日自动备份/巡检 cron、告警处理与回滚（M4） |
 | `panel-information-architecture.md` | 面板信息架构与取舍（重要/可删/后置） |
 | `ui-iteration-20261119.md` | 面板 P0/P1/P2 的实现契约与变更记录 |
 | `architecture-map.md` | 模块依赖快照（2026-10-29 基线 + 11-24 复核计数） |

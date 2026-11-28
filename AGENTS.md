@@ -63,6 +63,11 @@ python -m paper_trading.cli ledger backup --json
 python -m paper_trading.cli ledger inspect --json
 python -m paper_trading.cli ledger drill --work-dir /tmp/ledger-drill --json
 
+# M4：每日备份轮转 + 运维巡检（只读；red 退出 1）
+python -m paper_trading.cli ledger backup --out-dir backups --keep 20 --json
+python -m paper_trading.cli ledger backup-status --out-dir backups --json
+python -m paper_trading.cli ops check --json
+
 # B3：安全复核（只读）
 python -m paper_trading.cli security audit --json
 

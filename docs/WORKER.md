@@ -1917,6 +1917,13 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   `signals`（n 翻倍、均值混基准），已按跨仓协议提
   [stock-dashboard#12](https://github.com/oldfunk/stock-dashboard/issues/12)，子项目不改母码。
 
+- [x] **T126 运维自动化（M4）**（2026-11-28）：`ledger backup --keep N` 自动轮转
+  （只删 `<stem>.<stamp>.db`，`pre-restore`/`drill` 永不删）；`ledger backup-status`
+  检查最近备份年龄/完整性；`ops check` 聚合备份、心跳、`raw_gate`、熔断态，
+  red 退出 1 并写 `var/ops_status.json`。`deploy/install-ops-cron.sh` 幂等安装
+  21:10 备份 + 21:20 巡检两条 cron（只增删带标记的行）。验收：
+  `tests/test_ops_t126.py` 3 条；生产安装后 `ops check` 0 red。
+
 
 
 

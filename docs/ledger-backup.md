@@ -12,6 +12,12 @@ python -m paper_trading.cli ledger inspect --json
 # 冷备（sqlite backup API，不写当前账本）
 python -m paper_trading.cli ledger backup --out-dir backups
 
+# 冷备 + 只保留最近 20 份自动备份（安全副本/演练副本不参与轮转）
+python -m paper_trading.cli ledger backup --out-dir backups --keep 20
+
+# 最近备份的新鲜度/完整性（默认 26h）
+python -m paper_trading.cli ledger backup-status --out-dir backups --json
+
 # 恢复演练（默认 dry-run，只校验备份 + 对比行数）
 python -m paper_trading.cli ledger restore --backup backups/paper_account.<stamp>.db
 
@@ -57,3 +63,9 @@ python -m paper_trading.cli ledger drill --work-dir /tmp/ledger-drill
 - 副本 drill：备份行数 = 恢复后行数（`op_log` 会多一条 restore 留痕，属预期）；
 - `PRAGMA integrity_check = ok`；
 - 生产恢复后钱类口径人工核对通过，服务健康。
+
+## 6. 自动备份（M4）
+
+生产已用 `deploy/install-ops-cron.sh` 安装每日 21:10 `ledger backup --keep 20`
+与 21:20 `ops check`（只读巡检）。`ledger backup-status` / `ops check` 会报
+“备份超过 26h 未更新”或完整性失败；处理步骤见 `docs/ops-runbook.md`。
