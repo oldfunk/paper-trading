@@ -18,8 +18,10 @@
 - `strategy/health.py` 只产出**观测**：窗口超额、20 日超额、回撤、换手、费用拖累；
 - 默认 `health_policy=advisory`：指标进 AI 上下文与面板，**不拦单**；
 - AI 在计划里应说明“看到健康度后为什么继续/放缓/停手”，进审计；
-- `enforce` 是**用户显式策略**（例如“20 日超额 ≤ -5% 就不新增买入”），
-  不是框架默认；开启后拒因写进 `ai:decide`，仍允许卖出/持有；
+- `enforce` 是**用户显式策略**（例如"20 日超额 ≤ -5% 就不新增买入"），
+  不是框架默认；已接线 `agent.health_policy=off/advisory/enforce`：
+  `enforce` 且 demote 时计划/执行/买入条件三处拒绝新买入，卖出/持有不受影响；
+  健康不可用时 fail-open（不因基准源缺失冻结买入）；拒因写进 `ai:decide`；
 - 硬风控（日亏 5%、回撤 20%、仓位/单笔上限）不受此影响，始终生效。
 
 ## 3. 多策略与资金分配
@@ -47,6 +49,6 @@
 ## 5. 下一步
 
 1. ✅ 把健康度接进 AI 上下文（advisory），让 AI 自己决定是否放缓；
-2. `health_policy` 配置面（off/advisory/enforce，默认 advisory）+ 测试；
+2. ✅ `health_policy` 配置面（off/advisory/enforce，默认 advisory）+ 测试；
 3. 多策略资金分配框架（权重由用户/AI 配置）；
 4. AI 风格审计：计划里必须有“继续/放缓/停手”的理由，可回放。

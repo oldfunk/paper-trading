@@ -1813,6 +1813,15 @@ T9/T10 结果裁决与 M1 门禁签核（§5.1 不绿不合）、P0 事故响应
   验收：`tests/test_health_context_t112.py` 3 条；全量 **1028 passed / 13 skipped**；
   生产 `llm_context` 实测包含 `strategy_health`（不调用 LLM）。
 
+- [x] **T113 health_policy（I5c-2）**（2026-11-28）：`agent.health_policy`
+  `off/advisory/enforce`，默认 **advisory**；`enforce` 且健康 `demote` 时：
+  - 计划阶段新买入进 `actions_rejected`；
+  - 执行阶段买动作拒绝（**卖出/持有正常**）；
+  - 买入条件不挂（`arm_rejected`）；
+  - 健康不可用时 **fail-open**（健康是参考数据，不因基准源缺失冻结买入）。
+  配置三件套（`config.yaml` + `utils.config` + `cli.AgentConfig`）+ 校验测试；
+  验收：`tests/test_health_policy_t113.py` 5 条；全量 **1033 passed / 13 skipped**。
+
 - [x] **T111 默认通用策略（I5b）**（2026-11-28）：把旧默认 MA5/20 更新为
   **MA20/60 + 趋势/质量/风险**的通用中线手册（10–30 个交易日）：
   - `strategy/general_playbook.py` 的 `GENERAL_RULES` 是唯一真相源；

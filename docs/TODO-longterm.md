@@ -9,7 +9,7 @@
 | ID | 优先级 | 项 | 状态 | 依赖/验收 |
 |---|---|---|---|---|
 | A1 | P0 | 健康度进 AI 上下文（advisory）：plan/event prompt 带超额/回撤/换手/费用；AI 说明继续/放缓/停手理由 | ✅ 2026-11-28 | 不自动拦买；`strategy_health` 已进 `llm_context` |
-| A2 | P0 | `health_policy` 配置面：`off/advisory/enforce`，默认 advisory；enforce 是用户显式策略 | 待做 | 配置三件套 + 测试；拒因落 `ai:decide` |
+| A2 | P0 | `health_policy` 配置面：`off/advisory/enforce`，默认 advisory；enforce 是用户显式策略 | ✅ 2026-11-28 | 配置三件套 + 5 条测试；拒因落 `ai:decide` |
 | A3 | P0 | 多策略资金分配：`strategy.allocations` 权重、单策略/组合两级预算、统一风控入口 | 待做 | 权重由用户/AI 配置；超限 fail-closed；无隐式权重 |
 | A4 | P1 | AI 风格审计：计划里“健康度输入 → 选择 → 理由”可回放 | 待做 | `agent replay` 展示 |
 | A5 | P1 | 日/周报：持仓、成交、归因、风控事件、健康度变化，CLI 可导出 | 待做 | 复用 CSV/性能数据；样例报告 |

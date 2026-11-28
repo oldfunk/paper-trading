@@ -248,6 +248,7 @@ class TradingBridge:
             news_enabled=bool(agent_kwargs.get("news_enabled", True)),
             news_limit=max(0, int(agent_kwargs.get("news_limit", 12))),
             news_timeout_sec=float(agent_kwargs.get("news_timeout_sec", 15.0)),
+            health_policy=str(agent_kwargs.get("health_policy", "advisory")),
             context_budget=max(1000, int(agent_kwargs.get("context_budget", 8000))),
         )
 

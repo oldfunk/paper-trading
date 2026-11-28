@@ -121,6 +121,7 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             "news_enabled": bool(agent.get("news_enabled", True)),
             "news_limit": int(agent.get("news_limit", 12)),
             "news_timeout_sec": float(agent.get("news_timeout_sec", 15.0)),
+            "health_policy": str(agent.get("health_policy", "advisory")).strip().lower(),
             # 安全门禁（v0.7.6：漏白名单 = config 写了也失效，见 wiring_audit）
             "require_stop": bool(agent.get("require_stop", False)),
             "require_basis": bool(agent.get("require_basis", False)),

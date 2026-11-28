@@ -102,6 +102,17 @@ class AgentConfig:
     news_enabled: bool = True
     news_limit: int = 12        # 进 prompt 的条数上限（政策类排前）
     news_timeout_sec: float = 15.0  # 抓取硬超时：连不上的源按超时回空，不挂死
+    #: 策略健康策略：off=不注入；advisory=只注入建议（默认）；enforce=demote 时
+    #: 拒绝新买入（卖出/持有不受影响）。enforce 是**用户显式策略**，不是默认。
+    health_policy: str = "advisory"
+
+    def __post_init__(self):
+        hp = str(self.health_policy or "advisory").strip().lower()
+        if hp not in ("off", "advisory", "enforce"):
+            raise ValueError(
+                f"agent.health_policy 非法：{self.health_policy!r}"
+                "（可选 off/advisory/enforce）")
+        self.health_policy = hp
 
 
 #: basis 允许引用的上下文顶层字段（前缀校验，防止 AI 编造数据字段）
@@ -267,6 +278,35 @@ class AgentTrader:
         """当前方案是否母项目价值策略（决定参考信号与买入闸门）。"""
         return str(getattr(self.bridge.scheme, "source", "")) == "mother"
 
+    def _health_block(self) -> dict | None:
+        """enforce 且健康 demote 时返回 payload；其他情况 None。
+
+        `enforce` 是用户显式策略；健康不可用时**fail-open**（健康度是参考数据，
+        不是安全门禁，不能因为基准源缺失就冻结买入），但上下文会显示 unavailable。
+        """
+        if str(getattr(self.cfg, "health_policy", "advisory")) != "enforce":
+            return None
+        try:
+            from paper_trading.strategy.health import health_payload
+
+            h = health_payload(self.bridge.account_db_path)
+        except Exception:                   # noqa: BLE001 - 参考数据，不阻断交易
+            return None
+        return h if (h.get("available") and h.get("health") == "demote") else None
+
+    def _apply_health_policy(self, ctx: dict) -> dict:
+        """off=移除健康块；enforce=在上下文里标明本轮新买入会被拒。"""
+        hp = str(getattr(self.cfg, "health_policy", "advisory"))
+        if hp == "off":
+            ctx.pop("strategy_health", None)
+        elif hp == "enforce":
+            sh = ctx.get("strategy_health") or {}
+            if sh.get("health") == "demote":
+                sh["enforce"] = True
+                sh["note"] = ("enforce：本轮新买入将被拒绝（仅观察），"
+                              "卖出/持有不受影响")
+        return ctx
+
     def _mother_refs(self) -> tuple[dict[str, dict], Optional[str]]:
         """母筛选最新一轮的策略引用 -> ({code: refs}, asof)。"""
         from paper_trading.agent.mother_strategy import refs_from_screening
@@ -372,6 +412,7 @@ class AgentTrader:
         try:
             cfg = b._llm_config()
             ctx = b.llm_context(max_ops=3, max_nav=2, closes_n=3)
+            ctx = self._apply_health_policy(ctx)
             hold = ["无（空仓）"] if not ctx.get("positions") else [
                 f"{p['stock']} {p['total']}股@{p['avg_cost']}" for p in ctx["positions"]]
             cand_lines = "\n".join(
@@ -497,11 +538,17 @@ class AgentTrader:
             filtered: list[dict] = []
             skipped: list[dict] = []
             arm_rejected: list[dict] = []
+            _health_block = self._health_block()
             for c in conditions:
                 if not isinstance(c, dict):
                     continue
                 sym = str(c.get("symbol") or "")
                 side = str(c.get("side") or "")
+                if side == "buy" and _health_block:
+                    arm_rejected.append(
+                        {"id": 0, "symbol": sym,
+                         "why": "策略健康降级（health_policy=enforce，不挂买入条件）"})
+                    continue
                 if side == "sell" and sym not in held_now:
                     arm_rejected.append(
                         {"id": 0, "symbol": sym,
@@ -554,6 +601,7 @@ class AgentTrader:
         except Exception:                      # noqa: BLE001 - 无实时价时仍可用收盘上下文
             quotes = {}
         ctx = b.llm_context(max_ops=3, max_nav=2, closes_n=3, symbols=pool)
+        ctx = self._apply_health_policy(ctx)
         min_ticket = self._engine_min_ticket()
         max_value = float(self.cfg.max_order_value)
         sys_p, user_p = build_prompt(
@@ -729,6 +777,7 @@ class AgentTrader:
 
         ref_txt = self._ref_text(all_bars, symbols)
         ctx = b.llm_context(max_ops=10, max_nav=3, closes_n=10, symbols=symbols)
+        ctx = self._apply_health_policy(ctx)
         prompt = USER_TMPL.format(
             pool="、".join(symbols),
             max_orders=self.cfg.max_orders_per_run,
@@ -807,6 +856,20 @@ class AgentTrader:
                     f"{a.get('symbol')}（{str(a.get('reject_reason'))[:20]}）"
                     for a in actions_rejected[:3])
                 summary = (summary + "；未执行：" + _rej)[:200]
+        # 用户显式 health_policy=enforce：计划阶段就不把新买入写进去（卖出/持有保留）
+        if self._health_block():
+            _keep, _rej = [], []
+            for a in actions:
+                if isinstance(a, dict) and str(a.get("action", "")).lower() == "buy":
+                    _rej.append({**a, "reject_reason":
+                                 "策略健康降级（health_policy=enforce）"})
+                else:
+                    _keep.append(a)
+            actions = _keep
+            if _rej:
+                actions_rejected.extend(_rej)
+                summary = (summary + "；健康降级未执行买入："
+                           + "、".join(str(a.get("symbol")) for a in _rej[:3]))[:200]
         # 计划是给"下一个交易日开盘"用的；plan_date 已在问模型前算好。
         pid = b.broker.save_plan(plan_date, symbols,
                                  {"actions": actions, "summary": summary,
@@ -1034,6 +1097,7 @@ class AgentTrader:
         # 5. 参考信号 + 上下文，问 LLM
         ref_txt = self._ref_text(all_bars, symbols)
         ctx = b.llm_context(max_ops=10, max_nav=3, closes_n=10, symbols=symbols)
+        ctx = self._apply_health_policy(ctx)
         prompt = USER_TMPL.format(
             pool="、".join(symbols),
             max_orders=self.cfg.max_orders_per_run,
@@ -1246,6 +1310,7 @@ class AgentTrader:
                 key=lambda a: _rank.get(str(a.get("action", "")).lower(), 2)
                 if isinstance(a, dict) else 3)
         n_cap = self.cfg.max_orders_per_run + 5
+        _health_block = self._health_block()
         for idx, a in enumerate(all_actions):
             if idx >= n_cap:
                 # H-2（2026-10-27 同事审查）：超出处理上限的条目也必须进审计，
@@ -1277,6 +1342,11 @@ class AgentTrader:
             })
             if act == "hold" or not sym:
                 rec["status"] = "持有不动" if act == "hold" else "拒绝：无代码"
+                decided.append(rec)
+                continue
+            if act == "buy" and _health_block:
+                rec["status"] = ("拒绝：策略健康降级（health_policy=enforce，"
+                                 "仅观察，不新增买入）")
                 decided.append(rec)
                 continue
             try:
