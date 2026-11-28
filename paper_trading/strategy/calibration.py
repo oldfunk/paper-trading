@@ -89,11 +89,15 @@ def build_calibration(*, benchmark: str = DEFAULT_BENCHMARK,
     usable = []
     for r in rows:
         verdict = str(r.get("verdict") or "").strip()
+        signal = str(r.get("signal") or "").strip().upper()
         ret = _num(r.get("ret_20"))
         excess = _num(r.get("excess_20"))
-        if not verdict or ret is None or excess is None:
+        if ret is None or excess is None:
             continue
-        signal = str(r.get("signal") or "").strip().upper()
+        # 旧样本（2026-07/08）母库没有 verdict 文本，但 signal + 前向收益齐全；
+        # 成绩校准按 signal 统计，不能因为缺 verdict 把可用样本丢掉。
+        if not verdict and not signal:
+            continue
         usable.append({
             "analysis_id": r.get("analysis_id"),
             "symbol": r.get("stock_code"), "name": r.get("stock_name"),
@@ -149,7 +153,8 @@ def build_calibration(*, benchmark: str = DEFAULT_BENCHMARK,
                                - (blk.get("data") or {}).get("unique_count", 0)),
         "asof": blk.get("asof"),
         "note": ("历史统计，不是未来收益承诺；BUY 命中=20日超额>0，"
-                 "AVOID 命中=20日超额<0；样本不足时不据此下结论"),
+                 "AVOID 命中=20日超额<0；旧样本无 verdict 时按 signal 统计；"
+                 "样本不足时不据此下结论"),
     })
     if not sufficient:
         base["warning"] = (f"样本不足：总 {len(usable)}（需 ≥{MIN_TOTAL}），"

@@ -119,6 +119,20 @@ def test_calibration_sufficient_and_spread(tmp_path):
         m.reset_cache()
 
 
+def test_calibration_includes_signal_only_old_samples(tmp_path):
+    old = {"id": 900, "code": "000792", "date": "2026-07-14", "signal": "AVOID",
+           "verdict": "", "ret20": -0.03, "ex20": -0.05}
+    sd = _db(tmp_path, _rows(30) + [old])
+    try:
+        out = cal.build_calibration(mother=sd)
+        assert out["available"] is True
+        assert out["n"] == 31
+        # 旧样本没有 verdict，但仍按 signal 进入 AVOID 统计
+        assert out["by_signal"]["AVOID"]["n"] == 15
+    finally:
+        m.reset_cache()
+
+
 def test_calibration_insufficient_sample(tmp_path):
     sd = _db(tmp_path, _rows(10))
     try:
